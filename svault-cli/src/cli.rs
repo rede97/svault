@@ -1,4 +1,4 @@
-use crate::config::{CompareLevel, SyncStrategy};
+use svault_core::config::{CompareLevel, SyncStrategy};
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Svault — distributed multimedia archival tool.

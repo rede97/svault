@@ -1,5 +1,6 @@
 //! Vault configuration (`svault.toml`).
 
+#[cfg(feature = "cli")]
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -34,7 +35,8 @@ pub struct GlobalConfig {
 }
 
 /// Hash algorithm used for full-file comparison.
-#[derive(Debug, Default, Serialize, Deserialize, Clone, ValueEnum)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "cli", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum CompareLevel {
     /// XXH3-128 (high throughput, non-cryptographic)
@@ -45,7 +47,8 @@ pub enum CompareLevel {
 }
 
 /// File-transfer strategy used during sync operations.
-#[derive(Debug, Default, Serialize, Deserialize, Clone, ValueEnum)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "cli", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum SyncStrategy {
     /// Pick the best available strategy automatically (default).

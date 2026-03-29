@@ -1,11 +1,8 @@
 mod cli;
-mod config;
-mod db;
-mod hash;
-mod vfs;
 
 use clap::Parser;
 use cli::{Cli, Command, DbCommand};
+use svault_core::db;
 
 fn main() {
     let cli = Cli::parse();
