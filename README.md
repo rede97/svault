@@ -31,8 +31,8 @@ Svault 同时也是一场公开实验：所有代码均由 AI 编写。本仓库
 | Feature | Description |
 |---------|-------------|
 | Content-addressed storage | Files are identified by SHA-256, not path. Moves and renames are tracked automatically. |
-| Multi-target backup | Sync to multiple local drives, NAS (SMB), MTP devices, or S3-compatible storage simultaneously. |
-| Exact & perceptual dedup | SHA-256 for exact duplicates; pHash/dHash/wHash + color histograms for visually similar images. |
+| Multi-target backup | Sync to multiple local drives, network mounts (SMB/NFS via OS), or MTP devices simultaneously. |
+| Exact dedup | SHA-256 content addressing eliminates exact duplicates safely and deterministically. |
 | Composite media | Live Photos (HEIC+MOV via ContentIdentifier), RAW+JPEG pairs, depth maps — managed as single logical assets. |
 | Event-sourced database | Every operation is appended to an immutable event log (SQLite). Full history replay and tamper detection included. |
 | File reconciliation | If you move files outside Svault, `svault reconcile` relocates them by hash and updates the database. |
@@ -69,7 +69,7 @@ Svault 同时也是一场公开实验：所有代码均由 AI 编写。本仓库
 
 **Language:** Rust (static binary, musl target for Linux servers)
 
-**Storage backends:** Local FS · SMB/CIFS · MTP · WebDAV · S3-compatible
+**Storage backends:** Local FS (including OS-mounted network shares: SMB/NFS/WebDAV) · MTP (via FUSE or direct)
 
 **Perceptual hashing pipeline:** dHash (pre-filter) → pHash (DCT, primary) → wHash (anti-crop) → color histogram
 
@@ -121,6 +121,30 @@ All commands support `--output json`, `--dry-run`, and `--yes` for scripting and
 - **Declare capabilities, don't assume** — Each storage backend declares what it supports (reflink, server-side copy, etc.); the transfer engine picks the optimal strategy.
 - **Open for extension, closed for modification** — New formats, protocols, and algorithms are added via Traits and plugins, not by modifying core logic.
 - **Cold storage is the filesystem's job** — Compression, error-correction, and tape management are delegated to ZFS/btrfs/LTFS. Svault focuses on identity, sync, and organization.
+- **Network storage via OS mounts, not built-in protocol clients** — SMB/NFS/WebDAV shares are accessed through the OS mount point (`mount.cifs`, `autofs`, `gvfs`). Svault treats them as ordinary local paths. Implementing SMB session management, authentication, and reconnection logic inside the tool would introduce a large surface area for bugs with no benefit over what the kernel already provides reliably. Known trade-off: copying files within the same SMB share via a mount point routes data through the host machine's memory and network interface — the kernel CIFS client does not automatically issue server-side copy (SMB `FSCTL_SRV_COPYCHUNK`) requests. This is acceptable for v1 where correctness takes priority over throughput. If intra-NAS copy performance becomes a bottleneck in a future release, it can be addressed by an optional SMB-aware transfer path, without changing the default behaviour.
+- **No perceptual dedup in core** — Visual similarity matching (pHash/dHash) carries an inherent false-positive risk: two photos with similar composition are not the same photo. Automatically acting on that judgment is unsafe in an archival tool. Svault provides exact dedup (SHA-256) only. Perceptual dedup will be addressed by a separate, purpose-built companion tool with its own review-first workflow, designed around the same safety principles.
+- **Svault never deletes your files** — Deletion is irreversible and outside Svault's mission. Instead of deleting source files after import, Svault outputs a mapping file (archive path ↔ source path) for your review. You verify the import succeeded, then delete the source files yourself. This separation of concerns means a bug in Svault can never destroy your originals.
+
+---
+
+## Safety-First Workflow / 安全优先的工作流
+
+Svault deliberately has no delete command. After an import, you receive a manifest:
+
+```
+# svault-import-manifest-20240315T143000.txt
+# Review this file. If the archive looks correct, delete source files manually.
+
+IMPORTED  /archive/2024/03/15/IMG_001.CR3  <--  /mnt/card/DCIM/100CANON/IMG_001.CR3
+IMPORTED  /archive/2024/03/15/IMG_001.JPG  <--  /mnt/card/DCIM/100CANON/IMG_001.JPG
+SKIPPED   (duplicate sha256:a3f…)           <--  /mnt/card/DCIM/100CANON/IMG_002.JPG
+```
+
+Once you have verified the archive, you decide what to do with the source. Svault will never make that decision for you.
+
+导入完成后，Svault 输出一份映射清单（归档路径 ↔ 原始路径）。你核查归档结果无误后，自行删除 SD 卡或源目录中的文件。Svault 不提供任何删除命令——对原始数据的任何破坏性操作，都必须经过人工确认。
+
+这一设计基于一个简单的原则：**工具的 bug 不应该能够销毁你的记忆。**
 
 ---
 
