@@ -20,6 +20,7 @@ dashmap = "6"
 rayon = "1"
 indicatif = "0.17"
 console = "0.15"
+kamadak-exif = "0.5"
 clap = { version = "4", features = ["derive"], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]

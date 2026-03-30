@@ -117,7 +117,7 @@ impl Default for Config {
             import: ImportConfig {
                 store_exif: false,
                 rename_template: ImportConfig::default_rename_template(),
-                path_template: "$year/$mon-$day/$device".to_string(),
+                path_template: "$year/$mon-$day/$device/$filename".to_string(),
                 allowed_extensions: vec![
                     // JPEG
                     "jpg".to_string(),
