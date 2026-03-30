@@ -17,12 +17,13 @@ pub struct Config {
 /// Global settings that apply to all operations.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GlobalConfig {
-    /// Default hash algorithm used for collision resolution and verification
-    /// across all operations (import, sync, add).
-    /// Can be overridden per-command with --compare-level.
-    ///   fast   - XXH3-128 (high throughput, non-cryptographic)
-    ///   sha256 - SHA-256  (cryptographic strength)
-    pub compare_level: CompareLevel,
+    /// Hash algorithm used for file identity, deduplication, and verification.
+    /// Applies to all operations (import, sync, add, verify).
+    /// Can be overridden per-command with -H / --hash.
+    ///   xxh3_128 - XXH3-128 (high throughput, non-cryptographic, default)
+    ///   sha256   - SHA-256  (cryptographic strength)
+    #[serde(default)]
+    pub hash: HashAlgorithm,
 
     /// Default file-transfer strategy for sync operations.
     /// Can be overridden per-command with --strategy.
@@ -34,16 +35,29 @@ pub struct GlobalConfig {
     pub sync_strategy: SyncStrategy,
 }
 
-/// Hash algorithm used for full-file comparison.
+/// Hash algorithm used for file identity and deduplication.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[cfg_attr(feature = "cli", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
-pub enum CompareLevel {
-    /// XXH3-128 (high throughput, non-cryptographic)
-    Fast,
-    /// SHA-256 (cryptographic strength, default)
+pub enum HashAlgorithm {
+    /// XXH3-128 (high throughput, non-cryptographic, default)
     #[default]
+    Xxh3_128,
+    /// SHA-256 (cryptographic strength)
     Sha256,
+}
+
+/// Recheck mode for when all files hit the CRC32C cache.
+#[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "cli", derive(ValueEnum))]
+pub enum RecheckMode {
+    /// Skip recheck, trust CRC32C cache result (default)
+    #[default]
+    Fast,
+    /// Binary-compare EXIF header from archive vs source (64KB, fast)
+    Exif,
+    /// Compute full-file hash and compare against database
+    Hash,
 }
 
 /// File-transfer strategy used during sync operations.
@@ -65,6 +79,10 @@ pub enum SyncStrategy {
 /// Settings that control how files are imported.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportConfig {
+    /// Store full EXIF metadata in file_exif table (default: false).
+    #[serde(default)]
+    pub store_exif: bool,
+
     /// Template used when a filename conflict occurs during import.
     /// Supported placeholders: `$filename` (stem), `$ext` (extension with dot), `$n` (counter).
     /// Default: "$filename.$n.$ext"
@@ -93,10 +111,11 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             global: GlobalConfig {
-                compare_level: CompareLevel::Sha256,
+                hash: HashAlgorithm::Xxh3_128,
                 sync_strategy: SyncStrategy::Auto,
             },
             import: ImportConfig {
+                store_exif: false,
                 rename_template: ImportConfig::default_rename_template(),
                 path_template: "$year/$mon-$day/$device".to_string(),
                 allowed_extensions: vec![

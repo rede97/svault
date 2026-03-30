@@ -1,4 +1,4 @@
-use svault_core::config::{CompareLevel, SyncStrategy};
+use svault_core::config::{HashAlgorithm, RecheckMode, SyncStrategy};
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Svault — distributed multimedia archival tool.
@@ -120,10 +120,11 @@ pub enum Command {
     ///   Both XXH3-128 and SHA-256 are stored as binary BLOBs in the database.
     ///   SHA-256 takes precedence when both are present; XXH3-128 serves as
     ///   a temporary identity until SHA-256 is computed.
-    ///   --compare-level selects which hash is computed in this run:
-    ///     fast   - compute XXH3-128 (high throughput; good for slow networks
-    ///              or bandwidth-constrained devices)
-    ///     sha256 - compute SHA-256  (cryptographic strength, default)
+    ///   -H / --hash selects which hash is computed in this run:
+    ///     xxh3_128 - XXH3-128 (high throughput; good for slow networks
+    ///                or bandwidth-constrained devices)
+    ///     sha256   - SHA-256  (cryptographic strength)
+    ///   Priority: CLI flag > svault.toml [import].dedup_hash > built-in default (xxh3_128)
     ///
     /// DUPLICATE HANDLING
     /// If a file's hash matches an existing vault entry it is skipped and
@@ -132,7 +133,7 @@ pub enum Command {
     /// XXH3-128 COLLISION (extremely rare)
     /// If two files share the same XXH3-128 but differ in content, svault
     /// reports a collision warning and refuses to import without
-    /// --compare-level sha256. If SHA-256 also matches the file is a true
+    /// -H sha256 / --hash sha256. If SHA-256 also matches the file is a true
     /// duplicate. If SHA-256 differs the file is imported normally.
     ///
     /// --ignore-duplicate forces import even when the file is confirmed as
@@ -153,7 +154,7 @@ pub enum Command {
     Import {
         /// Source directory or mount point to import from.
         /// Must not be located inside the vault root — use `svault add` for that.
-        #[arg(long, value_name = "PATH")]
+        #[arg(value_name = "SOURCE")]
         source: std::path::PathBuf,
 
         /// Sub-directory inside the vault to use as the import destination
@@ -166,21 +167,51 @@ pub enum Command {
         target: Option<std::path::PathBuf>,
 
         /// Hash algorithm for full-file collision resolution (Stage 2).
-        /// Both hashes are stored as binary BLOBs; SHA-256 takes precedence
-        /// when present. Defaults to the value in svault.toml `[global]
-        /// compare_level` (factory default: sha256).
-        #[arg(long, value_enum)]
-        compare_level: Option<CompareLevel>,
+        /// Priority: this flag > svault.toml [global].hash > default (xxh3_128).
+        #[arg(short = 'H', long, value_enum)]
+        hash: Option<HashAlgorithm>,
 
         /// File transfer strategy (see TRANSFER STRATEGY above).
         #[arg(long, default_value = "auto", value_enum)]
         strategy: SyncStrategy,
+
+        /// Re-check duplicate files when all source files hit the CRC32C cache.
+        /// fast - trust CRC32C cache, do not re-verify (default)
+        /// exif - binary-compare EXIF header from archive vs source (64KB)
+        /// hash - compute full-file hash and compare against database
+        #[arg(short = 'R', long, default_value = "fast", value_enum, value_name = "MODE")]
+        recheck: RecheckMode,
 
         /// Force import even when the file is confirmed as a duplicate.
         /// Use this to intentionally re-import an identical file.
         #[arg(long)]
         ignore_duplicate: bool,
     },
+
+    
+    /// Register files already inside the vault into the database
+    ///
+    /// Use this when files have been copied into the vault directory manually
+    /// (outside of `svault import`). `add` computes their fingerprints and
+    /// registers them in the database without moving them.
+    ///
+    /// PATH must be a directory located inside an initialized vault root.
+    /// svault walks up from PATH to discover the vault root. Passing a path
+    /// outside the vault is an error — use `svault import` instead.
+    ///
+    /// A manifest is written to `<vault_root>/manifest/` as with all
+    /// database-modifying operations.
+    Add {
+        /// Directory inside the vault whose files should be registered.
+        /// Must be located under the vault root.
+        #[arg(value_name = "PATH")]
+        path: std::path::PathBuf,
+
+        /// Hash algorithm to use for add.
+        #[arg(short = 'H', long, default_value = "sha256", value_enum)]
+        hash: HashAlgorithm,
+    },
+
 
     /// Sync files and metadata from another vault
     ///
@@ -214,11 +245,9 @@ pub enum Command {
     ///   full - verify every file in the local vault database; use this
     ///          for periodic integrity audits and forced data correction
     ///
-    /// --compare-level controls the hash algorithm used during verification
-    /// and can be set as the default in `svault.toml` under
-    /// `sync.compare_level`:
-    ///   fast   - XXH3-128 (high throughput, non-cryptographic)
-    ///   sha256 - SHA-256  (cryptographic strength, default)
+    /// -H / --hash controls the hash algorithm used during verification:
+    ///   xxh3_128 - XXH3-128 (high throughput, non-cryptographic)
+    ///   sha256   - SHA-256  (cryptographic strength, default)
     Sync {
         /// Root directory of the source vault to sync from.
         /// Must contain `.svault/vault.db`.
@@ -236,33 +265,9 @@ pub enum Command {
         verify: SyncVerifyScope,
 
         /// Hash algorithm used for verification and collision resolution.
-        /// Overrides the default set in svault.toml (`sync.compare_level`).
-        #[arg(long, default_value = "sha256", value_enum)]
-        compare_level: CompareLevel,
-    },
-
-    /// Register files already inside the vault into the database
-    ///
-    /// Use this when files have been copied into the vault directory manually
-    /// (outside of `svault import`). `add` computes their fingerprints and
-    /// registers them in the database without moving them.
-    ///
-    /// PATH must be a directory located inside an initialized vault root.
-    /// svault walks up from PATH to discover the vault root. Passing a path
-    /// outside the vault is an error — use `svault import` instead.
-    ///
-    /// A manifest is written to `<vault_root>/manifest/` as with all
-    /// database-modifying operations.
-    Add {
-        /// Directory inside the vault whose files should be registered.
-        /// Must be located under the vault root.
-        #[arg(value_name = "PATH")]
-        path: std::path::PathBuf,
-
-        /// Full-file hash algorithm used when a fingerprint collision is
-        /// detected (same pipeline as `import`).
-        #[arg(long, default_value = "sha256", value_enum)]
-        compare_level: CompareLevel,
+        /// Overrides the default set in svault.toml (`global.hash`).
+        #[arg(short = 'H', long, default_value = "sha256", value_enum)]
+        hash: HashAlgorithm,
     },
 
     /// Locate files moved outside Svault and update database paths
@@ -286,8 +291,8 @@ pub enum Command {
     ///   sha256 - verify with SHA-256 (cryptographic strength, default)
     Verify {
         /// Hash algorithm to use for verification.
-        #[arg(long, default_value = "sha256", value_enum)]
-        level: CompareLevel,
+        #[arg(short = 'H', long, default_value = "sha256", value_enum)]
+        hash: HashAlgorithm,
 
         /// Verify only this file
         #[arg(long, value_name = "PATH")]
