@@ -12,7 +12,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{DirEntry, FsCapabilities, TransferStrategy, VfsBackend, VfsError, VfsResult};
+use super::{vfs_ext_matches, DirEntry, FsCapabilities, TransferStrategy, VfsBackend, VfsError, VfsResult};
+use jwalk;
 
 /// Local filesystem backend. Probes capabilities for `root` at construction.
 pub struct SystemFs {
@@ -69,6 +70,37 @@ impl VfsBackend for SystemFs {
             });
         }
         Ok(entries)
+    }
+
+    fn walk(&self, dir: &Path, extensions: &[&str]) -> VfsResult<Vec<DirEntry>> {
+        let full = self.root.join(dir);
+        let exts: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
+        let exts_ref: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+        let mut result = Vec::new();
+        for entry in jwalk::WalkDir::new(&full).skip_hidden(false) {
+            let entry = entry.map_err(|e| VfsError::Io(std::io::Error::other(e)))?;
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if !vfs_ext_matches(&path, &exts_ref) {
+                continue;
+            }
+            let meta = entry.metadata().map_err(|e| VfsError::Io(std::io::Error::other(e)))?;
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            result.push(DirEntry {
+                path,
+                size: meta.len(),
+                mtime_ms,
+                is_dir: false,
+            });
+        }
+        Ok(result)
     }
 
     fn open_read(&self, path: &Path) -> VfsResult<Box<dyn Read>> {

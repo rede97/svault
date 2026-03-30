@@ -11,3 +11,6 @@ path = "src/main.rs"
 svault-core = { path = "../svault-core", features = ["cli"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+console = "0.15"
+serde_json = "1"

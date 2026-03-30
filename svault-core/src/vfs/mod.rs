@@ -94,6 +94,21 @@ impl From<std::io::Error> for VfsError {
 
 pub type VfsResult<T> = Result<T, VfsError>;
 
+/// Returns true if `path`'s extension (lowercased) is in `extensions`.
+/// Returns true unconditionally when `extensions` is empty.
+pub(crate) fn vfs_ext_matches(path: &Path, extensions: &[&str]) -> bool {
+    if extensions.is_empty() {
+        return true;
+    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            let lower = e.to_ascii_lowercase();
+            extensions.contains(&lower.as_str())
+        })
+        .unwrap_or(false)
+}
+
 /// Abstraction over a storage backend (local filesystem, MTP device, etc.).
 ///
 /// Implementations probe their capabilities on construction and expose them
@@ -109,6 +124,28 @@ pub trait VfsBackend: Send + Sync {
 
     /// Lists directory entries one level deep (non-recursive).
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>>;
+
+    /// Recursively walks `dir`, returning all files whose extension
+    /// (lowercase, no leading dot) is in `extensions`.
+    /// If `extensions` is empty, all files are returned.
+    /// Directories and symlinks are never included in the result.
+    ///
+    /// The default implementation recurses via [`VfsBackend::list`].
+    /// Backends may override this with a more efficient native walk.
+    fn walk(&self, dir: &Path, extensions: &[&str]) -> VfsResult<Vec<DirEntry>> {
+        let mut result = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            for entry in self.list(&current)? {
+                if entry.is_dir {
+                    stack.push(entry.path.clone());
+                } else if vfs_ext_matches(&entry.path, extensions) {
+                    result.push(entry);
+                }
+            }
+        }
+        Ok(result)
+    }
 
     /// Opens the file at `path` for reading and returns a boxed reader.
     fn open_read(&self, path: &Path) -> VfsResult<Box<dyn std::io::Read>>;

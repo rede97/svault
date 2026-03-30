@@ -56,6 +56,16 @@ pub struct Xxh3Digest {
     pub high: u64,
 }
 
+impl Xxh3Digest {
+    /// Returns the digest as a 16-byte little-endian array.
+    pub fn to_bytes(self) -> [u8; 16] {
+        let mut b = [0u8; 16];
+        b[..8].copy_from_slice(&self.low.to_le_bytes());
+        b[8..].copy_from_slice(&self.high.to_le_bytes());
+        b
+    }
+}
+
 impl std::fmt::LowerHex for Xxh3Digest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:016x}{:016x}", self.high, self.low)
@@ -93,6 +103,11 @@ pub fn xxh3_128_file(path: &Path) -> io::Result<Xxh3Digest> {
 pub struct Sha256Digest([u8; 32]);
 
 impl Sha256Digest {
+    /// Returns the raw 32-byte digest.
+    pub fn to_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     /// Returns the digest as a lowercase hex string (64 characters).
     pub fn to_hex(&self) -> String {
         self.0.iter().map(|b| format!("{:02x}", b)).collect()

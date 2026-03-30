@@ -51,15 +51,29 @@
 从源目录或设备导入媒体文件到归档。
 
 ```
-svault import --source <path> [options]
+svault import <source> [options]
 ```
 
-| 选项 | 说明 |
-|------|------|
-| `--source <path>` | 源目录或挂载点（必填） |
-| `--target <path>` | 目标归档目录（默认使用配置文件中的 vault 路径） |
-| `--compare-level <level>` | 比较策略：`fast`（Stage 1–3）/ `sha256`（Stage 1–4，默认）|
-| `--manifest <path>` | 指定清单输出路径（默认自动生成） |
+| 选项 | 简写 | 说明 |
+|------|------|------|
+| `<source>` | | 源目录或挂载点（必填，位置参数） |
+| `--target <path>` | | 目标归档目录（默认使用配置文件中的 vault 路径） |
+| `--hash <algo>` | `-H` | 哈希算法：`xxh3_128`（高吞吐）/ `sha256`（加密强度，默认）。优先级：CLI > `svault.toml [global].hash` > 内置默认值（`xxh3_128`）|
+| `--recheck <mode>` | `-R` | 全部命中缓存时对重复项二次验证：`fast`（默认，信任缓存）/ `exif`（EXIF 二进制比对）/ `hash`（全文件哈希）|
+
+**清单文件：**
+
+每次导入自动生成清单到 `<vault_root>/manifests/import-<timestamp>.txt`，记录所有文件的源路径、归档路径和处理结果。
+
+**全部命中缓存时的行为：**
+
+Stage B 完成后若 `likely_new = 0`，默认输出提示并退出：
+```
+All 245 files matched cache (no new files detected).
+To verify duplicates, re-run with:
+  -R exif   EXIF binary comparison (recommended)
+  -R hash   full-file hash comparison
+```
 
 **输出（human）：**
 ```
@@ -72,7 +86,7 @@ Summary:
   Skipped:     80 (cache hit)
   Failed:       0
 
-Manifest written to: ./svault-import-20240315T143000.txt
+Manifest: ./manifests/import-20240315T143000.txt
 ```
 
 **输出（json）：**
@@ -83,7 +97,7 @@ Manifest written to: ./svault-import-20240315T143000.txt
   "duplicate": 23,
   "skipped": 80,
   "failed": 0,
-  "manifest": "./svault-import-20240315T143000.txt"
+  "manifest": "./manifests/import-20240315T143000.txt"
 }
 ```
 

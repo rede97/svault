@@ -6,7 +6,9 @@
 
 ## 设计原则
 
-- **路径不是身份**：SHA-256 是文件的永久身份，路径是可变的当前位置
+- **路径不是身份**：文件的永久身份由内容哈希确定（SHA-256 或 XXH3-128，取决于配置），路径是可变的当前位置
+- **哈希双用途分离**：`import.hash` 用于导入去重检测，`global.id_hash` 用于归档数据认证；两者可独立配置
+- **SHA-256 优先原则**：若文件已有 SHA-256，无论配置如何，始终以 SHA-256 作为身份标识
 - **物化视图模式**：`files`、`media_groups`、`assets` 等表是当前状态的快照，由事件重放得到
 - **追加不修改**：所有变更先写 `events` 表，再更新物化视图，同一事务提交
 - **防篡改哈希链**：每条事件记录前一条的哈希，构成区块链式校验
@@ -55,32 +57,85 @@ CREATE TABLE media_groups (
 );
 ```
 
+### metadata
+
+全局元数据表，记录数据库版本和应用版本：
+
+```sql
+CREATE TABLE metadata (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
+-- 初始化记录
+INSERT INTO metadata VALUES ('schema_version', '1');
+INSERT INTO metadata VALUES ('app_version', '0.1.0');
+INSERT INTO metadata VALUES ('crc32c_epoch', '1');  -- CRC32C 缓存世代，应用升级时递增
+```
+
+**`crc32c_epoch` 的作用**：应用版本更新时，格式处理器可能变化（读取区域调整、解析逻辑优化），所有 CRC32C 缓存自动失效。每次应用启动时检查 `app_version`，若不匹配则递增 `crc32c_epoch` 并执行 `UPDATE files SET crc32c = NULL`。
+
 ### files
 
 ```sql
 CREATE TABLE files (
     id                   INTEGER PRIMARY KEY,
-    sha256               TEXT UNIQUE,       -- 内容身份，惰性计算，可为 NULL
+    xxh3_128             TEXT,              -- XXH3-128 哈希（dedup_hash=xxh3_128 时必填）
+    sha256               TEXT,              -- SHA-256 哈希（dedup_hash=sha256 时必填，或后台补全）
     size                 INTEGER NOT NULL,  -- 字节数，普通索引
     path                 TEXT NOT NULL,     -- 当前路径（物化视图，可变）
     mtime                INTEGER NOT NULL,  -- 最后修改时间戳
     group_id             INTEGER REFERENCES media_groups(id),  -- NULL = 独立文件
     role                 TEXT,              -- 'primary'/'motion'/'depth'/'auxiliary'
-    crc32c_val           INTEGER,           -- CRC32C 值（Stage 3 缓存）
-    crc32c_region        TEXT,              -- 读取区间，如 "head:65536" / "tail:65536"
-    crc32c_handler_ver   TEXT,              -- 格式处理器版本（缓存失效用）
-    exif_fp              TEXT,              -- EXIF 关键字段指纹（JSON）
+    crc32c               INTEGER,           -- CRC32C 值（临时指纹，epoch 失效）
     status               TEXT NOT NULL DEFAULT 'imported',  -- 'imported'/'duplicate'/'deleted'
     duplicate_of         INTEGER REFERENCES files(id),      -- 重复时指向原始文件
-    imported_at          INTEGER NOT NULL
+    import_session_id    INTEGER REFERENCES import_sessions(id) NOT NULL
 );
 
-CREATE INDEX idx_files_sha256 ON files(sha256);
-CREATE INDEX idx_files_size   ON files(size);
-CREATE INDEX idx_files_group  ON files(group_id);
+CREATE UNIQUE INDEX idx_files_xxh3_128 ON files(xxh3_128) WHERE xxh3_128 IS NOT NULL;
+CREATE UNIQUE INDEX idx_files_sha256   ON files(sha256)   WHERE sha256 IS NOT NULL;
+CREATE INDEX idx_files_size            ON files(size);
+CREATE INDEX idx_files_group           ON files(group_id);
+CREATE INDEX idx_files_session         ON files(import_session_id);
 ```
 
-**`sha256 = NULL` 的语义**：文件已安全导入，SHA-256 身份待后台补全。
+### import_sessions
+
+```sql
+CREATE TABLE import_sessions (
+    id            INTEGER PRIMARY KEY,
+    started_at    INTEGER NOT NULL,     -- 导入开始时间（Unix 毫秒时间戳）
+    finished_at   INTEGER,              -- 导入完成时间（NULL = 未完成/中断）
+    source_path   TEXT NOT NULL,        -- 源目录路径
+    file_count    INTEGER DEFAULT 0,    -- 本次导入文件数（物化）
+    status        TEXT NOT NULL,        -- 'running'/'completed'/'interrupted'
+    manifest      TEXT                  -- 清单文件路径
+);
+
+CREATE INDEX idx_import_sessions_started ON import_sessions(started_at);
+```
+
+**设计说明：**
+- `files.import_session_id` 替代 `imported_at`，时间从 session 表取
+- 可按批次查询"这次从相机卡导入了哪些文件"
+- `status='interrupted'` 的 session 可用于中断恢复
+- `manifest` 记录清单文件路径，集中管理
+```
+
+**哈希字段语义：**
+- **`xxh3_128`**：XXH3-128 哈希，当 `import.dedup_hash = xxh3_128` 时入库必填
+- **`sha256`**：SHA-256 哈希，当 `import.dedup_hash = sha256` 时入库必填；或通过 `svault background-hash` 后台补全
+- **`crc32c`**：临时指纹（纯数值），仅用于导入时快速反馈，应用升级时通过 `crc32c_epoch` 批量失效
+
+**文件身份解析优先级：**
+```
+if sha256 IS NOT NULL:
+    identity = sha256      # SHA-256 优先，无论 global.id_hash 配置
+else:
+    identity = xxh3_128    # 回退到 XXH3-128
+```
+
 **`group_id = NULL` 的语义**：独立单文件，无需 MediaGroup。
 
 ### derivatives
@@ -96,6 +151,58 @@ CREATE TABLE derivatives (
     created_at      INTEGER NOT NULL
 );
 ```
+
+### file_exif
+
+可选表，仅当 `import.store_exif = true` 时写入：
+
+```sql
+CREATE TABLE file_exif (
+    file_id         INTEGER PRIMARY KEY REFERENCES files(id),
+    captured_at     INTEGER,          -- DateTimeOriginal（Unix 时间戳）
+    camera_make     TEXT,             -- EXIF Make
+    camera_model    TEXT,             -- EXIF Model
+    lens_model      TEXT,             -- EXIF LensModel
+    focal_length    REAL,             -- 焦距（mm）
+    aperture        REAL,             -- 光圈（f/N）
+    shutter         TEXT,             -- 快门速度（如 "1/250"）
+    iso             INTEGER,          -- ISO 感光度
+    gps_lat         REAL,             -- 纬度
+    gps_lon         REAL,             -- 经度
+    gps_alt         REAL,             -- 海拔（m）
+    raw             TEXT              -- 完整 EXIF JSON（可选）
+);
+
+CREATE INDEX idx_file_exif_captured ON file_exif(captured_at);
+CREATE INDEX idx_file_exif_camera   ON file_exif(camera_model);
+```
+
+**设计说明：**
+- `file_id` 作为主键（1:1 关系），查询直接 `JOIN files`
+- `raw` 列存完整 EXIF JSON，方便未来扩展字段而不需要改表结构
+- 默认 `import.store_exif = false`，不增加基础使用的存储开销
+
+---
+
+## 哈希配置（svault.toml）
+
+```toml
+[global]
+id_hash = "xxh3_128"     # 永久身份哈希：xxh3_128 | sha256
+
+[import]
+dedup_hash = "xxh3_128"  # 导入去重哈希算法：xxh3_128 | sha256
+store_exif = false        # 是否将完整 EXIF 写入 file_exif 表，默认关闭
+```
+
+**配置说明：**
+- **`global.id_hash`**：文件的永久身份标识，入库后不再变更
+- **`import.dedup_hash`**：导入时用于去重检测的哈希算法，在文件复制到归档目录后计算
+- **`import.store_exif`**：开启后导入时解析完整 EXIF 并写入 `file_exif` 表，适合需要按相机/地点/时间检索的场景
+- **SHA-256 优先原则**：若文件已有 `sha256`，无论 `id_hash` 配置如何，始终以 SHA-256 作为身份
+
+**配置迁移：**
+从 `id_hash = xxh3_128` 迁移到 `sha256` 时，需执行 `svault background-hash` 为历史文件补全 SHA-256。
 
 ---
 
@@ -170,7 +277,7 @@ self_hash = SHA-256(
 
 | event_type | 触发场景 | payload 关键字段 |
 |------------|----------|------------------|
-| `file.imported` | 文件首次导入 | `path`, `size`, `sha256`, `role` |
+| `file.imported` | 文件首次导入 | `path`, `size`, `sha256`, `role`, `import_session_id` |
 | `file.path_updated` | 路径变更（reconcile / reorganize） | `old_path`, `new_path` |
 | `file.sha256_resolved` | 后台补全 SHA-256 | `sha256` |
 | `file.duplicate_marked` | 标记为重复 | `duplicate_of` (file_id) |
@@ -180,6 +287,8 @@ self_hash = SHA-256(
 | `asset.created` | 资产创建 | `media_group_id` |
 | `asset.deleted` | 资产删除（级联） | `cascade_file_ids` |
 | `derivative.created` | 衍生版本生成 | `source_file_id`, `deriv_type`, `params` |
+| `import_session.started` | 导入会话开始 | `source_path` |
+| `import_session.finished` | 导入会话完成 | `file_count`, `manifest` |
 
 ### 写入流程
 

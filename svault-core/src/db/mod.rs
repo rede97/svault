@@ -12,6 +12,10 @@
 //!   5. UPDATE materialised view table.
 //!   6. COMMIT (steps 4+5 in one transaction).
 
+pub mod files;
+
+pub use files::FileRow;
+
 use rusqlite::{Connection, OptionalExtension, Result, params};
 use std::path::Path;
 

@@ -12,47 +12,54 @@
 
 ## 文件身份标识（数据库存储）
 
-### 主键：SHA-256
+### 双哈希策略：XXH3-128 与 SHA-256
 
-文件的永久身份由其 **SHA-256 哈希**唯一确定。SHA-256 跨设备、跨路径、跨时间永久有效，是内容寻址的基础。
+文件的永久身份由 **XXH3-128** 或 **SHA-256** 确定，取决于 `global.id_hash` 配置。两种哈希跨设备、跨路径、跨时间永久有效，是内容寻址的基础。
 
-`size`（文件字节数）作为独立列存储，不参与主键，仅用于比较流水线的 Stage 2 快速过滤。将 `size` 纳入主键没有实质收益——SHA-256 已经足够唯一，`size` 的信息已隐含在 SHA-256 的输入中。
+**哈希选择：**
+- **XXH3-128**：非密码学哈希，速度极快（30-60 GB/s），碰撞概率 ~2⁻¹²⁸，个人使用足够
+- **SHA-256**：密码学哈希，速度较慢（~500 MB/s），碰撞概率 ~2⁻²⁵⁶，适合数据认证场景
+
+**身份解析优先级：**
+```
+if sha256 IS NOT NULL:
+    identity = sha256      # SHA-256 优先，无论配置
+else:
+    identity = xxh3_128    # 回退到 XXH3-128
+```
+
+`size`（文件字节数）作为独立列存储，不参与主键，仅用于比较流水线的 Stage 2 快速过滤。
 
 ### 核心表结构
 
 ```
 files 表
-├── id             INTEGER   内部自增行号（ORM 用）
-├── sha256         TEXT      内容身份，全局唯一索引（可为 NULL，惰性计算）
-├── size           INTEGER   字节数，普通索引（用于 Stage 2 快速过滤）
-├── path           TEXT      当前文件路径（可变，路径不是身份）
-├── mtime          INTEGER   最后修改时间戳（缓存失效键之一）
-├── crc32c_val     INTEGER   CRC32C 值（格式指纹区域，Stage 3 缓存）
-├── crc32c_region  TEXT      读取区间描述，如 "head:65536" 或 "tail:65536"
-├── crc32c_handler_ver TEXT  格式处理器版本号（处理器升级时使缓存失效）
-├── exif_fp        TEXT      EXIF 关键字段指纹（Stage 3 缓存，JSON）
-└── imported_at    INTEGER   首次导入时间
+├── id                 INTEGER   内部自增行号（ORM 用）
+├── xxh3_128           TEXT      XXH3-128 哈希，唯一索引（import.dedup_hash=xxh3_128 时入库必填）
+├── sha256             TEXT      SHA-256 哈希，唯一索引（import.dedup_hash=sha256 时入库必填，或后台补全）
+├── size               INTEGER   字节数，普通索引（用于 Stage 2 快速过滤）
+├── path               TEXT      当前文件路径（可变，路径不是身份）
+├── mtime              INTEGER   最后修改时间戳（缓存失效键之一）
+├── crc32c             INTEGER   CRC32C 值（临时指纹，epoch 失效）
+└── import_session_id  INTEGER   导入会话 ID（关联 import_sessions 表）
 ```
 
-**`sha256 = NULL` 的语义**：文件已安全导入，SHA-256 身份待后台补全。不影响正常使用，仅影响跨会话精确去重。
-
-**`crc32c_region` 的必要性**：Stage 3 的读取位置由格式处理器决定（PNG 读尾部，JPEG 读头部），缓存时必须记录读取区间，否则处理器升级后缓存值含义变化，导致误判。`crc32c_handler_ver` 提供额外的版本失效机制——处理器升级时批量清除旧版本缓存。
+**`crc32c` 字段**：纯数值（INTEGER），临时快速指纹。应用版本更新时，通过 `metadata.crc32c_epoch` 全局失效，执行 `UPDATE files SET crc32c = NULL`。
 
 重复文件查找查询：
 ```sql
-SELECT * FROM files WHERE size = ? AND sha256 = ?
+-- 使用 id_hash 对应的列查询
+SELECT * FROM files WHERE size = ? AND xxh3_128 = ?   -- id_hash = xxh3_128
+SELECT * FROM files WHERE size = ? AND sha256 = ?     -- id_hash = sha256 或 SHA-256 优先
 ```
-`size` 先过滤绝大多数候选，`sha256` 精确确认，两列均有索引。
+`size` 先过滤绝大多数候选，哈希精确确认，两列均有唯一索引。
 
-### SHA-256 惰性计算与缓存失效
+### 哈希缓存失效条件
 
-SHA-256 是惰性的——只有在 Stage 3 指纹发生碰撞时才触发计算。无碰撞的正常导入中 SHA-256 计算量为零，后台补全任务在系统空闲时填充 `sha256 = NULL` 的记录。
-
-SHA-256 及 CRC32C 缓存失效条件：
 ```
 device_id + inode + mtime + size
 ```
-任意一项变化则重新计算。此外，`crc32c_handler_ver` 不匹配时也强制重算 CRC32C。
+任意一项变化则重新计算所有哈希。CRC32C 额外受 `metadata.crc32c_epoch` 控制——应用升级时递增 epoch，所有 CRC32C 缓存批量失效。
 
 ---
 
