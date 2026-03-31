@@ -2,7 +2,8 @@
 
 use rusqlite::{Connection, Result, types::Value};
 use std::collections::HashMap;
-use tabled::{Table, settings::{Style, Width, Modify, object::Columns, Alignment}};
+use console::style;
+use tabled::{Table, settings::{Style, Width, Modify, object::Columns, Alignment, Padding}};
 
 /// A row of data from a database table.
 pub type RowData = HashMap<String, Value>;
@@ -148,8 +149,9 @@ fn dump_to_tabled(dump: &TableDump, max_col_width: usize) -> Table {
     
     let mut table = Table::from_iter(&data);
     
-    // Style: modern rounded borders
-    table.with(Style::modern_rounded());
+    // Clean style: psql-like with header separator only
+    table.with(Style::psql());
+    table.with(Padding::new(0, 1, 0, 0));
     
     // Left-align all columns
     table.with(Modify::new(Columns::new(..)).with(Alignment::left()));
@@ -160,23 +162,21 @@ fn dump_to_tabled(dump: &TableDump, max_col_width: usize) -> Table {
     table
 }
 
-/// Renders table dump as human-readable text using tabled.
+/// Renders table dump with clean style.
 pub fn render_table(dump: &TableDump) -> String {
     if dump.rows.is_empty() {
-        return format!("\n📋 {} (0 rows)\n   (empty table)\n", dump.name);
+        return format!("\n{} (0 rows)\n   (empty table)\n", style(&dump.name).bold());
     }
     
     let table = dump_to_tabled(dump, 40);
     
-    format!("\n📋 {} ({} rows)\n{}\n", dump.name, dump.rows.len(), table)
+    format!("\n{} ({} rows)\n{}\n", style(&dump.name).bold(), dump.rows.len(), table)
 }
 
-/// Renders all tables as human-readable text.
+/// Renders all tables with clean style.
 pub fn render_tables(dumps: &[TableDump]) -> String {
     let mut output = String::new();
-    output.push_str("╔══════════════════════════════════════════════════════════════════════════════╗\n");
-    output.push_str("║                      📊 Svault Database Dump                                 ║\n");
-    output.push_str("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+    output.push_str(&format!("{}\n\n", style("📊 Database Dump").bold()));
     
     for dump in dumps {
         output.push_str(&render_table(dump));

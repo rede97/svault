@@ -1,8 +1,9 @@
-//! Vault status reporting with rich formatted output.
+//! Vault reporting with clean, modern table output.
 
 use std::path::Path;
 
-use tabled::{Table, Tabled, settings::{Style, Alignment, Modify, object::Rows}};
+use console::style;
+use tabled::{Table, Tabled, settings::{Style, Alignment, Modify, object::Rows, Padding}};
 
 use crate::db::{Db, VaultStats, ExtensionStats, format_bytes, format_count};
 
@@ -68,23 +69,34 @@ struct StatRow {
 
 #[derive(Tabled)]
 struct ExtRow {
+    #[tabled(rename = "Type")]
     extension: String,
+    #[tabled(rename = "Files")]
     files: String,
+    #[tabled(rename = "Size")]
     size: String,
 }
 
-/// Renders a status report as human-readable text with rich formatting.
+/// Configure table with clean rich style: no outer border, bold header, separator line
+fn configure_table(table: &mut Table) {
+    // Use psql style (header separator line only)
+    table.with(Style::psql());
+    
+    // Remove outer padding for cleaner look
+    table.with(Padding::new(0, 0, 0, 0));
+    
+    // Left align all content
+    table.with(Modify::new(Rows::new(..)).with(Alignment::left()));
+}
+
+/// Renders a status report with clean, modern table output.
 pub fn render_human(report: &StatusReport) -> String {
     let mut output = String::new();
     
-    // Header box
-    output.push_str("╔══════════════════════════════════════════════════════════════════════════════╗\n");
-    output.push_str("║                         📦 Svault Vault Status                                 ║\n");
-    output.push_str("╚══════════════════════════════════════════════════════════════════════════════╝\n\n");
-    
-    // Vault info
-    output.push_str(&format!("📁 Vault: {}\n", report.vault_root.display()));
-    output.push_str(&format!("🗄️  Database: {}\n\n", report.db_path.display()));
+    // Simple header
+    output.push_str(&format!("{}\n", style("📦 Svault Vault Status").bold()));
+    output.push_str(&format!("   {}\n", report.vault_root.display()));
+    output.push_str(&format!("   {}\n\n", report.db_path.display()));
     
     // Files section
     let file_stats = vec![
@@ -95,10 +107,9 @@ pub fn render_human(report: &StatusReport) -> String {
     ];
     
     let mut files_table = Table::new(&file_stats);
-    files_table.with(Style::modern_rounded());
-    files_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    configure_table(&mut files_table);
     
-    output.push_str("📊 Files\n");
+    output.push_str(&format!("{}\n", style("📊 Files").bold()));
     output.push_str(&format!("{}\n", files_table));
     
     // Hash status section
@@ -108,10 +119,9 @@ pub fn render_human(report: &StatusReport) -> String {
     ];
     
     let mut hash_table = Table::new(&hash_stats);
-    hash_table.with(Style::modern_rounded());
-    hash_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    configure_table(&mut hash_table);
     
-    output.push_str("🔐 Hash Status\n");
+    output.push_str(&format!("{}\n", style("🔐 Hash Status").bold()));
     output.push_str(&format!("{}\n", hash_table));
     
     if report.stats.pending_sha256_count > 0 {
@@ -128,10 +138,9 @@ pub fn render_human(report: &StatusReport) -> String {
     ];
     
     let mut import_table = Table::new(&import_stats);
-    import_table.with(Style::modern_rounded());
-    import_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    configure_table(&mut import_table);
     
-    output.push_str("📈 Recent Imports\n");
+    output.push_str(&format!("{}\n", style("📈 Recent Imports").bold()));
     output.push_str(&format!("{}\n", import_table));
     
     // Event log section
@@ -141,10 +150,9 @@ pub fn render_human(report: &StatusReport) -> String {
     ];
     
     let mut event_table = Table::new(&event_stats);
-    event_table.with(Style::modern_rounded());
-    event_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    configure_table(&mut event_table);
     
-    output.push_str("📝 Event Log\n");
+    output.push_str(&format!("{}\n", style("📝 Event Log").bold()));
     output.push_str(&format!("{}\n", event_table));
     
     // Top extensions section
@@ -158,10 +166,9 @@ pub fn render_human(report: &StatusReport) -> String {
         }).collect();
         
         let mut ext_table = Table::new(&ext_rows);
-        ext_table.with(Style::modern_rounded());
-        ext_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+        configure_table(&mut ext_table);
         
-        output.push_str("📁 Top File Types\n");
+        output.push_str(&format!("{}\n", style("📁 Top File Types").bold()));
         output.push_str(&format!("{}\n", ext_table));
     }
     
