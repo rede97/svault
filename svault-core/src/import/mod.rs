@@ -147,12 +147,9 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         })
         .collect();
     scan_bar.finish_and_clear();
-    eprintln!("{} Scanned {} files from {}", 
-        style("Finished:").bold().green(),
-        style(total).green(),
-        style(opts.source.display()).dim());
 
     // Step B2: DB lookup on calling thread (single-threaded, cheap)
+    // Also collect discovered files for display
     let scan_entries: Vec<ScanEntry> = crcs
         .into_iter()
         .map(|(e, crc_result)| {
@@ -192,15 +189,36 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let failed_b = scan_entries.iter()
         .filter(|e| matches!(e.status, FileStatus::Failed(_))).count();
 
+    // Print discovered files (relative paths) for user review
+    eprintln!();
+    eprintln!("{} {} files found in {}", 
+        style("Discovered:").bold().cyan(),
+        style(total).cyan(),
+        style(opts.source.display()).dim());
+    eprintln!();
+    for e in &scan_entries {
+        let rel_path = e.src_path.strip_prefix(&opts.source)
+            .unwrap_or(&e.src_path)
+            .display()
+            .to_string();
+        let icon = match e.status {
+            FileStatus::LikelyNew => style("+").green(),
+            FileStatus::LikelyCacheDuplicate => style("=").yellow(),
+            FileStatus::Failed(_) => style("!").red(),
+            _ => style("?").dim(),
+        };
+        eprintln!("  {} {}", icon, style(rel_path).dim());
+    }
+
     // Pre-flight summary
     eprintln!();
     eprintln!("{}", style("Pre-flight:").bold());
     eprintln!("  {}  {}",
         style(format!("Likely new:       {:>6}", likely_new.len())).green(),
-        style("").dim());
+        style("will be imported").dim());
     eprintln!("  {}  {}",
         style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
-        style("(cache hit)").dim());
+        style("already in vault (cache hit)").dim());
     if failed_b > 0 {
         eprintln!("  {}",
             style(format!("Errors:           {:>6}", failed_b)).red());
