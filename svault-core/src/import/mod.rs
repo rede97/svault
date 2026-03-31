@@ -63,7 +63,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let scan_bar = ProgressBar::new(total as u64);
     scan_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}",
+            "{prefix:.bold.blue} [{bar:40.blue/white}] {pos}/{len}",
         )
         .unwrap()
         .progress_chars("=> "),
@@ -231,7 +231,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let copy_bar = ProgressBar::new(likely_new.len() as u64);
     copy_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {msg}",
+            "{prefix:.bold.green} [{bar:40.green/white}] {pos}/{len}  {msg}",
         )
         .unwrap()
         .progress_chars("=> "),
@@ -301,7 +301,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let hash_bar = ProgressBar::new(copied_len as u64);
     hash_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {msg}",
+            "{prefix:.bold.yellow} [{bar:40.yellow/white}] {pos}/{len}  {msg}",
         )
         .unwrap()
         .progress_chars("=> "),
