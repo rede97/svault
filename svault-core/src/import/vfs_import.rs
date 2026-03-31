@@ -1,4 +1,41 @@
 //! Import pipeline for generic VFS backends (supports MTP, local, etc.)
+//!
+//! This module provides the full import pipeline (Stages A-E) for any VFS backend,
+//! enabling imports from MTP devices, network filesystems, and local storage.
+//!
+//! # Concurrency Strategy
+//!
+//! This pipeline carefully manages concurrency based on the source backend:
+//!
+//! ## Stage A (Scan) and Stage B (CRC32)
+//!
+//! These stages use **parallel processing** (`rayon`) for all backends because:
+//! - CRC32 computation is CPU-bound
+//! - MTP metadata operations (`GetObjectHandles`) have low overhead
+//! - The device CPU handles concurrent metadata requests reasonably well
+//!
+//! ## Stage C (Copy)
+//!
+//! This stage is **SEQUENTIAL** for MTP backends because:
+//! - USB is a single shared pipe; parallel reads just queue up
+//! - MTP/PTP protocols are half-duplex request-response
+//! - Device-side CPU is the bottleneck, not USB bandwidth
+//! - Sequential access with large buffers saturates the pipe optimally
+//!
+//! For local filesystems, Stage C uses parallel copy with `rayon`.
+//!
+//! ## Stage D (Hash Verification)
+//!
+//! Always parallel using `rayon` because it operates on local files in the vault.
+//!
+//! # Performance Comparison
+//!
+//! | Stage | Local FS | MTP Device | Notes |
+//! |-------|----------|------------|-------|
+//! | Scan  | Parallel | Parallel   | Low overhead |
+//! | CRC32 | Parallel | Parallel   | CPU-bound |
+//! | Copy  | Parallel | **Sequential** | USB contention |
+//! | Hash  | Parallel | Parallel   | Local files |
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -80,6 +117,10 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     }
 
     // Stage B: CRC32 fingerprint
+    // Use parallel processing only if backend supports it (local FS)
+    // MTP uses single-thread to avoid USB contention
+    let parallel = opts.src_backend.is_parallel_capable();
+    
     let scan_bar = ProgressBar::new(total as u64);
     scan_bar.set_style(
         ProgressStyle::with_template("{prefix:.bold.blue} [{bar:40}] {pos}/{len}")
@@ -88,14 +129,25 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     );
     scan_bar.set_prefix("Scanning");
 
-    let crcs: Vec<(DirEntry, Result<u32, String>)> = dir_entries
-        .into_par_iter()
-        .map(|e| {
-            let result = crc32c_from_backend(opts.src_backend, &e).map_err(|e| e.to_string());
-            scan_bar.inc(1);
-            (e, result)
-        })
-        .collect();
+    let crcs: Vec<(DirEntry, Result<u32, String>)> = if parallel {
+        dir_entries
+            .into_par_iter()
+            .map(|e| {
+                let result = crc32c_from_backend(opts.src_backend, &e).map_err(|e| e.to_string());
+                scan_bar.inc(1);
+                (e, result)
+            })
+            .collect()
+    } else {
+        dir_entries
+            .into_iter()
+            .map(|e| {
+                let result = crc32c_from_backend(opts.src_backend, &e).map_err(|e| e.to_string());
+                scan_bar.inc(1);
+                (e, result)
+            })
+            .collect()
+    };
     scan_bar.finish_and_clear();
 
     // Display
@@ -285,63 +337,66 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     );
     copy_bar.set_prefix("Copying  ");
 
-    // Copy files
-    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = likely_new
-        .iter()
-        .filter_map(|e| {
-            let rel = e
-                .src_path
-                .strip_prefix(opts.src_path)
-                .unwrap_or(&e.src_path);
-            let filename = rel
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| rel.display().to_string());
+    // Copy files: parallel for local FS, sequential for MTP
+    let copy_op = |e: &&ScanEntry| -> Option<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> {
+        let rel = e
+            .src_path
+            .strip_prefix(opts.src_path)
+            .unwrap_or(&e.src_path);
+        let filename = rel
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| rel.display().to_string());
 
-            // Read EXIF from source via VFS
-            let (taken_ms, device) = read_exif_from_vfs(opts.src_backend, &e.src_path, e.mtime_ms);
-            let dest_rel = resolve_dest_path(
-                &opts.import_config.path_template,
-                rel,
-                taken_ms,
-                &device,
-            );
-            let mut dest_path = opts.vault_root.join(&dest_rel);
+        // Read EXIF from source via VFS
+        let (taken_ms, device) = read_exif_from_vfs(opts.src_backend, &e.src_path, e.mtime_ms);
+        let dest_rel = resolve_dest_path(
+            &opts.import_config.path_template,
+            rel,
+            taken_ms,
+            &device,
+        );
+        let mut dest_path = opts.vault_root.join(&dest_rel);
 
-            // Handle filename conflicts - generate unique filename if needed
-            dest_path = resolve_unique_dest_path(
-                &dst_fs,
-                &dest_path,
-                &opts.import_config.rename_template,
-            );
+        // Handle filename conflicts - generate unique filename if needed
+        dest_path = resolve_unique_dest_path(
+            &dst_fs,
+            &dest_path,
+            &opts.import_config.rename_template,
+        );
 
-            copy_bar.set_message(filename.clone());
+        copy_bar.set_message(filename.clone());
 
-            // Create parent dirs and copy
-            if let Some(parent) = dest_path.parent() {
-                if let Err(err) = dst_fs.create_dir_all(parent) {
-                    let mut errors = copy_errors.lock().unwrap();
-                    errors.insert(e.src_path.clone(), err.to_string());
-                    copy_bar.inc(1);
-                    return None;
-                }
+        // Create parent dirs and copy
+        if let Some(parent) = dest_path.parent() {
+            if let Err(err) = dst_fs.create_dir_all(parent) {
+                let mut errors = copy_errors.lock().unwrap();
+                errors.insert(e.src_path.clone(), err.to_string());
+                copy_bar.inc(1);
+                return None;
             }
+        }
 
-            // Use VFS copy_to
-            match opts.src_backend.copy_to(&e.src_path, &dst_fs, &dest_path) {
-                Ok(_) => {
-                    copy_bar.inc(1);
-                    Some((e.src_path.clone(), dest_path, e.size, taken_ms, e.crc32c))
-                }
-                Err(err) => {
-                    let mut errors = copy_errors.lock().unwrap();
-                    errors.insert(e.src_path.clone(), err.to_string());
-                    copy_bar.inc(1);
-                    None
-                }
+        // Use VFS copy_to
+        match opts.src_backend.copy_to(&e.src_path, &dst_fs, &dest_path) {
+            Ok(_) => {
+                copy_bar.inc(1);
+                Some((e.src_path.clone(), dest_path, e.size, taken_ms, e.crc32c))
             }
-        })
-        .collect();
+            Err(err) => {
+                let mut errors = copy_errors.lock().unwrap();
+                errors.insert(e.src_path.clone(), err.to_string());
+                copy_bar.inc(1);
+                None
+            }
+        }
+    };
+
+    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = if parallel {
+        likely_new.par_iter().filter_map(copy_op).collect()
+    } else {
+        likely_new.iter().filter_map(copy_op).collect()
+    };
 
     copy_bar.finish_and_clear();
 

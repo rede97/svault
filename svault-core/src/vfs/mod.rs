@@ -1,3 +1,57 @@
+//! Virtual File System (VFS) abstraction layer.
+//!
+//! This module provides a unified interface for accessing different storage backends:
+//! - Local filesystem (`system`)
+//! - MTP devices (`mtp`) - USB-connected cameras, phones, etc.
+//!
+//! # Thread Safety and Concurrency
+//!
+//! All VFS backends implement `Send + Sync` and can be shared across threads.
+//! However, the optimal concurrency strategy depends heavily on the backend type:
+//!
+//! ## Local Filesystem
+//!
+//! Local filesystems (ext4, xfs, APFS, NTFS) benefit significantly from parallel
+//! operations. The `SystemFs` backend is designed for concurrent use:
+//!
+//! - **Parallel reads**: Excellent scaling with thread count (up to disk IOPS limit)
+//! - **Parallel writes**: Good scaling for SSDs; HDDs may see diminishing returns
+//! - **Reflink/hardlink**: Thread-safe and atomic
+//!
+//! ## MTP (Media Transfer Protocol)
+//!
+//! **⚠️ MTP is inherently single-stream and does NOT benefit from multi-threading.**
+//!
+//! MTP uses a single USB Bulk Transfer pipe with these characteristics:
+//! - **Half-duplex protocol**: Only one operation (read OR write) at a time
+//! - **USB bandwidth limit**: ~40-60 MB/s for USB 2.0, ~300-500 MB/s for USB 3.0
+//! - **Device-side processing**: Camera/phone has limited CPU; concurrency adds overhead
+//! - **Session locking**: Most devices serialize commands at the protocol level
+//!
+//! ### MTP Performance Best Practices
+//!
+//! ```ignore
+//! // ❌ BAD: Parallel MTP reads (contention, no speedup)
+//! let files = vec!["IMG_001.jpg", "IMG_002.jpg", ...];
+//! files.par_iter().for_each(|f| {
+//!     mtp_backend.copy_to(f, &local_fs, &dest); // Slow due to USB contention
+//! });
+//!
+//! // ✅ GOOD: Sequential MTP reads with pipelining
+//! for f in files {
+//!     mtp_backend.copy_to(f, &local_fs, &dest); // Optimal: saturates USB pipe
+//! }
+//! ```
+//!
+//! The import pipeline in `vfs_import.rs` detects MTP sources and automatically
+//! disables parallel copy for them. Local-to-local operations remain parallel.
+//!
+//! # Backend Selection
+//!
+//! Use `VfsManager` to open backends by URL:
+//! - `file:///path` or `/path` → SystemFs
+//! - `mtp://device_id/storage/path` → MtpFs (requires `mtp` feature)
+
 pub mod system;
 pub mod manager;
 
@@ -127,6 +181,21 @@ pub trait VfsBackend: Send + Sync {
 
     /// Returns true if the path exists on this backend.
     fn exists(&self, path: &Path) -> VfsResult<bool>;
+
+    /// Returns true if this backend benefits from parallel operations.
+    ///
+    /// Default is `true` (local filesystems, network shares). Backends that
+    /// use single-pipe protocols like MTP should return `false`.
+    ///
+    /// This guides the import pipeline to choose between `par_iter()` and `iter()`.
+    ///
+    /// # Examples
+    ///
+    /// - `SystemFs` → `true` (parallel helps for SSDs, multiple disks)
+    /// - `MtpFs` → `false` (USB pipe is shared, device CPU is bottleneck)
+    fn is_parallel_capable(&self) -> bool {
+        true
+    }
 
     /// Lists directory entries one level deep (non-recursive).
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>>;
