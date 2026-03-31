@@ -39,7 +39,13 @@ svault/
 │       ├── vfs/
 │       │   ├── mod.rs     # VfsBackend trait, TransferStrategy, FsCapabilities
 │       │   └── system.rs  # SystemFs — local filesystem backend
-│       └── import/mod.rs  # Five-stage import pipeline
+│       └── import/
+        ├── mod.rs      # Main pipeline orchestration (Stages A-E)
+        ├── types.rs    # ImportOptions, FileStatus, ScanEntry, ImportSummary
+        ├── exif.rs     # EXIF date/device extraction
+        ├── path.rs     # Path template resolution ($year, $mon, etc.)
+        ├── staging.rs  # Pending/staging files and manifest writing
+        └── utils.rs    # Time utilities
 └── svault-cli/    # bin crate — clap CLI, produces `svault` binary
     └── src/
         ├── main.rs        # dispatch, find_vault_root()
