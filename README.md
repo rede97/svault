@@ -29,23 +29,23 @@ Svault 同时也是一场公开实验：所有代码均由 AI 编写。本仓库
 
 ## Current Status / 当前状态
 
-Svault is in early development. The architecture, database schema, VFS layer, and CLI surface are fully designed. Only `svault init` is implemented end-to-end. All other commands are stubbed and under active development.
+Svault is in active development. Core commands `init`, `import`, and `status` are fully implemented. Other commands are stubbed and under development.
 
-当前处于早期开发阶段。架构设计、数据库 schema、VFS 层和 CLI 接口已完整设计。目前仅 `svault init` 可端到端运行，其余命令均为桩实现，正在开发中。
+当前处于活跃开发阶段。核心命令 `init`、`import` 和 `status` 已完全实现，其余命令正在开发中。
 
-| Command | Status |
-|---------|--------|
-| `svault init` | Implemented |
-| `svault import` | Stub |
-| `svault add` | Stub |
-| `svault sync` | Stub |
-| `svault reconcile` | Stub |
-| `svault verify` | Stub |
-| `svault status` | Stub |
-| `svault history` | Stub |
-| `svault clone` | Stub |
-| `svault db verify-chain` | Stub |
-| `svault db replay` | Stub |
+| Command | Status | Description |
+|---------|--------|-------------|
+| `svault init` | ✅ Implemented | Initialize a new vault |
+| `svault import` | ✅ Implemented | Import media from source directory |
+| `svault status` | ✅ Implemented | Show vault overview and statistics |
+| `svault add` | 📝 Stub | Register files already in vault |
+| `svault sync` | 📝 Stub | Sync with another vault |
+| `svault reconcile` | 📝 Stub | Update paths for moved files |
+| `svault verify` | 📝 Stub | Verify file integrity |
+| `svault history` | 📝 Stub | Query event log |
+| `svault clone` | 📝 Stub | Clone subset of vault |
+| `svault db verify-chain` | 📝 Stub | Verify event hash chain |
+| `svault db replay` | 📝 Stub | Replay events to rebuild views |
 
 ---
 
