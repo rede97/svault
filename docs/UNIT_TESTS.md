@@ -11,9 +11,9 @@
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
 | 单元测试 (Unit) | 0 | 0 | 0 | 0 |
-| 集成测试 (Integration) | 2 | 2 | 0 | 0 |
+| 集成测试 (Integration) | 0 | 0 | 0 | 0 |
 | Python E2E 测试 | 6 | 6 | 0 | 0 |
-| **总计** | **8** | **8** | **0** | **0** |
+| **总计** | **6** | **6** | **0** | **0** |
 
 ---
 
@@ -66,17 +66,6 @@
 | *待添加* | `src/import/mod.rs` | 路径模板解析 | 🔲 TODO | `$year/$mon` 等 |
 | *待添加* | `src/import/mod.rs` | 日期格式转换 | 🔲 TODO | YMD ↔ Unix 时间戳 |
 | *待添加* | `src/import/mod.rs` | 去重逻辑 | 🔲 TODO | 三层去重 |
-
----
-
-## 集成测试 (Integration Tests)
-
-集成测试位于 `tests/` 目录下，测试公共 API 的端到端行为。
-
-| 测试名 | 文件 | 描述 | 状态 | 最后验证 |
-|--------|------|------|------|----------|
-| `exif_date_device_from_apple_jpeg` | `scratch_exif.rs` | 验证 exif crate 能正确解析 Apple JPEG 的日期和设备信息 | ✅ PASS | 2026-03-31 |
-| `exif_no_exif_jpeg` | `scratch_exif.rs` | 验证无 EXIF 的 JPEG 返回预期错误 | ✅ PASS | 2026-03-31 |
 
 ---
 
@@ -154,6 +143,7 @@
 |------|----------|------|
 | 2026-03-31 | 初始版本：记录现有测试状态，添加待办清单 | Kimi |
 | 2026-03-31 | 修复 EXIF 测试：使用 exiftool 生成测试固件 | Kimi |
+| 2026-03-31 | 删除 scratch_exif.rs 临时测试文件，更新测试计数 | Kimi |
 
 ---
 
@@ -169,9 +159,6 @@ cargo test -p svault-cli
 
 # 特定模块测试
 cargo test -p svault-core hash
-
-# 带输出的集成测试
-cargo test -p svault-core --test scratch_exif -- --nocapture
 
 # Python E2E 测试
 tests/.venv/bin/python3 tests/run_tests.py --verbose
