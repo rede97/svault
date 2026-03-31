@@ -374,6 +374,16 @@ pub enum Command {
         filter_group: Option<String>,
     },
 
+    /// MTP device management and import
+    ///
+    /// List, access, and import from MTP devices (Android phones, cameras).
+    /// MTP URLs use the format: mtp://device_name/path or mtp://SN:serial/path
+    #[cfg(feature = "mtp")]
+    Mtp {
+        #[command(subcommand)]
+        command: MtpCommand,
+    },
+
     /// Database maintenance commands
     Db {
         #[command(subcommand)]
@@ -419,6 +429,43 @@ pub enum DbCommand {
         /// Limit number of rows per table
         #[arg(short, long, value_name = "N")]
         limit: Option<usize>,
+    },
+}
+
+/// MTP subcommands
+#[derive(Subcommand)]
+pub enum MtpCommand {
+    /// List connected MTP devices
+    ///
+    /// Shows all available MTP devices with their index, name, and serial number.
+    /// Use the index (e.g., mtp://1) or name to import from a specific device.
+    List,
+
+    /// Import media from an MTP device
+    ///
+    /// Imports photos and videos from the specified MTP path into the vault.
+    /// The source path can use device index, name, or serial number.
+    ///
+    /// Examples:
+    ///   svault mtp import mtp://1/DCIM/Camera
+    ///   svault mtp import "mtp://Pixel 9/DCIM/Camera"
+    ///   svault mtp import mtp://SN:ABC123/DCIM --target phone_backup
+    Import {
+        /// MTP source path (e.g., mtp://1/DCIM/Camera)
+        #[arg(value_name = "SOURCE")]
+        source: String,
+
+        /// Target sub-directory in vault
+        #[arg(short, long, value_name = "PATH")]
+        target: Option<std::path::PathBuf>,
+
+        /// Recheck existing files
+        #[arg(long)]
+        recheck: bool,
+
+        /// Show duplicates instead of skipping
+        #[arg(long)]
+        show_dup: bool,
     },
 }
 

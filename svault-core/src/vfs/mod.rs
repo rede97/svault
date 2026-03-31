@@ -1,4 +1,10 @@
 pub mod system;
+pub mod manager;
+
+#[cfg(feature = "mtp")]
+pub mod mtp;
+
+pub use manager::{VfsManager, VfsUrl, VfsSource, VfsProvider};
 
 use std::path::{Path, PathBuf};
 

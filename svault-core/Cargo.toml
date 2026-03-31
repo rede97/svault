@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = []
 cli = ["dep:clap"]
+mtp = ["dep:mtp-rs", "dep:tokio", "dep:futures"]
 
 [dependencies]
 anyhow = "1"
@@ -22,7 +24,11 @@ indicatif = "0.17"
 console = "0.15"
 rich_rust = "0.2"
 kamadak-exif = "0.5"
+log = "0.4"
 clap = { version = "4", features = ["derive"], optional = true }
+mtp-rs = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+futures = { version = "0.3", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"

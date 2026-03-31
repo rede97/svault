@@ -7,8 +7,12 @@ edition = "2024"
 name = "svault"
 path = "src/main.rs"
 
+[features]
+default = []
+mtp = ["svault-core/mtp"]
+
 [dependencies]
-svault-core = { path = "../svault-core", features = ["cli"] }
+svault-core = { path = "../svault-core", features = ["cli", "mtp"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"

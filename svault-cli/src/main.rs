@@ -86,6 +86,80 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::History { .. } => todo!("history"),
         Command::BackgroundHash { .. } => todo!("background-hash"),
         Command::Clone { .. } => todo!("clone"),
+        #[cfg(feature = "mtp")]
+        Command::Mtp { command } => {
+            use cli::MtpCommand;
+            use svault_core::vfs::manager::VfsManager;
+            
+            let manager = VfsManager::new();
+            
+            match command {
+                MtpCommand::List => {
+                    let sources = manager.probe_all()
+                        .map_err(|e| anyhow::anyhow!("failed to probe devices: {e}"))?;
+                    
+                    if sources.is_empty() {
+                        println!("No MTP devices found.");
+                        println!("Make sure your Android phone or camera is connected via USB");
+                        println!("and set to 'File transfer' / 'MTP' mode.");
+                    } else {
+                        println!("Connected MTP devices:");
+                        println!();
+                        for source in &sources {
+                            if source.id.starts_with("mtp://SN:") {
+                                continue; // Skip SN entries for cleaner output
+                            }
+                            println!("  {}:", source.id);
+                            println!("    Name:       {}", source.name);
+                            println!("    Type:       {}", source.device_type);
+                            println!("    Serial:     {}", source.unique_id);
+                            if !source.roots.is_empty() {
+                                println!("    Storages:   {}", source.roots.join(", "));
+                            }
+                            println!();
+                        }
+                        println!("Import examples:");
+                        println!("  svault mtp import mtp://1/DCIM/Camera");
+                        println!("  svault mtp import \"mtp://{}/DCIM/Camera\"", sources.first().map(|s| &s.name).unwrap_or(&"Device".to_string()).replace(' ', "%20"));
+                    }
+                    Ok(())
+                }
+                MtpCommand::Import { source, target, recheck, show_dup } => {
+                    // Open vault
+                    let vault_root = find_vault_root(target, &std::env::current_dir()?)?;
+                    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+                    let config = svault_core::config::Config::load(&vault_root)?;
+                    
+                    // Import from MTP URL
+                    println!("Importing from {}...", source);
+                    
+                    let (backend, path) = manager.open_url(&source)
+                        .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
+                    
+                    // TODO: Implement MTP import using the backend
+                    // For now, show what we found
+                    let entries = backend.list(&path)
+                        .map_err(|e| anyhow::anyhow!("failed to list directory: {e}"))?;
+                    
+                    println!("Found {} items:", entries.len());
+                    for entry in entries.iter().take(10) {
+                        let type_str = if entry.is_dir { "DIR" } else { "FILE" };
+                        println!("  [{}] {} ({} bytes)", type_str, entry.path.display(), entry.size);
+                    }
+                    if entries.len() > 10 {
+                        println!("  ... and {} more", entries.len() - 10);
+                    }
+                    
+                    println!();
+                    println!("Full MTP import is coming soon!");
+                    println!("Use 'svault mtp list' to see available devices.");
+                    
+                    Ok(())
+                }
+            }
+        }
+        
         Command::Db { command } => {
             let vault_root = cli.vault
                 .or_else(|| std::env::current_dir().ok())
