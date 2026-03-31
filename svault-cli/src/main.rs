@@ -103,8 +103,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!("dump failed: {e}"))?;
                     
                     match format {
-                        DumpFormat::Table => {
-                            print!("{}", svault_core::db::render_tables(&dumps));
+                        DumpFormat::Csv => {
+                            print!("{}", svault_core::db::render_csv(&dumps)?);
                         }
                         DumpFormat::Json => {
                             println!("{}", svault_core::db::render_json(&dumps)?);

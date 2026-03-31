@@ -413,7 +413,7 @@ pub enum DbCommand {
         tables: Vec<String>,
 
         /// Output format
-        #[arg(short, long, default_value = "table", value_enum)]
+        #[arg(short, long, default_value = "csv", value_enum)]
         format: DumpFormat,
 
         /// Limit number of rows per table
@@ -424,8 +424,8 @@ pub enum DbCommand {
 
 #[derive(Clone, ValueEnum)]
 pub enum DumpFormat {
-    /// Human-readable table format
-    Table,
+    /// CSV format (default)
+    Csv,
     /// JSON format
     Json,
     /// SQL INSERT statements

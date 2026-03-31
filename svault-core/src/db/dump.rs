@@ -2,23 +2,7 @@
 
 use std::collections::HashMap;
 
-use rich_rust::prelude::*;
-use rich_rust::renderables::Renderable;
-use rich_rust::r#box::BoxChars;
 use rusqlite::{Connection, Result, types::Value};
-
-/// Custom box style: only heavy header separator (continuous), no vertical dividers.
-const CLEAN_STYLE: BoxChars = BoxChars::new(
-    [' ', ' ', ' ', ' '],               // No top border
-    [' ', ' ', ' ', ' '],               // No vertical dividers for body
-    [' ', '━', '━', ' '],               // Heavy continuous line for header separator
-    [' ', ' ', ' ', ' '],               // No mid separator
-    [' ', ' ', ' ', ' '],               // No row separators
-    [' ', ' ', ' ', ' '],               // No foot row separator
-    [' ', ' ', ' ', ' '],               // No footer vertical dividers
-    [' ', ' ', ' ', ' '],               // No bottom border
-    false,
-);
 
 /// A row of data from a database table.
 pub type RowData = HashMap<String, Value>;
@@ -128,79 +112,63 @@ pub fn dump_database(conn: &Connection, opts: DumpOptions) -> Result<Vec<TableDu
     Ok(dumps)
 }
 
-/// Formats a SQL value for display.
-pub fn format_value(value: &Value, max_len: usize) -> String {
+/// Formats a SQL value for CSV output.
+fn format_value_csv(value: &Value) -> String {
     match value {
-        Value::Null => "∅".to_string(),
+        Value::Null => String::new(),
         Value::Integer(i) => i.to_string(),
-        Value::Real(f) => format!("{:.6}", f),
+        Value::Real(f) => f.to_string(),
         Value::Text(s) => {
-            if s.len() > max_len {
-                format!("{}…", &s[..max_len.saturating_sub(1)])
+            // Escape quotes and wrap in quotes if contains comma, quote, or newline
+            let needs_quote = s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r');
+            let escaped = s.replace('"', "\"\"");
+            if needs_quote || escaped != *s {
+                format!("\"{}\"", escaped)
             } else {
-                s.clone()
+                escaped
             }
         }
-        Value::Blob(b) => format!("⟨BLOB:{}⟩", b.len()),
+        Value::Blob(b) => format!("<BLOB:{}>", b.len()),
     }
 }
 
-/// Helper to convert renderable to string
-fn render_to_string<R: Renderable>(renderable: &R) -> String {
-    let console = Console::new();
-    let options = console.options();
-    let segments = renderable.render(&console, &options);
-    
-    segments.into_iter()
-        .map(|seg| seg.text.into_owned())
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-/// Converts a table dump to a rich_rust Table.
-fn dump_to_table(dump: &TableDump, max_col_width: usize) -> Table {
-    let mut table = Table::new()
-        .title(format!("Table: {}", dump.name))
-        .title_justify(JustifyMethod::Left)
-        .box_style(&CLEAN_STYLE)
-        .min_width(60);
-    
-    // Add columns
-    for col in &dump.columns {
-        table = table.with_column(Column::new(col.as_str()));
-    }
-    
-    // Add rows
-    for row in &dump.rows {
-        let row_values: Vec<String> = dump.columns.iter()
-            .map(|col| {
-                let val = row.get(col).unwrap_or(&Value::Null);
-                format_value(val, max_col_width)
-            })
-            .collect();
-        table.add_row_cells(row_values);
-    }
-    
-    table
-}
-
-/// Renders table dump as human-readable text.
-pub fn render_table(dump: &TableDump) -> String {
-    let table = dump_to_table(dump, 40);
-    format!("\n{}\n", render_to_string(&table))
-}
-
-/// Renders all tables as human-readable text.
-pub fn render_tables(dumps: &[TableDump]) -> String {
+/// Renders dump as CSV (one table per section with header).
+pub fn render_csv(dumps: &[TableDump]) -> anyhow::Result<String> {
     let mut output = String::new();
     
-    output.push_str("📊 Database Dump\n\n");
-    
-    for dump in dumps {
-        output.push_str(&render_table(dump));
+    for (i, dump) in dumps.iter().enumerate() {
+        if i > 0 {
+            output.push('\n');
+        }
+        
+        // Table header comment
+        output.push_str(&format!("# Table: {} ({} rows)\n", dump.name, dump.rows.len()));
+        
+        if dump.rows.is_empty() {
+            // Still output column headers for empty tables
+            output.push_str(&dump.columns.join(","));
+            output.push('\n');
+            continue;
+        }
+        
+        // Column headers
+        output.push_str(&dump.columns.join(","));
+        output.push('\n');
+        
+        // Data rows
+        for row in &dump.rows {
+            let row_values: Vec<String> = dump.columns.iter()
+                .map(|col| {
+                    let val = row.get(col).unwrap_or(&Value::Null);
+                    format_value_csv(val)
+                })
+                .collect();
+            output.push_str(&row_values.join(","));
+            output.push('\n');
+        }
     }
     
-    output
+    Ok(output)
 }
 
 /// Renders dump as JSON.
@@ -227,6 +195,7 @@ pub fn render_json(dumps: &[TableDump]) -> anyhow::Result<String> {
         serde_json::json!({
             "name": dump.name,
             "columns": dump.columns,
+            "row_count": dump.rows.len(),
             "rows": rows,
         })
     }).collect();
@@ -242,13 +211,13 @@ pub fn render_sql(dumps: &[TableDump]) -> String {
     
     for dump in dumps {
         if dump.rows.is_empty() {
+            output.push_str(&format!("-- Table: {} (empty)\n\n", dump.name));
             continue;
         }
         
-        output.push_str(&format!("-- Table: {}\n", dump.name));
+        output.push_str(&format!("-- Table: {} ({} rows)\n", dump.name, dump.rows.len()));
         
         for row in &dump.rows {
-            let columns: Vec<String> = dump.columns.clone();
             let values: Vec<String> = dump.columns.iter().map(|col| {
                 match row.get(col).unwrap_or(&Value::Null) {
                     Value::Null => "NULL".to_string(),
@@ -262,7 +231,7 @@ pub fn render_sql(dumps: &[TableDump]) -> String {
             output.push_str(&format!(
                 "INSERT INTO {} ({}) VALUES ({});\n",
                 dump.name,
-                columns.join(", "),
+                dump.columns.join(", "),
                 values.join(", ")
             ));
         }
@@ -277,11 +246,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_value() {
-        assert_eq!(format_value(&Value::Null, 20), "∅");
-        assert_eq!(format_value(&Value::Integer(42), 20), "42");
-        assert_eq!(format_value(&Value::Text("hello".to_string()), 20), "hello");
-        assert_eq!(format_value(&Value::Text("a very long string that exceeds limit".to_string()), 10), "a very lo…");
+    fn test_format_value_csv() {
+        assert_eq!(format_value_csv(&Value::Null), "");
+        assert_eq!(format_value_csv(&Value::Integer(42)), "42");
+        assert_eq!(format_value_csv(&Value::Text("hello".to_string())), "hello");
+        assert_eq!(format_value_csv(&Value::Text("with,comma".to_string())), "\"with,comma\"");
+        assert_eq!(format_value_csv(&Value::Text("with\"quote".to_string())), "\"with\"\"quote\"");
     }
 
     #[test]
@@ -299,5 +269,33 @@ mod tests {
         
         let tables = list_tables(&conn).unwrap();
         assert_eq!(tables, vec!["test"]);
+    }
+
+    #[test]
+    fn test_render_csv_empty() {
+        let dump = TableDump {
+            name: "test".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![],
+        };
+        let result = render_csv(&[dump]).unwrap();
+        assert!(result.contains("# Table: test (0 rows)"));
+        assert!(result.contains("id,name"));
+    }
+
+    #[test]
+    fn test_render_csv_with_data() {
+        let mut row = HashMap::new();
+        row.insert("id".to_string(), Value::Integer(1));
+        row.insert("name".to_string(), Value::Text("test".to_string()));
+        
+        let dump = TableDump {
+            name: "test".to_string(),
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![row],
+        };
+        let result = render_csv(&[dump]).unwrap();
+        assert!(result.contains("id,name"));
+        assert!(result.contains("1,test"));
     }
 }

@@ -17,7 +17,7 @@ pub mod files;
 pub mod stats;
 
 pub use dump::{TableDump, DumpOptions, dump_database, dump_table, list_tables, 
-               render_tables, render_table, render_json, render_sql};
+               render_csv, render_json, render_sql};
 pub use files::FileRow;
 pub use stats::{VaultStats, ExtensionStats, format_bytes, format_count};
 
