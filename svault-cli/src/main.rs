@@ -42,47 +42,44 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 #[cfg(feature = "mtp")]
                 {
                     use svault_core::vfs::manager::VfsManager;
+                    use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
                     
                     let vault_root = find_vault_root(target.clone(), &std::env::current_dir()?)?;
-                    let _db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                         .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+                    
+                    let config = svault_core::config::Config::load(&vault_root)?;
+                    let hash_algo = hash.unwrap_or(config.global.hash.clone());
                     
                     let manager = VfsManager::new();
                     let (backend, mtp_path) = manager.open_url(&source_str)
                         .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
                     
-                    // For now, list what would be imported
-                    println!("MTP import from: {}", source_str);
-                    println!("Vault: {}", vault_root.display());
-                    if let Some(t) = target {
-                        println!("Target: {}", t.display());
-                    }
-                    println!();
+                    let opts = VfsImportOptions {
+                        src_backend: &*backend,
+                        src_path: &mtp_path,
+                        vault_root: &vault_root,
+                        hash: hash_algo,
+                        recheck,
+                        dry_run: cli.dry_run,
+                        yes: cli.yes,
+                        show_dup,
+                        import_config: config.import,
+                        source_name: source_str.to_string(),
+                    };
                     
-                    // Walk and count files
-                    fn count_files(
-                        backend: &dyn svault_core::vfs::VfsBackend,
-                        path: &Path,
-                        total: &mut usize,
-                    ) -> anyhow::Result<()> {
-                        let entries = backend.list(path)
-                            .map_err(|e| anyhow::anyhow!("failed to list: {e}"))?;
-                        for entry in entries {
-                            if entry.is_dir {
-                                count_files(backend, &entry.path, total)?;
-                            } else {
-                                *total += 1;
-                            }
-                        }
-                        Ok(())
-                    }
+                    let summary = run_vfs_import(opts, &db)?;
                     
-                    let mut total_files = 0;
-                    count_files(&*backend, &mtp_path, &mut total_files)?;
-                    println!("Found {} files to import", total_files);
-                    println!();
-                    println!("Full MTP import integration is coming soon!");
-                    println!("Use 'svault mtp ls {}' to browse files.", source_str);
+                    if matches!(cli.output, cli::OutputFormat::Json) {
+                        println!("{}", serde_json::json!({
+                            "total":         summary.total,
+                            "imported":      summary.imported,
+                            "duplicate":     summary.duplicate,
+                            "failed":        summary.failed,
+                            "all_cache_hit": summary.all_cache_hit,
+                            "manifest":      summary.manifest_path.map(|p| p.display().to_string()),
+                        }));
+                    }
                     Ok(())
                 }
                 #[cfg(not(feature = "mtp"))]

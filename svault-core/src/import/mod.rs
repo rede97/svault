@@ -6,12 +6,14 @@
 //! - `path`: Path template resolution ($year, $mon, etc.)
 //! - `staging`: Pending/staging files and manifest writing
 //! - `utils`: Time utilities
+//! - `vfs_import`: VFS-based import (supports MTP, local, etc.)
 
 pub mod types;
 pub mod exif;
 pub mod path;
 pub mod staging;
 pub mod utils;
+pub mod vfs_import;
 
 pub use types::{ImportOptions, FileStatus, ScanEntry, ImportSummary};
 

@@ -101,14 +101,32 @@ Run `svault init` to create a vault. A `svault.toml` is generated at the vault r
 
 ```toml
 [global]
-compare_level = "sha256"   # fast | sha256
-sync_strategy = "auto"     # auto | reflink | hardlink | copy
+hash = "xxh3_128"
+sync_strategy = "auto"
 
 [import]
-rename_template = "$filename.$n.$ext"   # conflict resolution template
-path_template = "$year/$mon-$day/$device"
-allowed_extensions = ["jpg", "jpeg", "heic", "dng", "cr2", "cr3",
-                      "nef", "arw", "raf", "orf", "rw2", "mov", "mp4", ...]
+store_exif = false
+rename_template = "$filename.$n.$ext"
+path_template = "$year/$mon-$day/$device/$filename"
+allowed_extensions = [
+    "jpg",
+    "jpeg",
+    "heic",
+    "heif",
+    "dng",
+    "cr2",
+    "cr3",
+    "nef",
+    "nrw",
+    "arw",
+    "raf",
+    "orf",
+    "rw2",
+    "pef",
+    "raw",
+    "mov",
+    "mp4",
+]
 ```
 
 ---
