@@ -187,10 +187,10 @@ pub enum Command {
         #[arg(long)]
         ignore_duplicate: bool,
 
-        /// Print skipped (likely-duplicate) files during the scan.
+        /// Print duplicate files during the scan.
         /// By default duplicates are counted but not listed.
         #[arg(long)]
-        show_skip: bool,
+        show_dup: bool,
     },
 
     

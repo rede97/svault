@@ -47,8 +47,8 @@ pub struct ImportOptions {
     pub dry_run: bool,
     /// If true, skip the interactive y/N confirmation after Stage B.
     pub yes: bool,
-    /// If true, print skipped (likely-duplicate) files during Stage B scan.
-    pub show_skip: bool,
+    /// If true, print duplicate files during the scan.
+    pub show_dup: bool,
     /// Import configuration from `svault.toml`.
     pub import_config: ImportConfig,
 }
@@ -121,11 +121,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // CRC32C IO runs in a rayon thread pool; DB lookups run on the calling
     // thread afterwards (rusqlite Connection is !Sync and cannot cross threads).
 
-    // Step B1: compute CRC32C for every file in parallel, with progress bar
+    // Step B1: compute CRC32C for every file in parallel
     let scan_bar = ProgressBar::new(total as u64);
     scan_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {msg}",
+            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}",
         )
         .unwrap()
         .progress_chars("=> "),
@@ -136,10 +136,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .into_par_iter()
         .map(|e| {
             let abs = opts.source.join(&e.path);
-            let filename = e.path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| e.path.display().to_string());
-            scan_bar.set_message(filename);
             let result = crc32c_region(&abs, 0, 65536)
                 .map_err(|err| err.to_string());
             scan_bar.inc(1);
@@ -148,14 +144,27 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .collect();
     scan_bar.finish_and_clear();
 
-    // Step B2: DB lookup on calling thread (single-threaded, cheap)
-    // Also collect discovered files for display
+    // Step B2: DB lookup and real-time display (single-threaded)
+    eprintln!("{} {} files in {}", 
+        style("Scanning").bold().cyan(),
+        style(total).cyan(),
+        style(opts.source.display()).dim());
+    
     let scan_entries: Vec<ScanEntry> = crcs
         .into_iter()
         .map(|(e, crc_result)| {
             let abs = opts.source.join(&e.path);
+            let rel_path = e.path.strip_prefix(&opts.source)
+                .unwrap_or(&e.path)
+                .display()
+                .to_string();
+            
             let crc = match crc_result {
                 Err(err) => {
+                    // Always show errors
+                    eprintln!("  {} {}", 
+                        style("Error").red(), 
+                        style(&rel_path).dim());
                     return ScanEntry {
                         src_path: abs, size: e.size, mtime_ms: e.mtime_ms,
                         crc32c: 0,
@@ -164,17 +173,30 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 }
                 Ok(v) => v,
             };
+            
+            // Check if duplicate via DB
             let cached = db.lookup_by_crc32c(e.size as i64, crc).unwrap_or(None);
             let status = if cached.is_some() {
                 FileStatus::LikelyCacheDuplicate
             } else {
                 FileStatus::LikelyNew
             };
-            if opts.show_skip && status == FileStatus::LikelyCacheDuplicate {
-                eprintln!("  {} {}",
-                    style("Skip ").yellow(),
-                    style(e.path.display()).dim());
+            
+            // Real-time display based on status and show_dup flag
+            match status {
+                FileStatus::LikelyNew => {
+                    eprintln!("  {} {}", 
+                        style("Found").green(), 
+                        style(&rel_path).dim());
+                }
+                FileStatus::LikelyCacheDuplicate if opts.show_dup => {
+                    eprintln!("  {} {}", 
+                        style("Duplicate").yellow(), 
+                        style(&rel_path).dim());
+                }
+                _ => {} // Don't show duplicates unless show_dup is true
             }
+            
             ScanEntry {
                 src_path: abs, size: e.size, mtime_ms: e.mtime_ms, crc32c: crc,
                 status,
@@ -188,27 +210,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count();
     let failed_b = scan_entries.iter()
         .filter(|e| matches!(e.status, FileStatus::Failed(_))).count();
-
-    // Print discovered files (relative paths) for user review
-    eprintln!();
-    eprintln!("{} {} files found in {}", 
-        style("Discovered:").bold().cyan(),
-        style(total).cyan(),
-        style(opts.source.display()).dim());
-    eprintln!();
-    for e in &scan_entries {
-        let rel_path = e.src_path.strip_prefix(&opts.source)
-            .unwrap_or(&e.src_path)
-            .display()
-            .to_string();
-        let icon = match e.status {
-            FileStatus::LikelyNew => style("+").green(),
-            FileStatus::LikelyCacheDuplicate => style("=").yellow(),
-            FileStatus::Failed(_) => style("!").red(),
-            _ => style("?").dim(),
-        };
-        eprintln!("  {} {}", icon, style(rel_path).dim());
-    }
 
     // Pre-flight summary
     eprintln!();

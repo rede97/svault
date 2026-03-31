@@ -34,7 +34,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let root = std::env::current_dir().expect("cannot read cwd");
             db::init(&root)
         }
-        Command::Import { source, target, hash, recheck, show_skip, .. } => {
+        Command::Import { source, target, hash, recheck, show_dup, .. } => {
             let vault_root = find_vault_root(target, &source)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
@@ -47,7 +47,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 recheck,
                 dry_run: cli.dry_run,
                 yes: cli.yes,
-                show_skip,
+                show_dup,
                 import_config: config.import,
             };
             let summary = import_run(opts, &db)?;
