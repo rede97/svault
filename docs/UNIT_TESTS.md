@@ -10,10 +10,10 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (Unit) | 0 | 0 | 0 | 0 |
+| 单元测试 (Unit) | 10 | 10 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
 | Python E2E 测试 | 6 | 6 | 0 | 0 |
-| **总计** | **6** | **6** | **0** | **0** |
+| **总计** | **16** | **16** | **0** | **0** |
 
 ---
 
@@ -50,15 +50,19 @@
 | *待添加* | `src/db/files.rs` | 文件插入 | 🔲 TODO | |
 | `test_format_bytes` | `src/db/stats.rs` | 字节格式化 | ✅ PASS | 内联测试 |
 | `test_format_count` | `src/db/stats.rs` | 数字千分位格式化 | ✅ PASS | 内联测试 |
-| *待添加* | `src/db/stats.rs` | vault_stats 查询 | 🔲 TODO | |
-| *待添加* | `src/db/stats.rs` | extension_stats 查询 | 🔲 TODO | |
-| *待添加* | `src/db/stats.rs` | recent_imports 查询 | 🔲 TODO | |
 | `test_format_value` | `src/db/dump.rs` | SQL 值格式化 | ✅ PASS | 内联测试 |
 | `test_list_tables_empty_db` | `src/db/dump.rs` | 空数据库表列表 | ✅ PASS | 内联测试 |
 | `test_list_tables_with_data` | `src/db/dump.rs` | 有数据时表列表 | ✅ PASS | 内联测试 |
-| *待添加* | `src/db/dump.rs` | dump_table 功能 | 🔲 TODO | |
-| *待添加* | `src/db/dump.rs` | render_json 输出 | 🔲 TODO | |
-| *待添加* | `src/db/dump.rs` | render_sql 输出 | 🔲 TODO | |
+
+### import 模块
+
+| 测试名 | 位置 | 描述 | 状态 | 备注 |
+|--------|------|------|------|------|
+| `test_unix_now_ms_increases` | `src/import/utils.rs` | 时间戳递增测试 | ✅ PASS | 内联测试 |
+| `test_session_id_format` | `src/import/utils.rs` | Session ID 格式测试 | ✅ PASS | 内联测试 |
+| `test_resolve_dest_path` | `src/import/path.rs` | 路径模板解析 | ✅ PASS | 内联测试 |
+| `test_resolve_dest_path_no_device` | `src/import/path.rs` | 无设备路径解析 | ✅ PASS | 内联测试 |
+| `test_file_status_equality` | `src/import/mod.rs` | FileStatus 相等性 | ✅ PASS | 内联测试 |
 
 ### vfs 模块
 
