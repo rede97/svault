@@ -151,43 +151,47 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let manager = VfsManager::new();
             
             match command {
-                MtpCommand::List => {
-                    let all_sources = manager.probe_all()
-                        .map_err(|e| anyhow::anyhow!("failed to probe devices: {e}"))?;
-                    
-                    // Filter to only MTP devices
-                    let mtp_sources: Vec<_> = all_sources.into_iter()
-                        .filter(|s| s.scheme == "mtp" && !s.id.starts_with("mtp://SN:"))
-                        .collect();
-                    
-                    if mtp_sources.is_empty() {
-                        println!("No MTP devices found.");
-                        println!("Make sure your Android phone or camera is connected via USB");
-                        println!("and set to 'File transfer' / 'MTP' mode.");
-                    } else {
-                        println!("Connected MTP devices:");
-                        println!();
-                        for source in &mtp_sources {
-                            println!("  {}:", source.id);
-                            println!("    Name:       {}", source.name);
-                            println!("    Type:       {}", source.device_type);
-                            println!("    Serial:     {}", source.unique_id);
-                            if !source.roots.is_empty() {
-                                println!("    Storages:   {}", source.roots.join(", "));
-                            }
-                            println!();
-                        }
-                        println!("Browse examples:");
-                        println!("  svault mtp ls mtp://1/");
-                        println!("  svault mtp ls mtp://1/DCIM");
-                        println!("  svault mtp tree mtp://1/DCIM --depth 2");
-                        println!();
-                        println!("Then import with:");
-                        println!("  svault import mtp://1/DCIM/Camera --target phone_backup");
-                    }
-                    Ok(())
-                }
                 MtpCommand::Ls { path, long } => {
+                    // If no path provided, list devices
+                    let path = match path {
+                        Some(p) => p,
+                        None => {
+                            let all_sources = manager.probe_all()
+                                .map_err(|e| anyhow::anyhow!("failed to probe devices: {e}"))?;
+                            
+                            // Filter to only MTP devices
+                            let mtp_sources: Vec<_> = all_sources.into_iter()
+                                .filter(|s| s.scheme == "mtp" && !s.id.starts_with("mtp://SN:"))
+                                .collect();
+                            
+                            if mtp_sources.is_empty() {
+                                println!("No MTP devices found.");
+                                println!("Make sure your Android phone or camera is connected via USB");
+                                println!("and set to 'File transfer' / 'MTP' mode.");
+                            } else {
+                                println!("Connected MTP devices:");
+                                println!();
+                                for source in &mtp_sources {
+                                    println!("  {}:", source.id);
+                                    println!("    Name:       {}", source.name);
+                                    println!("    Type:       {}", source.device_type);
+                                    println!("    Serial:     {}", source.unique_id);
+                                    if !source.roots.is_empty() {
+                                        println!("    Storages:   {}", source.roots.join(", "));
+                                    }
+                                    println!();
+                                }
+                                println!("Browse examples:");
+                                println!("  svault mtp ls mtp://1/");
+                                println!("  svault mtp ls mtp://1/DCIM");
+                                println!("  svault mtp tree mtp://1/DCIM --depth 2");
+                                println!();
+                                println!("Then import with:");
+                                println!("  svault import mtp://1/DCIM/Camera --target phone_backup");
+                            }
+                            return Ok(());
+                        }
+                    };
                     let (backend, mtp_path) = manager.open_url(&path)
                         .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
                     

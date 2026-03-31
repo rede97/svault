@@ -437,25 +437,19 @@ pub enum DbCommand {
 /// MTP subcommands - browse devices and files only
 #[derive(Subcommand)]
 pub enum MtpCommand {
-    /// List connected MTP devices
+    /// List MTP devices or browse files
     ///
-    /// Shows all available MTP devices with their index, name, and serial number.
-    /// Use these identifiers with 'svault mtp ls' or 'svault import'.
-    List,
-
-    /// List files on an MTP device
-    ///
-    /// Lists files and directories at the specified MTP path (single level).
-    /// Helps you find the correct path before importing.
+    /// Without PATH: lists connected MTP devices
+    /// With PATH: lists files at the specified MTP path
     ///
     /// Examples:
-    ///   svault mtp ls mtp://1/
-    ///   svault mtp ls mtp://1/DCIM
-    ///   svault mtp ls "mtp://Pixel 9/DCIM/Camera"
+    ///   svault mtp ls                          # List devices
+    ///   svault mtp ls mtp://1/                 # List root
+    ///   svault mtp ls mtp://1/DCIM -l          # List with details
     Ls {
-        /// MTP path (e.g., mtp://1/DCIM)
+        /// MTP path (e.g., mtp://1/DCIM). If omitted, lists devices.
         #[arg(value_name = "PATH")]
-        path: String,
+        path: Option<String>,
 
         /// Show file sizes and modification time
         #[arg(short, long)]
