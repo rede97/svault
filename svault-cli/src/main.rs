@@ -3,7 +3,7 @@ mod cli;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use cli::{Cli, Command, DbCommand};
+use cli::{Cli, Command, DbCommand, DumpFormat};
 use svault_core::db;
 use svault_core::import::{ImportOptions, run as import_run};
 
@@ -86,10 +86,37 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::History { .. } => todo!("history"),
         Command::BackgroundHash { .. } => todo!("background-hash"),
         Command::Clone { .. } => todo!("clone"),
-        Command::Db { command } => match command {
-            DbCommand::VerifyChain => todo!("db verify-chain"),
-            DbCommand::Replay { .. } => todo!("db replay"),
-        },
+        Command::Db { command } => {
+            let vault_root = cli.vault
+                .or_else(|| std::env::current_dir().ok())
+                .ok_or_else(|| anyhow::anyhow!("cannot determine vault root"))?;
+            let db_path = vault_root.join(".svault").join("vault.db");
+            
+            match command {
+                DbCommand::VerifyChain => todo!("db verify-chain"),
+                DbCommand::Replay { .. } => todo!("db replay"),
+                DbCommand::Dump { tables, format, limit } => {
+                    let db = svault_core::db::Db::open(&db_path)
+                        .map_err(|e| anyhow::anyhow!("cannot open db: {e}"))?;
+                    
+                    let dumps = db.dump(tables, limit)
+                        .map_err(|e| anyhow::anyhow!("dump failed: {e}"))?;
+                    
+                    match format {
+                        DumpFormat::Table => {
+                            print!("{}", svault_core::db::render_tables(&dumps));
+                        }
+                        DumpFormat::Json => {
+                            println!("{}", svault_core::db::render_json(&dumps)?);
+                        }
+                        DumpFormat::Sql => {
+                            print!("{}", svault_core::db::render_sql(&dumps));
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
     }
 }
 

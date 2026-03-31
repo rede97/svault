@@ -402,6 +402,34 @@ pub enum DbCommand {
         #[arg(long, value_name = "DATETIME")]
         to_time: Option<String>,
     },
+
+    /// Dump database contents for debugging
+    ///
+    /// Exports table contents in a readable format. Useful for debugging
+    /// without writing SQL queries manually.
+    Dump {
+        /// Tables to dump (default: all)
+        #[arg(value_name = "TABLE")]
+        tables: Vec<String>,
+
+        /// Output format
+        #[arg(short, long, default_value = "table", value_enum)]
+        format: DumpFormat,
+
+        /// Limit number of rows per table
+        #[arg(short, long, value_name = "N")]
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Clone, ValueEnum)]
+pub enum DumpFormat {
+    /// Human-readable table format
+    Table,
+    /// JSON format
+    Json,
+    /// SQL INSERT statements
+    Sql,
 }
 
 #[derive(Clone, ValueEnum)]

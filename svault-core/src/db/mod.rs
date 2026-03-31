@@ -12,9 +12,12 @@
 //!   5. UPDATE materialised view table.
 //!   6. COMMIT (steps 4+5 in one transaction).
 
+pub mod dump;
 pub mod files;
 pub mod stats;
 
+pub use dump::{TableDump, DumpOptions, dump_database, dump_table, list_tables, 
+               render_tables, render_table, render_json, render_sql};
 pub use files::FileRow;
 pub use stats::{VaultStats, ExtensionStats, format_bytes, format_count};
 
@@ -166,6 +169,12 @@ impl Db {
             prev_hash = ev.self_hash;
         }
         Ok(())
+    }
+
+    /// Dump database contents for debugging.
+    pub fn dump(&self, tables: Vec<String>, limit: Option<usize>) -> Result<Vec<TableDump>> {
+        let opts = DumpOptions { tables, limit };
+        dump::dump_database(&self.conn, opts)
     }
 }
 
