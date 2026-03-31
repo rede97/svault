@@ -101,6 +101,31 @@ pub struct ImportConfig {
     pub allowed_extensions: Vec<String>,
 }
 
+impl Default for ImportConfig {
+    fn default() -> Self {
+        Self {
+            store_exif: false,
+            rename_template: "$filename.$n.$ext".to_string(),
+            path_template: "$year/$mon-$day/$device/$filename".to_string(),
+            allowed_extensions: vec![
+                "jpg".to_string(), "jpeg".to_string(),
+                "heic".to_string(), "heif".to_string(),
+                "dng".to_string(),
+                "cr2".to_string(), "cr3".to_string(),
+                "nef".to_string(), "nrw".to_string(),
+                "arw".to_string(),
+                "raf".to_string(),
+                "orf".to_string(),
+                "rw2".to_string(),
+                "pef".to_string(),
+                "iiq".to_string(),
+                "png".to_string(), "tiff".to_string(), "tif".to_string(),
+                "mp4".to_string(), "mov".to_string(), "avi".to_string(), "mkv".to_string(),
+            ],
+        }
+    }
+}
+
 impl ImportConfig {
     fn default_rename_template() -> String {
         "$filename.$n.$ext".to_string()

@@ -480,17 +480,61 @@ impl MtpFs {
         ))
     }
 
+    /// Check if device is still connected.
+    fn is_device_connected(&self) -> bool {
+        if let Some(device_arc) = &self.device {
+            if let Ok(device) = device_arc.try_lock() {
+                // Try a simple operation to check connectivity
+                self.runtime.block_on(device.storages()).is_ok()
+            } else {
+                true // Assume connected if we can't get lock (in use)
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Format error message with reconnection instructions.
+    fn format_disconnect_error(err: &str) -> String {
+        format!(
+            "MTP device disconnected or not responding: {}
+
+📷 Camera appears to have disconnected.
+
+To continue, please:
+1. Check USB cable connection
+2. Ensure camera screen is unlocked
+3. Reconnect the camera
+4. Run the command again
+
+Technical details: {}",
+            err, err
+        )
+    }
+
     /// Get storage for operations.
     fn get_storage(&self, storage_id: StorageId) -> VfsResult<Storage> {
         let device = self.device.as_ref()
-            .ok_or_else(|| VfsError::Other("Device not available".to_string()))?
+            .ok_or_else(|| VfsError::Other(Self::format_disconnect_error("Device not available")))?
             .lock().map_err(|e| {
             VfsError::Other(format!("Failed to lock device: {e}"))
         })?;
         
         self.runtime
             .block_on(device.storage(storage_id))
-            .map_err(|e| VfsError::Other(format!("Failed to get storage: {e}")))
+            .map_err(|e| {
+                let err_str = e.to_string();
+                // Check for disconnection indicators
+                if err_str.contains("disconnected") || 
+                   err_str.contains("not found") ||
+                   err_str.contains("No such device") ||
+                   err_str.contains("LIBUSB_ERROR_NO_DEVICE") ||
+                   err_str.contains("I/O error") {
+                    VfsError::Other(Self::format_disconnect_error(&err_str))
+                } else {
+                    VfsError::Other(format!("Failed to get storage: {e}"))
+                }
+            })
     }
 
     /// List objects with fallback for devices that need ObjectHandle::ALL.
@@ -682,6 +726,15 @@ impl VfsBackend for MtpFs {
         dest: &dyn VfsBackend,
         dst: &Path,
     ) -> VfsResult<TransferStrategy> {
+        use std::io::Write;
+        
+        let start = std::time::Instant::now();
+        let filename = src.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        log::debug!("[MTP] Starting copy: {}", filename);
+        
         let _strategy = self.caps.best_strategy(dest.capabilities());
         let mut reader = self.open_read(src)?;
         
@@ -694,8 +747,99 @@ impl VfsBackend for MtpFs {
         let mut file = std::fs::File::create(&dst_full)
             .map_err(VfsError::Io)?;
         
-        std::io::copy(&mut reader, &mut file)
-            .map_err(VfsError::Io)?;
+        // Use 4MB buffer for optimal MTP performance (not 8KB!)
+        // MTP has high per-request overhead, so larger chunks = better throughput
+        const BUF_SIZE: usize = 4 * 1024 * 1024; // 4 MB
+        let mut buffer = vec![0u8; BUF_SIZE];
+        let mut total_copied: u64 = 0;
+        let mut read_calls: u32 = 0;
+        
+        let mut consecutive_errors: u32 = 0;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 3;
+        
+        loop {
+            // Check device connectivity periodically (every 100 reads)
+            if read_calls % 100 == 0 && !self.is_device_connected() {
+                return Err(VfsError::Other(Self::format_disconnect_error(
+                    "Device connection lost during transfer"
+                )));
+            }
+            
+            let read_start = std::time::Instant::now();
+            let n = match reader.read(&mut buffer) {
+                Ok(n) => n,
+                Err(e) => {
+                    let err_str = e.to_string();
+                    // Check for disconnection
+                    if err_str.contains("disconnected") || 
+                       err_str.contains("LIBUSB_ERROR_NO_DEVICE") ||
+                       err_str.contains("I/O error") {
+                        return Err(VfsError::Other(Self::format_disconnect_error(&err_str)));
+                    }
+                    
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        return Err(VfsError::Other(format!(
+                            "{}\n\nTransfer failed after {} consecutive read errors.",
+                            Self::format_disconnect_error(&err_str),
+                            MAX_CONSECUTIVE_ERRORS
+                        )));
+                    }
+                    
+                    log::warn!(
+                        "[MTP] Read error {}/{}: {} - retrying...",
+                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, err_str
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+            };
+            
+            consecutive_errors = 0; // Reset on successful read
+            let read_elapsed = read_start.elapsed();
+            
+            if n == 0 {
+                break;
+            }
+            
+            read_calls += 1;
+            total_copied += n as u64;
+            
+            // Log slow reads (> 500ms)
+            if read_elapsed > std::time::Duration::from_millis(500) {
+                let chunk_speed = (n as f64 / 1024.0 / 1024.0) / read_elapsed.as_secs_f64();
+                log::warn!(
+                    "[MTP] Slow read #{}: {} bytes in {:?} ({:.2} MB/s) - {}",
+                    read_calls, n, read_elapsed, chunk_speed, filename
+                );
+            }
+            
+            file.write_all(&buffer[..n]).map_err(VfsError::Io)?;
+        }
+        
+        file.flush().map_err(VfsError::Io)?;
+        drop(file);
+        
+        let elapsed = start.elapsed();
+        let speed_mbps = (total_copied as f64 / 1024.0 / 1024.0) / elapsed.as_secs_f64().max(0.001);
+        
+        log::info!(
+            "[MTP] Copied {}: {} MB in {:?} ({:.2} MB/s, {} reads)",
+            filename,
+            total_copied / 1024 / 1024,
+            elapsed,
+            speed_mbps,
+            read_calls
+        );
+        
+        // Warn if transfer was very slow (< 1 MB/s on USB 2.0)
+        if speed_mbps < 1.0 && total_copied > 1024 * 1024 {
+            log::warn!(
+                "[MTP] Very slow transfer detected: {:.2} MB/s for {}. \
+                Possible causes: USB 1.1 fallback, device busy, or cable issue.",
+                speed_mbps, filename
+            );
+        }
 
         Ok(TransferStrategy::StreamCopy)
     }

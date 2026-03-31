@@ -79,12 +79,45 @@ pub struct VfsImportOptions<'a> {
     pub import_config: ImportConfig,
     /// Source display name (for progress messages)
     pub source_name: String,
+    /// CRC32 fingerprint buffer size in bytes (default: 64KB)
+    /// Larger values = more accurate dedup but slower scan
+    pub crc_buffer_size: usize,
 }
 
-/// Compute CRC32 from VFS backend file (first 64KB).
-fn crc32c_from_backend(backend: &dyn VfsBackend, entry: &DirEntry) -> Result<u32, VfsError> {
+impl<'a> VfsImportOptions<'a> {
+    /// Create new import options with defaults
+    pub fn new(src_backend: &'a dyn VfsBackend, vault_root: &'a Path) -> Self {
+        Self {
+            src_backend,
+            src_path: Path::new(""),
+            vault_root,
+            hash: crate::config::HashAlgorithm::Xxh3_128,
+            recheck: crate::config::RecheckMode::Fast,
+            dry_run: false,
+            yes: false,
+            show_dup: false,
+            import_config: crate::config::ImportConfig::default(),
+            source_name: String::new(),
+            crc_buffer_size: 64 * 1024, // 64KB default
+        }
+    }
+    
+    /// Set CRC buffer size (for fingerprinting)
+    pub fn with_crc_buffer_size(mut self, size: usize) -> Self {
+        self.crc_buffer_size = size;
+        self
+    }
+}
+
+/// Compute CRC32 from VFS backend file.
+/// Reads first `buffer_size` bytes (default 64KB) for fingerprinting.
+fn crc32c_from_backend(
+    backend: &dyn VfsBackend, 
+    entry: &DirEntry,
+    buffer_size: usize,
+) -> Result<u32, VfsError> {
     let mut reader = backend.open_read(&entry.path)?;
-    let mut buffer = vec![0u8; 65536];
+    let mut buffer = vec![0u8; buffer_size];
     let n = reader.read(&mut buffer).map_err(VfsError::Io)?;
     buffer.truncate(n);
     Ok(crc32fast::hash(&buffer))
@@ -133,7 +166,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         dir_entries
             .into_par_iter()
             .map(|e| {
-                let result = crc32c_from_backend(opts.src_backend, &e).map_err(|e| e.to_string());
+                let result = crc32c_from_backend(opts.src_backend, &e, opts.crc_buffer_size)
+                    .map_err(|e| e.to_string());
                 scan_bar.inc(1);
                 (e, result)
             })
@@ -142,7 +176,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         dir_entries
             .into_iter()
             .map(|e| {
-                let result = crc32c_from_backend(opts.src_backend, &e).map_err(|e| e.to_string());
+                let result = crc32c_from_backend(opts.src_backend, &e, opts.crc_buffer_size)
+                    .map_err(|e| e.to_string());
                 scan_bar.inc(1);
                 (e, result)
             })
@@ -328,6 +363,11 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
 
     let copy_errors: Arc<Mutex<HashMap<std::path::PathBuf, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    
+    // Flag to signal disconnection for early abort
+    let disconnected: Arc<std::sync::atomic::AtomicBool> = 
+        Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let disconnect_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     let copy_bar = ProgressBar::new(likely_new.len() as u64);
     copy_bar.set_style(
@@ -339,6 +379,11 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
 
     // Copy files: parallel for local FS, sequential for MTP
     let copy_op = |e: &&ScanEntry| -> Option<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> {
+        // Check if already disconnected
+        if disconnected.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        
         let rel = e
             .src_path
             .strip_prefix(opts.src_path)
@@ -384,8 +429,21 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 Some((e.src_path.clone(), dest_path, e.size, taken_ms, e.crc32c))
             }
             Err(err) => {
+                let err_str = err.to_string();
+                
+                // Check for MTP disconnection - this is fatal, should abort
+                if err_str.contains("disconnected") || 
+                   err_str.contains("Camera appears to have disconnected") ||
+                   err_str.contains("LIBUSB_ERROR_NO_DEVICE") {
+                    disconnected.store(true, std::sync::atomic::Ordering::Relaxed);
+                    *disconnect_error.lock().unwrap() = Some(err_str);
+                    copy_bar.inc(1);
+                    return None;
+                }
+                
+                // Regular error - just log it
                 let mut errors = copy_errors.lock().unwrap();
-                errors.insert(e.src_path.clone(), err.to_string());
+                errors.insert(e.src_path.clone(), err_str);
                 copy_bar.inc(1);
                 None
             }
@@ -397,6 +455,38 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     } else {
         likely_new.iter().filter_map(copy_op).collect()
     };
+    
+    // Check if disconnected
+    if disconnected.load(std::sync::atomic::Ordering::Relaxed) {
+        copy_bar.finish_and_clear();
+        if let Some(err_str) = disconnect_error.lock().unwrap().take() {
+            eprintln!("\n{}\n", style(&err_str).red().bold());
+        }
+        eprintln!("{}", style("Import aborted due to device disconnection.").yellow());
+        
+        // Save pending file with remaining items
+        let pending_entries: Vec<_> = scan_entries.iter()
+            .filter(|se| se.status == FileStatus::LikelyNew)
+            .skip(copied.len())
+            .map(|e| {
+                let rel = e.src_path.strip_prefix(opts.src_path)
+                    .unwrap_or(&e.src_path)
+                    .display().to_string();
+                (rel, e.size, e.mtime_ms, e.crc32c, FileStatus::LikelyNew)
+            })
+            .collect();
+        
+        if !pending_entries.is_empty() {
+            let pending_path = opts.vault_root
+                .join(".svault")
+                .join(format!("import-{session_id}-interrupted.pending"));
+            if write_pending_vfs(&pending_path, &opts.source_name, &session_id, &pending_entries).is_ok() {
+                eprintln!("{}", style(format!("Unimported files saved to: {}", pending_path.display())).dim());
+            }
+        }
+        
+        return Err(anyhow::anyhow!("MTP device disconnected during import"));
+    }
 
     copy_bar.finish_and_clear();
 

@@ -66,6 +66,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         show_dup,
                         import_config: config.import,
                         source_name: source_str.to_string(),
+                        crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
                     };
                     
                     let summary = run_vfs_import(opts, &db)?;
@@ -372,6 +373,10 @@ fn setup_signal_handler() {
 }
 
 fn main() {
+    // Initialize logger (RUST_LOG env var controls level)
+    // e.g., RUST_LOG=info, RUST_LOG=debug, RUST_LOG=svault_core::vfs::mtp=debug
+    env_logger::init();
+    
     // Setup signal handler for graceful shutdown on Ctrl-C
     setup_signal_handler();
     
