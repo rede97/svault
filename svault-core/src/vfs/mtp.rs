@@ -98,7 +98,7 @@ impl VfsProvider for MtpProvider {
             };
 
             sources.push(VfsSource {
-                id: format!("mtp://device{}", idx + 1),
+                id: format!("mtp://{}", idx + 1),
                 name: device_name.clone(),
                 scheme: "mtp".to_string(),
                 device_type: format!("{} {}", 
@@ -137,11 +137,11 @@ impl VfsProvider for MtpProvider {
         if identifier.starts_with("SN:") {
             let serial = &identifier[3..];
             Ok(Box::new(MtpFs::open_by_serial(serial)?))
-        } else if identifier.starts_with("device") {
-            // Open by index (device1, device2, etc.)
-            let idx: usize = identifier[6..]
+        } else {
+            // Try to parse as numeric index (1, 2, 3...)
+            let idx: usize = identifier
                 .parse()
-                .map_err(|_| VfsError::Other(format!("Invalid device index: {}", identifier)))?;
+                .map_err(|_| VfsError::Other(format!("Invalid device identifier: {}", identifier)))?;
             
             let devices = MtpDevice::list_devices()
                 .map_err(|e| VfsError::Other(format!("Failed to list devices: {e}")))?;
@@ -156,8 +156,6 @@ impl VfsProvider for MtpProvider {
                 return Err(VfsError::Other("Device has no serial number".to_string()));
             }
             Ok(Box::new(MtpFs::open_by_serial(&serial)?))
-        } else {
-            Err(VfsError::Other(format!("Unknown MTP identifier: {}", identifier)))
         }
     }
 
