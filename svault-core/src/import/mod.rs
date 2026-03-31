@@ -291,7 +291,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     copy_bar.set_prefix("Copying ");
 
     // Compute dest paths and copy
-    let copied: Vec<(PathBuf, PathBuf, u64, i64)> = likely_new
+    let copied: Vec<(PathBuf, PathBuf, u64, i64, u32)> = likely_new
         .par_iter()
         .filter_map(|e| {
             let rel = e.src_path.strip_prefix(&opts.source).unwrap_or(&e.src_path);
@@ -319,7 +319,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 Ok(_) => {
                     copy_bar.inc(1);
                     copy_bar.set_message(rel.display().to_string());
-                    Some((e.src_path.clone(), dest_abs, e.size, e.mtime_ms))
+                    Some((e.src_path.clone(), dest_abs, e.size, e.mtime_ms, e.crc32c))
                 }
                 Err(err) => {
                     copy_errors.lock().unwrap()
@@ -350,6 +350,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         dest: PathBuf,
         size: u64,
         mtime_ms: i64,
+        crc32c: u32,
         hash_bytes: Vec<u8>,
         is_duplicate: bool,
         dup_reason: Option<String>,
@@ -367,7 +368,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     let hashed: Vec<HashResult> = copied
         .into_par_iter()
-        .map(|(src, dest, size, mtime_ms)| {
+        .map(|(src, dest, size, mtime_ms, crc32c)| {
             let hash_bytes = match &opts.hash {
                 HashAlgorithm::Xxh3_128 => {
                     match xxh3_128_file(&dest) {
@@ -375,7 +376,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         Err(e) => {
                             hash_bar.inc(1);
                             return HashResult {
-                                src, dest, size, mtime_ms,
+                                src, dest, size, mtime_ms, crc32c,
                                 hash_bytes: vec![],
                                 is_duplicate: false,
                                 dup_reason: Some(format!("hash error: {e}")),
@@ -389,7 +390,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         Err(e) => {
                             hash_bar.inc(1);
                             return HashResult {
-                                src, dest, size, mtime_ms,
+                                src, dest, size, mtime_ms, crc32c,
                                 hash_bytes: vec![],
                                 is_duplicate: false,
                                 dup_reason: Some(format!("hash error: {e}")),
@@ -400,7 +401,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             };
             hash_bar.inc(1);
             hash_bar.set_message(dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-            HashResult { src, dest, size, mtime_ms, hash_bytes, is_duplicate: false, dup_reason: None }
+            HashResult { src, dest, size, mtime_ms, crc32c, hash_bytes, is_duplicate: false, dup_reason: None }
         })
         .collect();
     hash_bar.finish_and_clear();
@@ -477,11 +478,12 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 conn.execute(
                     "INSERT OR IGNORE INTO files \
                      (path, size, mtime, crc32c_val, xxh3_128, sha256, status, imported_at) \
-                     VALUES (?1, ?2, ?3, NULL, ?4, ?5, 'imported', ?6)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'imported', ?7)",
                     rusqlite::params![
                         path_str,
                         r.size as i64,
                         r.mtime_ms,
+                        r.crc32c as i64,
                         xxh3,
                         sha256,
                         now_ms,
