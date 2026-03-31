@@ -202,17 +202,79 @@ pub struct MtpFs {
 }
 
 impl MtpFs {
-    /// Open the first available MTP device.
+    /// Open the first available MTP device with retry.
     pub fn open_first() -> VfsResult<Self> {
+        Self::open_first_with_retry(3)
+    }
+
+    /// Open the first available MTP device with retry logic.
+    fn open_first_with_retry(max_retries: u32) -> VfsResult<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| VfsError::Other(format!("Failed to create Tokio runtime: {e}")))?;
 
-        let device = runtime
-            .block_on(MtpDevice::open_first())
-            .map_err(|e| VfsError::Other(format!("Failed to open MTP device: {e}")))?;
+        let mut last_error = None;
+        for attempt in 1..=max_retries {
+            match runtime.block_on(MtpDevice::open_first()) {
+                Ok(device) => {
+                    return Self::finish_open(runtime, device);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    last_error = Some(e);
+                    
+                    // Check if it's a busy/locked error
+                    if err_str.contains("busy") || err_str.contains("locked") || err_str.contains("access") {
+                        if attempt < max_retries {
+                            eprintln!("MTP device busy (attempt {}/{}), waiting...", attempt, max_retries);
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            continue;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
 
+        let err = last_error.unwrap();
+        let err_str = err.to_string();
+        
+        // Provide helpful error messages for common issues
+        let help_msg = if err_str.contains("busy") || err_str.contains("interface is busy") {
+            format!(
+                "Failed to open MTP device: interface is busy\n\n\
+                This usually means another program is using the device:\n\
+                - File manager (Nautilus/Thunar/Dolphin)\n\
+                - gvfs-mtp service\n\
+                - Another svault instance\n\n\
+                Solutions:\n\
+                1. Close the file manager completely\n\
+                2. Run: killall gvfsd-mtp\n\
+                3. Or unplug and reconnect the USB cable\n\n\
+                Original error: {}",
+                err
+            )
+        } else if err_str.contains("not found") || err_str.contains("No such device") {
+            format!(
+                "Failed to open MTP device: device not found\n\n\
+                Make sure:\n\
+                1. The device is connected via USB\n\
+                2. The device is unlocked (screen on)\n\
+                3. USB mode is set to 'File transfer' / 'MTP'\n\
+                4. You have granted MTP permission on the device\n\n\
+                Original error: {}",
+                err
+            )
+        } else {
+            format!("Failed to open MTP device: {}", err)
+        };
+        
+        Err(VfsError::Other(help_msg))
+    }
+
+    /// Complete device initialization after successful open.
+    fn finish_open(runtime: tokio::runtime::Runtime, device: MtpDevice) -> VfsResult<Self> {
         let storages = runtime
             .block_on(device.storages())
             .map_err(|e| VfsError::Other(format!("Failed to get storages: {e}")))?;
@@ -238,40 +300,62 @@ impl MtpFs {
         })
     }
 
-    /// Open a specific MTP device by serial number.
+    /// Open a specific MTP device by serial number with retry.
     pub fn open_by_serial(serial: &str) -> VfsResult<Self> {
+        Self::open_by_serial_with_retry(serial, 3)
+    }
+
+    /// Open a specific MTP device by serial number with retry logic.
+    fn open_by_serial_with_retry(serial: &str, max_retries: u32) -> VfsResult<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| VfsError::Other(format!("Failed to create Tokio runtime: {e}")))?;
 
-        let device = runtime
-            .block_on(MtpDevice::open_by_serial(serial))
-            .map_err(|e| VfsError::Other(format!("Failed to open MTP device: {e}")))?;
+        let mut last_error = None;
+        for attempt in 1..=max_retries {
+            match runtime.block_on(MtpDevice::open_by_serial(serial)) {
+                Ok(device) => {
+                    return Self::finish_open(runtime, device);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    last_error = Some(e);
+                    
+                    if err_str.contains("busy") || err_str.contains("locked") || err_str.contains("access") {
+                        if attempt < max_retries {
+                            eprintln!("MTP device busy (attempt {}/{}), waiting...", attempt, max_retries);
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            continue;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
 
-        let storages = runtime
-            .block_on(device.storages())
-            .map_err(|e| VfsError::Other(format!("Failed to get storages: {e}")))?;
-
-        let storage = storages
-            .into_iter()
-            .next()
-            .ok_or_else(|| VfsError::Other("No storage available on MTP device".to_string()))?;
-
-        let storage_id = storage.id();
-
-        let caps = FsCapabilities {
-            reflink: false,
-            hardlink: false,
-            fs_type: "mtp".to_string(),
+        let err = last_error.unwrap();
+        let err_str = err.to_string();
+        
+        let help_msg = if err_str.contains("busy") || err_str.contains("interface is busy") {
+            format!(
+                "Failed to open MTP device: interface is busy\n\n\
+                The device is in use by another program:\n\
+                - File manager (Nautilus/Thunar/Dolphin)\n\
+                - gvfs-mtp service\n\
+                - Another svault instance\n\n\
+                Try:\n\
+                1. Close all file manager windows\n\
+                2. Run: killall gvfsd-mtp\n\
+                3. Unplug and reconnect USB\n\n\
+                Original error: {}",
+                err
+            )
+        } else {
+            format!("Failed to open MTP device '{}': {}", serial, err)
         };
-
-        Ok(Self {
-            device: Arc::new(Mutex::new(device)),
-            caps,
-            runtime,
-            storage_id,
-        })
+        
+        Err(VfsError::Other(help_msg))
     }
 
     /// Find device serial by name (manufacturer + model).
