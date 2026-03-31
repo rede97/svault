@@ -28,3 +28,6 @@ playground/
 tests/.venv/
 __pycache__/
 *.pyc
+
+# RAMDisk symlink (created by tests/setup_ramdisk.sh)
+.ramdisk

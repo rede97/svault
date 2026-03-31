@@ -32,6 +32,16 @@ do_umount() {
   else
     echo "$RAMDISK is not mounted."
   fi
+  
+  # Remove symlink if exists
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+  LINK_NAME="$PROJECT_ROOT/.ramdisk"
+  
+  if [[ -L "$LINK_NAME" ]]; then
+    rm "$LINK_NAME"
+    echo "Symlink removed: .ramdisk"
+  fi
 }
 
 do_mount() {
@@ -44,7 +54,18 @@ do_mount() {
     sudo mount -t tmpfs -o "size=$SIZE" tmpfs "$RAMDISK"
   fi
   sudo chown "$(id -u):$(id -g)" "$RAMDISK" 2>/dev/null || true
+  
+  # Create symlink in project root for easy access
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+  LINK_NAME="$PROJECT_ROOT/.ramdisk"
+  
+  if [[ -L "$LINK_NAME" ]]; then
+    rm "$LINK_NAME"
+  fi
+  ln -sf "$RAMDISK" "$LINK_NAME"
   echo "RAMDisk mounted at $RAMDISK ($SIZE)"
+  echo "Symlink created: .ramdisk -> $RAMDISK"
 }
 
 case $ACTION in
