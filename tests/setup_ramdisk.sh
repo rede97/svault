@@ -44,10 +44,33 @@ do_umount() {
   fi
 }
 
+ensure_symlink() {
+  # Create or update symlink in project root for easy access
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+  LINK_NAME="$PROJECT_ROOT/.ramdisk"
+  
+  if [[ -L "$LINK_NAME" ]]; then
+    # Check if symlink points to correct target
+    CURRENT_TARGET="$(readlink "$LINK_NAME")"
+    if [[ "$CURRENT_TARGET" != "$RAMDISK" ]]; then
+      rm "$LINK_NAME"
+      ln -sf "$RAMDISK" "$LINK_NAME"
+      echo "Symlink updated: .ramdisk -> $RAMDISK"
+    else
+      echo "Symlink already exists: .ramdisk -> $RAMDISK"
+    fi
+  else
+    ln -sf "$RAMDISK" "$LINK_NAME"
+    echo "Symlink created: .ramdisk -> $RAMDISK"
+  fi
+}
+
 do_mount() {
   mkdir -p "$RAMDISK"
   if is_mounted; then
-    echo "$RAMDISK already mounted — nothing to do."
+    echo "$RAMDISK already mounted."
+    ensure_symlink
     return
   fi
   if ! mount -t tmpfs -o "size=$SIZE" tmpfs "$RAMDISK" 2>/dev/null; then
@@ -55,17 +78,8 @@ do_mount() {
   fi
   sudo chown "$(id -u):$(id -g)" "$RAMDISK" 2>/dev/null || true
   
-  # Create symlink in project root for easy access
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-  LINK_NAME="$PROJECT_ROOT/.ramdisk"
-  
-  if [[ -L "$LINK_NAME" ]]; then
-    rm "$LINK_NAME"
-  fi
-  ln -sf "$RAMDISK" "$LINK_NAME"
+  ensure_symlink
   echo "RAMDisk mounted at $RAMDISK ($SIZE)"
-  echo "Symlink created: .ramdisk -> $RAMDISK"
 }
 
 case $ACTION in
