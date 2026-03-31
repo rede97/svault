@@ -299,6 +299,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Stage D: strong hash + three-layer dedup
     // ------------------------------------------------------------------
     #[derive(Debug)]
+    #[allow(dead_code)]
     struct HashResult {
         src: std::path::PathBuf,
         dest: std::path::PathBuf,

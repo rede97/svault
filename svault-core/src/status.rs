@@ -2,7 +2,22 @@
 
 use std::path::Path;
 
-use comfy_table::{Table, ContentArrangement};
+use rich_rust::prelude::*;
+use rich_rust::renderables::Renderable;
+use rich_rust::r#box::BoxChars;
+
+/// Custom box style: only heavy header separator (continuous), no vertical dividers.
+const CLEAN_STYLE: BoxChars = BoxChars::new(
+    [' ', ' ', ' ', ' '],               // No top border
+    [' ', ' ', ' ', ' '],               // No vertical dividers for body
+    [' ', '━', '━', ' '],               // Heavy continuous line for header separator
+    [' ', ' ', ' ', ' '],               // No mid separator
+    [' ', ' ', ' ', ' '],               // No row separators
+    [' ', ' ', ' ', ' '],               // No foot row separator
+    [' ', ' ', ' ', ' '],               // No footer vertical dividers
+    [' ', ' ', ' ', ' '],               // No bottom border
+    false,
+);
 
 use crate::db::{Db, VaultStats, ExtensionStats, format_bytes, format_count};
 
@@ -60,14 +75,16 @@ pub fn generate_report(vault_root: &Path, db: &Db, opts: StatusOptions) -> anyho
     })
 }
 
-/// Configure table with clean style.
-fn create_clean_table(headers: Vec<&str>) -> Table {
-    let mut table = Table::new();
-    table
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(headers)
-        .set_width(80); // Max width, comfy-table will adapt to terminal
-    table
+/// Helper to convert renderable to string
+fn render_to_string<R: Renderable>(renderable: &R) -> String {
+    let console = Console::new();
+    let options = console.options();
+    let segments = renderable.render(&console, &options);
+    
+    segments.into_iter()
+        .map(|seg| seg.text.into_owned())
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 /// Renders a status report with rich terminal output.
@@ -80,83 +97,95 @@ pub fn render_human(report: &StatusReport) -> String {
     output.push_str(&format!("   {}\n\n", report.db_path.display()));
     
     // Files section
-    let mut files_table = create_clean_table(vec!["Metric", "Value"]);
-
-    files_table.add_row(vec![
-        "Total Files",
-        &format_count(report.stats.total_files),
-    ]);
-    files_table.add_row(vec![
-        "Total Size",
-        &format_bytes(report.stats.total_size_bytes),
-    ]);
-    files_table.add_row(vec![
-        "Imported",
-        &format_count(report.stats.imported_count),
-    ]);
-    files_table.add_row(vec![
-        "Duplicates",
-        &format_count(report.stats.duplicate_count),
-    ]);
+    let mut files_table = Table::new()
+        .title("📊 Files")
+        .title_justify(JustifyMethod::Left)
+        .box_style(&CLEAN_STYLE)
+        .min_width(40)
+        .with_column(Column::new("Metric"))
+        .with_column(Column::new("Value").justify(JustifyMethod::Right));
     
-    output.push_str("📊 Files\n");
-    output.push_str(&format!("{}\n", files_table));
+    files_table.add_row_cells(["Total Files", &format_count(report.stats.total_files)]);
+    files_table.add_row_cells(["Total Size", &format_bytes(report.stats.total_size_bytes)]);
+    files_table.add_row_cells(["Imported", &format_count(report.stats.imported_count)]);
+    files_table.add_row_cells(["Duplicates", &format_count(report.stats.duplicate_count)]);
+    
+    output.push_str(&render_to_string(&files_table));
+    output.push('\n');
     
     // Hash status section
-    let mut hash_table = create_clean_table(vec!["Metric", "Value"]);
-
-    hash_table.add_row(vec![
-        "SHA-256 Computed",
-        &format_count(report.stats.has_sha256_count),
-    ]);
-    hash_table.add_row(vec![
-        "Pending SHA-256",
-        &format_count(report.stats.pending_sha256_count),
-    ]);
+    let mut hash_table = Table::new()
+        .title("🔐 Hash Status")
+        .title_justify(JustifyMethod::Left)
+        .box_style(&CLEAN_STYLE)
+        .min_width(40)
+        .with_column(Column::new("Metric"))
+        .with_column(Column::new("Value").justify(JustifyMethod::Right));
     
-    output.push_str("🔐 Hash Status\n");
-    output.push_str(&format!("{}\n", hash_table));
+    hash_table.add_row_cells(["SHA-256 Computed", &format_count(report.stats.has_sha256_count)]);
+    hash_table.add_row_cells(["Pending SHA-256", &format_count(report.stats.pending_sha256_count)]);
+    
+    output.push_str(&render_to_string(&hash_table));
     
     if report.stats.pending_sha256_count > 0 {
-        output.push_str("   💡 Run `svault background-hash` to compute pending hashes\n\n");
+        // Dim italic gray hint (ANSI: \x1b[3m = italic, \x1b[90m = bright black/gray, \x1b[0m = reset)
+        output.push_str("\n\x1b[3m\x1b[90m💡 Run `svault background-hash` to compute pending hashes\x1b[0m\n\n");
     } else {
         output.push('\n');
     }
     
     // Recent imports section
-    let mut import_table = create_clean_table(vec!["Period", "Count"]);
-
-    import_table.add_row(vec!["Last 24 hours", &format_count(report.imports_last_24h)]);
-    import_table.add_row(vec!["Last 7 days", &format_count(report.imports_last_7d)]);
-    import_table.add_row(vec!["Last 30 days", &format_count(report.imports_last_30d)]);
+    let mut import_table = Table::new()
+        .title("📈 Recent Imports")
+        .title_justify(JustifyMethod::Left)
+        .box_style(&CLEAN_STYLE)
+        .min_width(40)
+        .with_column(Column::new("Period"))
+        .with_column(Column::new("Count").justify(JustifyMethod::Right));
     
-    output.push_str("📈 Recent Imports\n");
-    output.push_str(&format!("{}\n", import_table));
+    import_table.add_row_cells(["Last 24 hours", &format_count(report.imports_last_24h)]);
+    import_table.add_row_cells(["Last 7 days", &format_count(report.imports_last_7d)]);
+    import_table.add_row_cells(["Last 30 days", &format_count(report.imports_last_30d)]);
+    
+    output.push_str(&render_to_string(&import_table));
+    output.push('\n');
     
     // Event log section
-    let mut event_table = create_clean_table(vec!["Metric", "Value"]);
-
-    event_table.add_row(vec!["Total Events", &format_count(report.stats.total_events)]);
-    event_table.add_row(vec!["Database Size", &format_bytes(report.stats.db_size_bytes)]);
+    let mut event_table = Table::new()
+        .title("📝 Event Log")
+        .title_justify(JustifyMethod::Left)
+        .box_style(&CLEAN_STYLE)
+        .min_width(40)
+        .with_column(Column::new("Metric"))
+        .with_column(Column::new("Value").justify(JustifyMethod::Right));
     
-    output.push_str("📝 Event Log\n");
-    output.push_str(&format!("{}\n", event_table));
+    event_table.add_row_cells(["Total Events", &format_count(report.stats.total_events)]);
+    event_table.add_row_cells(["Database Size", &format_bytes(report.stats.db_size_bytes)]);
+    
+    output.push_str(&render_to_string(&event_table));
+    output.push('\n');
     
     // Top extensions section
     if !report.top_extensions.is_empty() {
-        let mut ext_table = create_clean_table(vec!["Type", "Files", "Size"]);
-
+        let mut ext_table = Table::new()
+            .title("📁 Top File Types")
+            .title_justify(JustifyMethod::Left)
+            .box_style(&CLEAN_STYLE)
+            .min_width(40)
+            .with_column(Column::new("Type"))
+            .with_column(Column::new("Files").justify(JustifyMethod::Right))
+            .with_column(Column::new("Size").justify(JustifyMethod::Right));
         
         for e in &report.top_extensions {
-            ext_table.add_row(vec![
-                &format!(".{}", e.extension),
+            ext_table.add_row_cells([
+                format!(".{}", e.extension).as_str(),
                 &format_count(e.count),
                 &format_bytes(e.total_size_bytes),
             ]);
         }
         
-        output.push_str("📁 Top File Types\n");
-        output.push_str(&format!("{}\n", ext_table));
+        output.push_str(&render_to_string(&ext_table));
+        output.push('\n');
     }
     
     output

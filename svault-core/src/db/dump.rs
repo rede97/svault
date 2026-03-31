@@ -2,8 +2,23 @@
 
 use std::collections::HashMap;
 
-use comfy_table::{Table, ContentArrangement};
+use rich_rust::prelude::*;
+use rich_rust::renderables::Renderable;
+use rich_rust::r#box::BoxChars;
 use rusqlite::{Connection, Result, types::Value};
+
+/// Custom box style: only heavy header separator (continuous), no vertical dividers.
+const CLEAN_STYLE: BoxChars = BoxChars::new(
+    [' ', ' ', ' ', ' '],               // No top border
+    [' ', ' ', ' ', ' '],               // No vertical dividers for body
+    [' ', '━', '━', ' '],               // Heavy continuous line for header separator
+    [' ', ' ', ' ', ' '],               // No mid separator
+    [' ', ' ', ' ', ' '],               // No row separators
+    [' ', ' ', ' ', ' '],               // No foot row separator
+    [' ', ' ', ' ', ' '],               // No footer vertical dividers
+    [' ', ' ', ' ', ' '],               // No bottom border
+    false,
+);
 
 /// A row of data from a database table.
 pub type RowData = HashMap<String, Value>;
@@ -130,12 +145,30 @@ pub fn format_value(value: &Value, max_len: usize) -> String {
     }
 }
 
-/// Converts a table dump to a comfy_table Table.
+/// Helper to convert renderable to string
+fn render_to_string<R: Renderable>(renderable: &R) -> String {
+    let console = Console::new();
+    let options = console.options();
+    let segments = renderable.render(&console, &options);
+    
+    segments.into_iter()
+        .map(|seg| seg.text.into_owned())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Converts a table dump to a rich_rust Table.
 fn dump_to_table(dump: &TableDump, max_col_width: usize) -> Table {
-    let mut table = Table::new();
-    table
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(dump.columns.clone());
+    let mut table = Table::new()
+        .title(format!("Table: {}", dump.name))
+        .title_justify(JustifyMethod::Left)
+        .box_style(&CLEAN_STYLE)
+        .min_width(60);
+    
+    // Add columns
+    for col in &dump.columns {
+        table = table.with_column(Column::new(col.as_str()));
+    }
     
     // Add rows
     for row in &dump.rows {
@@ -145,7 +178,7 @@ fn dump_to_table(dump: &TableDump, max_col_width: usize) -> Table {
                 format_value(val, max_col_width)
             })
             .collect();
-        table.add_row(row_values);
+        table.add_row_cells(row_values);
     }
     
     table
@@ -153,18 +186,14 @@ fn dump_to_table(dump: &TableDump, max_col_width: usize) -> Table {
 
 /// Renders table dump as human-readable text.
 pub fn render_table(dump: &TableDump) -> String {
-    if dump.rows.is_empty() {
-        return format!("\n{} (0 rows)\n   (empty table)\n", dump.name);
-    }
-    
     let table = dump_to_table(dump, 40);
-    
-    format!("\n{} ({} rows)\n{}\n", dump.name, dump.rows.len(), table)
+    format!("\n{}\n", render_to_string(&table))
 }
 
 /// Renders all tables as human-readable text.
 pub fn render_tables(dumps: &[TableDump]) -> String {
     let mut output = String::new();
+    
     output.push_str("📊 Database Dump\n\n");
     
     for dump in dumps {
@@ -252,7 +281,7 @@ mod tests {
         assert_eq!(format_value(&Value::Null, 20), "∅");
         assert_eq!(format_value(&Value::Integer(42), 20), "42");
         assert_eq!(format_value(&Value::Text("hello".to_string()), 20), "hello");
-        assert_eq!(format_value(&Value::Text("a very long string that exceeds limit".to_string()), 10), "a very lon…");
+        assert_eq!(format_value(&Value::Text("a very long string that exceeds limit".to_string()), 10), "a very lo…");
     }
 
     #[test]
