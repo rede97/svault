@@ -7,8 +7,18 @@
 //! # URL Format
 //!
 //! MTP devices are accessed via URL-style paths:
-//! - `mtp://device_name/DCIM/Camera` - Access by device name/index
-//! - `mtp://SN:serial_number/DCIM` - Access by serial number
+//! - `mtp://1/DCIM/Camera` - Device #1, first storage, path /DCIM/Camera
+//! - `mtp://1/SD Card/Photos` - Device #1, "SD Card" storage
+//! - `mtp://SN:serial/DCIM` - Access by serial number
+//!
+//! # Multi-Storage Support
+//!
+//! Android devices often have multiple storages:
+//! - Internal shared storage (usually the default)
+//! - SD card (removable)
+//! - USB OTG (if connected)
+//!
+//! Use `svault mtp ls` to see available storages for each device.
 //!
 //! # Example
 //!
@@ -24,12 +34,13 @@
 //! }
 //!
 //! // Access a device
-//! let (backend, path) = manager.open_url("mtp://MyPhone/DCIM/Camera")?;
+//! let (backend, path) = manager.open_url("mtp://1/DCIM/Camera")?;
 //! # Ok(())
 //! # }
 //! ```
 
 use std::{
+    collections::HashMap,
     io::{self, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -51,24 +62,29 @@ pub struct MtpProvider;
 
 impl MtpProvider {
     /// Get storage names for a device.
-    fn get_storage_names(serial: &str) -> Vec<String> {
+    fn get_storage_info(serial: &str) -> Vec<(String, u64, u64)> {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build() 
         {
             Ok(rt) => rt,
-            Err(_) => return vec!["Internal".to_string()],
+            Err(_) => return vec![],
         };
 
         let device = match runtime.block_on(MtpDevice::open_by_serial(serial)) {
             Ok(d) => d,
-            Err(_) => return vec!["Internal".to_string()],
+            Err(_) => return vec![],
         };
 
-        runtime
-            .block_on(device.storages())
-            .map(|s| s.iter().map(|st| st.info().description.clone()).collect())
-            .unwrap_or_else(|_| vec!["Internal".to_string()])
+        let storages = match runtime.block_on(device.storages()) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+
+        storages.iter().map(|s| {
+            let info = s.info();
+            (info.description.clone(), info.free_space_bytes, info.max_capacity)
+        }).collect()
     }
 }
 
@@ -84,28 +100,30 @@ impl VfsProvider for MtpProvider {
 
         let mut sources = Vec::new();
         for (idx, info) in devices.into_iter().enumerate() {
-            let device_name = format!("{} {}", 
-                info.manufacturer.as_deref().unwrap_or("Unknown"),
-                info.product.as_deref().unwrap_or("Device")
-            );
+            let manufacturer = info.manufacturer.as_deref().unwrap_or("Unknown");
+            let product = info.product.as_deref().unwrap_or("Device");
+            let device_name = format!("{} {}", manufacturer, product);
             let serial = info.serial_number.clone().unwrap_or_default();
             
-            // Try to get storage names
+            // Try to get storage info
             let storages = if !serial.is_empty() {
-                Self::get_storage_names(&serial)
+                Self::get_storage_info(&serial)
             } else {
-                vec!["Internal".to_string()]
+                vec![]
+            };
+
+            let root_names: Vec<String> = if storages.is_empty() {
+                vec!["Internal Storage".to_string()]
+            } else {
+                storages.iter().map(|(name, _, _)| name.clone()).collect()
             };
 
             sources.push(VfsSource {
                 id: format!("mtp://{}", idx + 1),
                 name: device_name.clone(),
                 scheme: "mtp".to_string(),
-                device_type: format!("{} {}", 
-                    info.manufacturer.as_deref().unwrap_or("Unknown"),
-                    info.product.as_deref().unwrap_or("Device")
-                ),
-                roots: storages.clone(),
+                device_type: format!("{} {}", manufacturer, product),
+                roots: root_names.clone(),
                 unique_id: serial.clone(),
             });
 
@@ -115,11 +133,8 @@ impl VfsProvider for MtpProvider {
                     id: format!("mtp://SN:{}", serial),
                     name: device_name,
                     scheme: "mtp".to_string(),
-                    device_type: format!("{} {}", 
-                    info.manufacturer.as_deref().unwrap_or("Unknown"),
-                    info.product.as_deref().unwrap_or("Device")
-                ),
-                    roots: storages,
+                    device_type: format!("{} {}", manufacturer, product),
+                    roots: root_names,
                     unique_id: serial,
                 });
             }
@@ -129,7 +144,7 @@ impl VfsProvider for MtpProvider {
     }
 
     fn open(&self, source_id: &str) -> VfsResult<Box<dyn VfsBackend>> {
-        // Parse source_id like "mtp://device1" or "mtp://SN:ABC123"
+        // Parse source_id like "mtp://1" or "mtp://SN:ABC123"
         let identifier = source_id
             .strip_prefix("mtp://")
             .ok_or_else(|| VfsError::Other(format!("Invalid MTP source ID: {}", source_id)))?;
@@ -194,11 +209,20 @@ impl VfsProvider for MtpProvider {
 }
 
 /// MTP filesystem backend.
+///
+/// Wraps an MTP device connection and provides synchronous VFS access.
+/// Supports multiple storages (internal + SD card).
 pub struct MtpFs {
+    /// The underlying MTP device connection.
     device: Arc<Mutex<MtpDevice>>,
+    /// Cached device capabilities (MTP doesn't support reflink/hardlink).
     caps: FsCapabilities,
+    /// Tokio runtime for executing async operations.
     runtime: tokio::runtime::Runtime,
-    storage_id: StorageId,
+    /// All available storages on this device.
+    storages: HashMap<String, StorageId>,
+    /// Default storage (usually internal storage).
+    default_storage: StorageId,
 }
 
 impl MtpFs {
@@ -275,16 +299,28 @@ impl MtpFs {
 
     /// Complete device initialization after successful open.
     fn finish_open(runtime: tokio::runtime::Runtime, device: MtpDevice) -> VfsResult<Self> {
-        let storages = runtime
+        let mtp_storages = runtime
             .block_on(device.storages())
             .map_err(|e| VfsError::Other(format!("Failed to get storages: {e}")))?;
 
-        let storage = storages
-            .into_iter()
-            .next()
-            .ok_or_else(|| VfsError::Other("No storage available on MTP device".to_string()))?;
+        if mtp_storages.is_empty() {
+            return Err(VfsError::Other("No storage available on MTP device".to_string()));
+        }
 
-        let storage_id = storage.id();
+        // Build storage name -> ID mapping
+        let mut storages = HashMap::new();
+        let mut default_storage = None;
+
+        for (idx, storage) in mtp_storages.iter().enumerate() {
+            let info = storage.info();
+            let name = info.description.clone();
+            let id = storage.id();
+            
+            if idx == 0 {
+                default_storage = Some(id);
+            }
+            storages.insert(name, id);
+        }
 
         let caps = FsCapabilities {
             reflink: false,
@@ -296,7 +332,8 @@ impl MtpFs {
             device: Arc::new(Mutex::new(device)),
             caps,
             runtime,
-            storage_id,
+            storages,
+            default_storage: default_storage.unwrap(),
         })
     }
 
@@ -373,24 +410,48 @@ impl MtpFs {
         None
     }
 
-    /// Get the storage for operations.
-    fn get_storage(&self) -> VfsResult<Storage> {
+    /// Get storage ID from path. 
+    /// Path format: [storage_name]/rest/of/path
+    /// If first component matches a storage name, use it; otherwise use default.
+    fn resolve_storage(&self, path: &Path) -> (StorageId, PathBuf) {
+        let components: Vec<_> = path.components().collect();
+        
+        if components.is_empty() {
+            return (self.default_storage, PathBuf::new());
+        }
+
+        // Check if first component is a storage name
+        if let Some(first) = components.first() {
+            let name = first.as_os_str().to_string_lossy();
+            if let Some(&storage_id) = self.storages.get(name.as_ref()) {
+                // Build remaining path
+                let remaining: PathBuf = components[1..].iter().collect();
+                return (storage_id, remaining);
+            }
+        }
+
+        // Use default storage
+        (self.default_storage, path.to_path_buf())
+    }
+
+    /// Get storage for operations.
+    fn get_storage(&self, storage_id: StorageId) -> VfsResult<Storage> {
         let device = self.device.lock().map_err(|e| {
             VfsError::Other(format!("Failed to lock device: {e}"))
         })?;
         
         self.runtime
-            .block_on(device.storage(self.storage_id))
+            .block_on(device.storage(storage_id))
             .map_err(|e| VfsError::Other(format!("Failed to get storage: {e}")))
     }
 
     /// Find an object by path, returning its handle and info.
-    fn find_object(&self, path: &Path) -> VfsResult<Option<(ObjectHandle, ObjectInfo)>> {
+    fn find_object(&self, storage_id: StorageId, path: &Path) -> VfsResult<Option<(ObjectHandle, ObjectInfo)>> {
         if path.as_os_str().is_empty() || path == Path::new("/") {
             return Ok(None);
         }
 
-        let storage = self.get_storage()?;
+        let storage = self.get_storage(storage_id)?;
         let components: Vec<_> = path.components().collect();
         
         let mut parent: Option<ObjectHandle> = None;
@@ -432,6 +493,11 @@ impl MtpFs {
         // Association type 0x0001 (Folder) indicates a folder
         matches!(info.association_type, mtp_rs::ptp::AssociationType::GenericFolder)
     }
+
+    /// Get list of available storage names.
+    pub fn storage_names(&self) -> Vec<&str> {
+        self.storages.keys().map(|s| s.as_str()).collect()
+    }
 }
 
 impl VfsBackend for MtpFs {
@@ -443,26 +509,39 @@ impl VfsBackend for MtpFs {
         if path.as_os_str().is_empty() || path == Path::new("/") {
             return Ok(true);
         }
-        self.find_object(path).map(|o| o.is_some())
+        let (storage_id, subpath) = self.resolve_storage(path);
+        self.find_object(storage_id, &subpath).map(|o| o.is_some())
     }
 
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>> {
-        let storage = self.get_storage()?;
+        let (storage_id, subpath) = self.resolve_storage(dir);
+        let storage = self.get_storage(storage_id)?;
         
-        let parent = if dir.as_os_str().is_empty() || dir == Path::new("/") {
-            None
-        } else {
-            match self.find_object(dir)? {
-                Some((handle, info)) => {
-                    if !Self::is_folder(&info) {
-                        return Err(VfsError::Other(format!(
-                            "Not a directory: {}", dir.display()
-                        )));
-                    }
-                    Some(handle)
-                }
-                None => return Err(VfsError::NotFound(dir.to_path_buf())),
+        // Check if we're listing storages (root of device)
+        if dir.as_os_str().is_empty() || dir == Path::new("/") {
+            // Return storages as "directories"
+            let mut entries = Vec::new();
+            for (name, _) in &self.storages {
+                entries.push(DirEntry {
+                    path: PathBuf::from(name),
+                    size: 0,
+                    mtime_ms: 0,
+                    is_dir: true,
+                });
             }
+            return Ok(entries);
+        }
+        
+        let parent = match self.find_object(storage_id, &subpath)? {
+            Some((handle, info)) => {
+                if !Self::is_folder(&info) {
+                    return Err(VfsError::Other(format!(
+                        "Not a directory: {}", dir.display()
+                    )));
+                }
+                Some(handle)
+            }
+            None => return Err(VfsError::NotFound(dir.to_path_buf())),
         };
 
         let objects = self.runtime
@@ -477,12 +556,11 @@ impl VfsBackend for MtpFs {
                 mtime_ms: obj
                     .modified
                     .map(|dt| {
-                    // Convert DateTime to milliseconds since epoch (approximate)
-                    use std::time::{SystemTime, Duration};
-                    let days_since_epoch = (dt.year as u64 - 1970) * 365 + (dt.month as u64) * 30 + (dt.day as u64);
-                    let secs = days_since_epoch * 86400 + (dt.hour as u64) * 3600 + (dt.minute as u64) * 60 + (dt.second as u64);
-                    secs as i64 * 1000
-                })
+                        // Convert DateTime to milliseconds since epoch (approximate)
+                        let days_since_epoch = (dt.year as u64 - 1970) * 365 + (dt.month as u64) * 30 + (dt.day as u64);
+                        let secs = days_since_epoch * 86400 + (dt.hour as u64) * 3600 + (dt.minute as u64) * 60 + (dt.second as u64);
+                        secs as i64 * 1000
+                    })
                     .unwrap_or(0),
                 is_dir: Self::is_folder(&obj),
             });
@@ -492,7 +570,8 @@ impl VfsBackend for MtpFs {
     }
 
     fn open_read(&self, path: &Path) -> VfsResult<Box<dyn Read>> {
-        let (handle, info) = match self.find_object(path)? {
+        let (storage_id, subpath) = self.resolve_storage(path);
+        let (handle, info) = match self.find_object(storage_id, &subpath)? {
             Some((h, i)) => (h, i),
             None => return Err(VfsError::NotFound(path.to_path_buf())),
         };
@@ -503,7 +582,7 @@ impl VfsBackend for MtpFs {
             )));
         }
 
-        let storage = self.get_storage()?;
+        let storage = self.get_storage(storage_id)?;
         let runtime_handle = self.runtime.handle().clone();
         
         let download = runtime_handle
@@ -602,7 +681,7 @@ mod tests {
         for (idx, info) in devices.iter().enumerate() {
             println!("{}: {} {} (SN: {:?})", 
                 idx + 1, 
-                info.manufacturer.as_deref().unwrap_or("Unknown"),
+                info.manufacturer.as_deref().unwrap_or("Unknown"), 
                 info.product.as_deref().unwrap_or("Device"), 
                 info.serial_number
             );

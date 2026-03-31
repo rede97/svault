@@ -177,14 +177,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                     println!("    Type:       {}", source.device_type);
                                     println!("    Serial:     {}", source.unique_id);
                                     if !source.roots.is_empty() {
-                                        println!("    Storages:   {}", source.roots.join(", "));
+                                        println!("    Storages:");
+                                        for (i, storage_name) in source.roots.iter().enumerate() {
+                                            if i == 0 {
+                                                println!("      📁 {}/  (default)", storage_name);
+                                            } else {
+                                                println!("      📁 {}/", storage_name);
+                                            }
+                                        }
                                     }
                                     println!();
                                 }
                                 println!("Browse examples:");
-                                println!("  svault mtp ls mtp://1/");
-                                println!("  svault mtp ls mtp://1/DCIM");
-                                println!("  svault mtp tree mtp://1/DCIM --depth 2");
+                                println!("  svault mtp ls mtp://1/                 # List storages");
+                                println!("  svault mtp ls mtp://1/DCIM             # List default storage");
+                                println!("  svault mtp ls \"mtp://1/SD Card/\"       # List SD card");
+                                println!("  svault mtp tree mtp://1/DCIM --depth 2 # Tree view");
                                 println!();
                                 println!("Then import with:");
                                 println!("  svault import mtp://1/DCIM/Camera --target phone_backup");
@@ -198,9 +206,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     let entries = backend.list(&mtp_path)
                         .map_err(|e| anyhow::anyhow!("failed to list directory: {e}"))?;
                     
+                    // Check if we're listing device root (storages)
+                    let is_root = mtp_path.as_os_str().is_empty() || mtp_path == std::path::Path::new("/");
+                    
                     if entries.is_empty() {
-                        // Check if this is root directory
-                        let is_root = mtp_path.as_os_str().is_empty() || mtp_path == std::path::Path::new("/");
                         if is_root {
                             eprintln!("Device root appears empty.");
                             eprintln!();
@@ -214,7 +223,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         } else {
                             println!("Directory is empty.");
                         }
+                    } else if is_root && entries.iter().all(|e| e.is_dir) {
+                        // Listing storages - show with emoji and highlight default
+                        println!("Available storages:");
+                        println!();
+                        for (i, entry) in entries.iter().enumerate() {
+                            let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
+                            if i == 0 {
+                                println!("  📁 {}/  ← default", name);
+                            } else {
+                                println!("  📁 {}/", name);
+                            }
+                        }
+                        println!();
+                        println!("Access a storage with: svault mtp ls mtp://1/\"Storage Name\"/");
                     } else {
+                        // Normal directory listing
                         for entry in entries {
                             let type_str = if entry.is_dir { "d" } else { "-" };
                             if long {
