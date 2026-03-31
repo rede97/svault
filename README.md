@@ -44,6 +44,7 @@ Svault is in active development. Core commands `init`, `import`, and `status` ar
 | `svault verify` | 📝 Stub | Verify file integrity |
 | `svault history` | 📝 Stub | Query event log |
 | `svault clone` | 📝 Stub | Clone subset of vault |
+| `svault db dump` | ✅ Implemented | Export database contents for debugging |
 | `svault db verify-chain` | 📝 Stub | Verify event hash chain |
 | `svault db replay` | 📝 Stub | Replay events to rebuild views |
 

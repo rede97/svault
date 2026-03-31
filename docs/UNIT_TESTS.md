@@ -53,6 +53,12 @@
 | *待添加* | `src/db/stats.rs` | vault_stats 查询 | 🔲 TODO | |
 | *待添加* | `src/db/stats.rs` | extension_stats 查询 | 🔲 TODO | |
 | *待添加* | `src/db/stats.rs` | recent_imports 查询 | 🔲 TODO | |
+| `test_format_value` | `src/db/dump.rs` | SQL 值格式化 | ✅ PASS | 内联测试 |
+| `test_list_tables_empty_db` | `src/db/dump.rs` | 空数据库表列表 | ✅ PASS | 内联测试 |
+| `test_list_tables_with_data` | `src/db/dump.rs` | 有数据时表列表 | ✅ PASS | 内联测试 |
+| *待添加* | `src/db/dump.rs` | dump_table 功能 | 🔲 TODO | |
+| *待添加* | `src/db/dump.rs` | render_json 输出 | 🔲 TODO | |
+| *待添加* | `src/db/dump.rs` | render_sql 输出 | 🔲 TODO | |
 
 ### vfs 模块
 
@@ -150,6 +156,7 @@
 | 2026-03-31 | 修复 EXIF 测试：使用 exiftool 生成测试固件 | Kimi |
 | 2026-03-31 | 删除 scratch_exif.rs 临时测试文件，更新测试计数 | Kimi |
 | 2026-03-31 | 实现 `svault status` 命令，添加 2 个单元测试 | Kimi |
+| 2026-03-31 | 实现 `svault db dump` 命令，添加 3 个单元测试 | Kimi |
 
 ---
 
