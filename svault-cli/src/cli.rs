@@ -374,9 +374,11 @@ pub enum Command {
         filter_group: Option<String>,
     },
 
-    /// MTP device management and import
+    /// MTP device browser
     ///
-    /// List, access, and import from MTP devices (Android phones, cameras).
+    /// Browse and explore MTP devices (Android phones, cameras) before importing.
+    /// Use 'svault import' to actually import files from MTP URLs.
+    ///
     /// MTP URLs use the format: mtp://device_name/path or mtp://SN:serial/path
     #[cfg(feature = "mtp")]
     Mtp {
@@ -432,40 +434,50 @@ pub enum DbCommand {
     },
 }
 
-/// MTP subcommands
+/// MTP subcommands - browse devices and files only
 #[derive(Subcommand)]
 pub enum MtpCommand {
     /// List connected MTP devices
     ///
     /// Shows all available MTP devices with their index, name, and serial number.
-    /// Use the index (e.g., mtp://1) or name to import from a specific device.
+    /// Use these identifiers with 'svault mtp ls' or 'svault import'.
     List,
 
-    /// Import media from an MTP device
+    /// List files on an MTP device
     ///
-    /// Imports photos and videos from the specified MTP path into the vault.
-    /// The source path can use device index, name, or serial number.
+    /// Lists files and directories at the specified MTP path (single level).
+    /// Helps you find the correct path before importing.
     ///
     /// Examples:
-    ///   svault mtp import mtp://1/DCIM/Camera
-    ///   svault mtp import "mtp://Pixel 9/DCIM/Camera"
-    ///   svault mtp import mtp://SN:ABC123/DCIM --target phone_backup
-    Import {
-        /// MTP source path (e.g., mtp://1/DCIM/Camera)
-        #[arg(value_name = "SOURCE")]
-        source: String,
+    ///   svault mtp ls mtp://1/
+    ///   svault mtp ls mtp://1/DCIM
+    ///   svault mtp ls "mtp://Pixel 9/DCIM/Camera"
+    Ls {
+        /// MTP path (e.g., mtp://1/DCIM)
+        #[arg(value_name = "PATH")]
+        path: String,
 
-        /// Target sub-directory in vault
-        #[arg(short, long, value_name = "PATH")]
-        target: Option<std::path::PathBuf>,
+        /// Show file sizes and modification time
+        #[arg(short, long)]
+        long: bool,
+    },
 
-        /// Recheck existing files
-        #[arg(long)]
-        recheck: bool,
+    /// Show directory tree of an MTP device
+    ///
+    /// Displays a tree view of the MTP device filesystem.
+    /// Useful for exploring the device structure.
+    ///
+    /// Examples:
+    ///   svault mtp tree mtp://1/
+    ///   svault mtp tree mtp://1/DCIM --depth 3
+    Tree {
+        /// MTP path (e.g., mtp://1/)
+        #[arg(value_name = "PATH")]
+        path: String,
 
-        /// Show duplicates instead of skipping
-        #[arg(long)]
-        show_dup: bool,
+        /// Maximum depth to display
+        #[arg(short, long, default_value = "3")]
+        depth: usize,
     },
 }
 

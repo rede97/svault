@@ -35,33 +35,90 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             db::init(&root)
         }
         Command::Import { source, target, hash, recheck, show_dup, .. } => {
-            let vault_root = find_vault_root(target, &source)?;
-            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-            let config = svault_core::config::Config::load(&vault_root)?;
-            let hash_algo = hash.unwrap_or(config.global.hash.clone());
-            let opts = ImportOptions {
-                source,
-                vault_root,
-                hash: hash_algo,
-                recheck,
-                dry_run: cli.dry_run,
-                yes: cli.yes,
-                show_dup,
-                import_config: config.import,
-            };
-            let summary = import_run(opts, &db)?;
-            if matches!(cli.output, cli::OutputFormat::Json) {
-                println!("{}", serde_json::json!({
-                    "total":         summary.total,
-                    "imported":      summary.imported,
-                    "duplicate":     summary.duplicate,
-                    "failed":        summary.failed,
-                    "all_cache_hit": summary.all_cache_hit,
-                    "manifest":      summary.manifest_path.map(|p| p.display().to_string()),
-                }));
+            // Check if source is a URL (mtp://) or local path
+            let source_str = source.to_string_lossy();
+            if source_str.starts_with("mtp://") {
+                // MTP import via VFS
+                #[cfg(feature = "mtp")]
+                {
+                    use svault_core::vfs::manager::VfsManager;
+                    
+                    let vault_root = find_vault_root(target.clone(), &std::env::current_dir()?)?;
+                    let _db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+                    
+                    let manager = VfsManager::new();
+                    let (backend, mtp_path) = manager.open_url(&source_str)
+                        .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
+                    
+                    // For now, list what would be imported
+                    println!("MTP import from: {}", source_str);
+                    println!("Vault: {}", vault_root.display());
+                    if let Some(t) = target {
+                        println!("Target: {}", t.display());
+                    }
+                    println!();
+                    
+                    // Walk and count files
+                    fn count_files(
+                        backend: &dyn svault_core::vfs::VfsBackend,
+                        path: &Path,
+                        total: &mut usize,
+                    ) -> anyhow::Result<()> {
+                        let entries = backend.list(path)
+                            .map_err(|e| anyhow::anyhow!("failed to list: {e}"))?;
+                        for entry in entries {
+                            if entry.is_dir {
+                                count_files(backend, &entry.path, total)?;
+                            } else {
+                                *total += 1;
+                            }
+                        }
+                        Ok(())
+                    }
+                    
+                    let mut total_files = 0;
+                    count_files(&*backend, &mtp_path, &mut total_files)?;
+                    println!("Found {} files to import", total_files);
+                    println!();
+                    println!("Full MTP import integration is coming soon!");
+                    println!("Use 'svault mtp ls {}' to browse files.", source_str);
+                    Ok(())
+                }
+                #[cfg(not(feature = "mtp"))]
+                {
+                    Err(anyhow::anyhow!("MTP support not enabled. Build with --features mtp"))
+                }
+            } else {
+                // Local filesystem import
+                let vault_root = find_vault_root(target, &source)?;
+                let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                    .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+                let config = svault_core::config::Config::load(&vault_root)?;
+                let hash_algo = hash.unwrap_or(config.global.hash.clone());
+                let opts = ImportOptions {
+                    source,
+                    vault_root,
+                    hash: hash_algo,
+                    recheck,
+                    dry_run: cli.dry_run,
+                    yes: cli.yes,
+                    show_dup,
+                    import_config: config.import,
+                };
+                let summary = import_run(opts, &db)?;
+                if matches!(cli.output, cli::OutputFormat::Json) {
+                    println!("{}", serde_json::json!({
+                        "total":         summary.total,
+                        "imported":      summary.imported,
+                        "duplicate":     summary.duplicate,
+                        "failed":        summary.failed,
+                        "all_cache_hit": summary.all_cache_hit,
+                        "manifest":      summary.manifest_path.map(|p| p.display().to_string()),
+                    }));
+                }
+                Ok(())
             }
-            Ok(())
         }
         Command::Add { .. } => todo!("add"),
         Command::Sync { .. } => todo!("sync"),
@@ -120,43 +177,44 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             }
                             println!();
                         }
-                        println!("Import examples:");
-                        println!("  svault mtp import mtp://1/DCIM/Camera");
-                        println!("  svault mtp import \"mtp://{}/DCIM/Camera\"", mtp_sources.first().map(|s| &s.name).unwrap_or(&"Device".to_string()).replace(' ', "%20"));
+                        println!("Browse examples:");
+                        println!("  svault mtp ls mtp://1/");
+                        println!("  svault mtp ls mtp://1/DCIM");
+                        println!("  svault mtp tree mtp://1/DCIM --depth 2");
+                        println!();
+                        println!("Then import with:");
+                        println!("  svault import mtp://1/DCIM/Camera --target phone_backup");
                     }
                     Ok(())
                 }
-                MtpCommand::Import { source, target, recheck, show_dup } => {
-                    // Open vault
-                    let vault_root = find_vault_root(target, &std::env::current_dir()?)?;
-                    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-                        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-                    let config = svault_core::config::Config::load(&vault_root)?;
-                    
-                    // Import from MTP URL
-                    println!("Importing from {}...", source);
-                    
-                    let (backend, path) = manager.open_url(&source)
+                MtpCommand::Ls { path, long } => {
+                    let (backend, mtp_path) = manager.open_url(&path)
                         .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
                     
-                    // TODO: Implement MTP import using the backend
-                    // For now, show what we found
-                    let entries = backend.list(&path)
+                    let entries = backend.list(&mtp_path)
                         .map_err(|e| anyhow::anyhow!("failed to list directory: {e}"))?;
                     
-                    println!("Found {} items:", entries.len());
-                    for entry in entries.iter().take(10) {
-                        let type_str = if entry.is_dir { "DIR" } else { "FILE" };
-                        println!("  [{}] {} ({} bytes)", type_str, entry.path.display(), entry.size);
+                    if entries.is_empty() {
+                        println!("Directory is empty.");
+                    } else {
+                        for entry in entries {
+                            let type_str = if entry.is_dir { "d" } else { "-" };
+                            if long {
+                                let size_str = format_bytes(entry.size);
+                                println!("{} {:>10}  {}", type_str, size_str, entry.path.file_name().unwrap_or_default().to_string_lossy());
+                            } else {
+                                let suffix = if entry.is_dir { "/" } else { "" };
+                                println!("{}{}", entry.path.file_name().unwrap_or_default().to_string_lossy(), suffix);
+                            }
+                        }
                     }
-                    if entries.len() > 10 {
-                        println!("  ... and {} more", entries.len() - 10);
-                    }
+                    Ok(())
+                }
+                MtpCommand::Tree { path, depth } => {
+                    let (backend, mtp_path) = manager.open_url(&path)
+                        .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
                     
-                    println!();
-                    println!("Full MTP import is coming soon!");
-                    println!("Use 'svault mtp list' to see available devices.");
-                    
+                    print_tree(&*backend, &mtp_path, "", depth, 0)?;
                     Ok(())
                 }
             }
@@ -194,6 +252,71 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
     }
+}
+
+/// Format bytes to human readable string
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let exp = (bytes as f64).log(1024.0).min(4.0) as usize;
+    let value = bytes as f64 / 1024f64.powi(exp as i32);
+    if exp == 0 {
+        format!("{} {}", bytes, UNITS[0])
+    } else {
+        format!("{:.1} {}", value, UNITS[exp])
+    }
+}
+
+/// Print directory tree for MTP browser
+fn print_tree(
+    backend: &dyn svault_core::vfs::VfsBackend,
+    path: &Path,
+    prefix: &str,
+    max_depth: usize,
+    current_depth: usize,
+) -> anyhow::Result<()> {
+    if current_depth >= max_depth {
+        return Ok(());
+    }
+
+    let entries = backend.list(path)
+        .map_err(|e| anyhow::anyhow!("failed to list directory: {e}"))?;
+
+    let mut dirs: Vec<_> = entries.iter().filter(|e| e.is_dir).collect();
+    let files: Vec<_> = entries.iter().filter(|e| !e.is_dir).collect();
+
+    // Sort alphabetically
+    dirs.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
+
+    let total = dirs.len() + files.len();
+    
+    // Print directories first
+    for (i, entry) in dirs.iter().enumerate() {
+        let is_last = i == total - 1 && files.is_empty();
+        let connector = if is_last { "└── " } else { "├── " };
+        let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
+        println!("{}{}{}/", prefix, connector, name);
+        
+        let new_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+        print_tree(backend, &entry.path, &new_prefix, max_depth, current_depth + 1)?;
+    }
+
+    // Then print files
+    for (i, entry) in files.iter().enumerate() {
+        let is_last = i == files.len() - 1;
+        let connector = if is_last { "└── " } else { "├── " };
+        let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
+        let size = format_bytes(entry.size);
+        println!("{}{}{} ({})", prefix, connector, name, size);
+    }
+
+    Ok(())
 }
 
 fn main() {
