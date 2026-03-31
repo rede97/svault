@@ -104,20 +104,14 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let exts: Vec<&str> = opts.import_config.allowed_extensions
         .iter().map(|s| s.as_str()).collect();
 
-    eprintln!("{} {}",
-        style("Scanning").bold().cyan(),
-        style(opts.source.display()).dim());
     let src_fs = SystemFs::open(&opts.source)
         .map_err(|e| anyhow::anyhow!("cannot open source: {e}"))?;
     let dir_entries = src_fs.walk(Path::new(""), &exts)
         .map_err(|e| anyhow::anyhow!("scan failed: {e}"))?;
     let total = dir_entries.len();
-    eprintln!("{} {}{}\n",
-        style("Scanning").bold().cyan(),
-        style(opts.source.display()).dim(),
-        style(format!(" {total} files")).green());
 
     if total == 0 {
+        eprintln!("{} No files found in source directory", style("Warning:").yellow().bold());
         return Ok(ImportSummary { total: 0, ..Default::default() });
     }
 
@@ -131,7 +125,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let scan_bar = ProgressBar::new(total as u64);
     scan_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {wide_msg:.dim}",
+            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {msg}",
         )
         .unwrap()
         .progress_chars("=> "),
@@ -142,20 +136,21 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .into_par_iter()
         .map(|e| {
             let abs = opts.source.join(&e.path);
-            // Print per-file line above the bar (like `cargo` does)
-            scan_bar.println(format!(
-                "  {} {}",
-                style("Found").green(),
-                style(e.path.display()).dim(),
-            ));
+            let filename = e.path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| e.path.display().to_string());
+            scan_bar.set_message(filename);
             let result = crc32c_region(&abs, 0, 65536)
                 .map_err(|err| err.to_string());
             scan_bar.inc(1);
-            scan_bar.set_message(e.path.display().to_string());
             (e, result)
         })
         .collect();
     scan_bar.finish_and_clear();
+    eprintln!("{} Scanned {} files from {}", 
+        style("Finished:").bold().green(),
+        style(total).green(),
+        style(opts.source.display()).dim());
 
     // Step B2: DB lookup on calling thread (single-threaded, cheap)
     let scan_entries: Vec<ScanEntry> = crcs
@@ -283,18 +278,21 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let copy_bar = ProgressBar::new(likely_new.len() as u64);
     copy_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {wide_msg:.dim}",
+            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {msg}",
         )
         .unwrap()
         .progress_chars("=> "),
     );
-    copy_bar.set_prefix("Copying ");
+    copy_bar.set_prefix("Copying  ");
 
     // Compute dest paths and copy
     let copied: Vec<(PathBuf, PathBuf, u64, i64, u32)> = likely_new
         .par_iter()
         .filter_map(|e| {
             let rel = e.src_path.strip_prefix(&opts.source).unwrap_or(&e.src_path);
+            let filename = rel.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| rel.display().to_string());
             let (taken_ms, device) = read_exif_date_device(&e.src_path, e.mtime_ms);
             let dest_rel = resolve_dest_path(
                 &opts.import_config.path_template,
@@ -317,8 +315,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             // Copy (best strategy)
             match src_fs.copy_to(rel, &dst_fs, &dest_abs) {
                 Ok(_) => {
+                    copy_bar.set_message(filename);
                     copy_bar.inc(1);
-                    copy_bar.set_message(rel.display().to_string());
                     Some((e.src_path.clone(), dest_abs, e.size, e.mtime_ms, e.crc32c))
                 }
                 Err(err) => {
@@ -334,10 +332,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     let copy_err_count = copy_errors.lock().unwrap().len();
     let copied_len = copied.len();
-    eprintln!("{} {}/{} files",
-        style("Copying ").bold().cyan(),
-        style(copied_len).green(),
-        likely_new.len());
 
     // ------------------------------------------------------------------
     // Stage D: strong hash + three-layer dedup
@@ -359,7 +353,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let hash_bar = ProgressBar::new(copied_len as u64);
     hash_bar.set_style(
         ProgressStyle::with_template(
-            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {wide_msg:.dim}",
+            "{prefix:.bold.cyan} [{bar:40.cyan/blue}] {pos}/{len}  {msg}",
         )
         .unwrap()
         .progress_chars("=> "),
@@ -369,6 +363,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let hashed: Vec<HashResult> = copied
         .into_par_iter()
         .map(|(src, dest, size, mtime_ms, crc32c)| {
+            let filename = dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            hash_bar.set_message(filename.clone());
             let hash_bytes = match &opts.hash {
                 HashAlgorithm::Xxh3_128 => {
                     match xxh3_128_file(&dest) {
@@ -400,7 +398,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 }
             };
             hash_bar.inc(1);
-            hash_bar.set_message(dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
             HashResult { src, dest, size, mtime_ms, crc32c, hash_bytes, is_duplicate: false, dup_reason: None }
         })
         .collect();
@@ -518,19 +515,24 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Delete .pending
     let _ = fs::remove_file(&pending_path);
 
-    eprintln!();
-    eprintln!("{} {}  {}  {}",
-        style("Import complete:").bold().green(),
-        style(format!("{imported_count} imported")).green(),
-        style(format!("{dup_count} duplicates")).yellow(),
-        if fail_count > 0 {
-            style(format!("{fail_count} failed")).red().to_string()
-        } else {
-            format!("{fail_count} failed")
-        },
-    );
-    eprintln!("{} {}",
-        style("Manifest:").bold(),
+    // Delete .pending
+    let _ = fs::remove_file(&pending_path);
+
+    // Print summary like cargo build
+    eprintln!("{} {} file(s) imported", 
+        style("Finished:").bold().green(),
+        style(imported_count).green());
+    
+    if dup_count > 0 {
+        eprintln!("         {} duplicate(s) skipped", 
+            style(dup_count).yellow());
+    }
+    if fail_count > 0 {
+        eprintln!("         {} file(s) failed", 
+            style(fail_count).red());
+    }
+    
+    eprintln!("         Manifest: {}", 
         style(manifest_path.display()).dim());
 
     Ok(ImportSummary {
