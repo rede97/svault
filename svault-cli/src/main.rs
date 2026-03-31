@@ -95,20 +95,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             
             match command {
                 MtpCommand::List => {
-                    let sources = manager.probe_all()
+                    let all_sources = manager.probe_all()
                         .map_err(|e| anyhow::anyhow!("failed to probe devices: {e}"))?;
                     
-                    if sources.is_empty() {
+                    // Filter to only MTP devices
+                    let mtp_sources: Vec<_> = all_sources.into_iter()
+                        .filter(|s| s.scheme == "mtp" && !s.id.starts_with("mtp://SN:"))
+                        .collect();
+                    
+                    if mtp_sources.is_empty() {
                         println!("No MTP devices found.");
                         println!("Make sure your Android phone or camera is connected via USB");
                         println!("and set to 'File transfer' / 'MTP' mode.");
                     } else {
                         println!("Connected MTP devices:");
                         println!();
-                        for source in &sources {
-                            if source.id.starts_with("mtp://SN:") {
-                                continue; // Skip SN entries for cleaner output
-                            }
+                        for source in &mtp_sources {
                             println!("  {}:", source.id);
                             println!("    Name:       {}", source.name);
                             println!("    Type:       {}", source.device_type);
@@ -120,7 +122,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                         println!("Import examples:");
                         println!("  svault mtp import mtp://1/DCIM/Camera");
-                        println!("  svault mtp import \"mtp://{}/DCIM/Camera\"", sources.first().map(|s| &s.name).unwrap_or(&"Device".to_string()).replace(' ', "%20"));
+                        println!("  svault mtp import \"mtp://{}/DCIM/Camera\"", mtp_sources.first().map(|s| &s.name).unwrap_or(&"Device".to_string()).replace(' ', "%20"));
                     }
                     Ok(())
                 }
