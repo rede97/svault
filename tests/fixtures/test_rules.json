@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "description": "Expected outcomes for svault import pipeline tests",
+  "path_template": "$year/$mon-$day/$device/$filename",
+  "scenarios": [
+    {
+      "id": "s1_normal_apple",
+      "src": "apple_with_exif.jpg",
+      "scenario": "normal import with EXIF date and Apple device",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-01",
+        "Apple iPhone 15",
+        "apple_with_exif.jpg"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true
+    },
+    {
+      "id": "s2_no_device",
+      "src": "no_device_exif.jpg",
+      "scenario": "EXIF date present, no Make/Model → device=Unknown",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-01",
+        "Unknown",
+        "no_device_exif.jpg"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true
+    },
+    {
+      "id": "s3_no_exif",
+      "src": "no_exif.jpg",
+      "scenario": "no EXIF — dest path uses mtime fallback",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "03-15",
+        "Unknown",
+        "no_exif.jpg"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true
+    },
+    {
+      "id": "s4_duplicate",
+      "src": "duplicate_of_apple.jpg",
+      "scenario": "exact byte-for-byte duplicate of apple_with_exif.jpg",
+      "expected_status": "duplicate",
+      "expected_dup_reason": [
+        "db",
+        "batch"
+      ],
+      "expected_db_row": false,
+      "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup"
+    },
+    {
+      "id": "s5_samsung",
+      "src": "samsung_photo.jpg",
+      "scenario": "Samsung device — model already starts with 'Samsung', no duplication",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-02",
+        "Samsung",
+        "samsung_photo.jpg"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true
+    },
+    {
+      "id": "s6_make_in_model",
+      "src": "apple_redundant_model.jpg",
+      "scenario": "Model starts with Make — device should be 'Apple iPhone 14', not 'Apple Apple iPhone 14'",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "Apple iPhone 14"
+      ],
+      "expected_dest_not_contains": [
+        "Apple Apple"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true
+    }
+  ],
+  "chaos_scenarios": [
+    {
+      "id": "c1_rename_before_import",
+      "action": "Rename chaos/renamed_after_import.jpg to a new name before importing",
+      "expected": "Still detected as duplicate (same CRC32C + strong hash), not re-imported"
+    },
+    {
+      "id": "c2_move_to_subdir",
+      "action": "Move file into subdirectory within source, then import",
+      "expected": "Still found by VFS walk, imported correctly"
+    },
+    {
+      "id": "c3_interrupt_copy",
+      "action": "Import a truncated/corrupt JPEG",
+      "expected": "Hash error logged, status=failed, file NOT written to DB"
+    },
+    {
+      "id": "c4_add_delete_mid_import",
+      "action": "Agent adds/deletes files from source dir while import runs",
+      "expected": "Import completes without crash; missing files counted as failed"
+    },
+    {
+      "id": "c5_repeat_import",
+      "action": "Run import twice on the same source directory",
+      "expected": "Second run: all files classified as LikelyCacheDuplicate, imported=0"
+    }
+  ]
+}

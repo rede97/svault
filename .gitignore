@@ -23,3 +23,8 @@ Thumbs.db
 *.local
 
 playground/
+
+# Python
+tests/.venv/
+__pycache__/
+*.pyc
