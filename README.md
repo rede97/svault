@@ -36,8 +36,10 @@ Svault is in active development. Core commands `init`, `import`, and `status` ar
 | Command | Status | Description |
 |---------|--------|-------------|
 | `svault init` | ✅ Implemented | Initialize a new vault |
-| `svault import` | ✅ Implemented | Import media from source directory |
+| `svault import` | ✅ Implemented | Import media from source directory or MTP device |
 | `svault status` | ✅ Implemented | Show vault overview and statistics |
+| `svault mtp ls` | ✅ Implemented | List MTP device contents |
+| `svault mtp tree` | ✅ Implemented | Display MTP device structure as tree |
 | `svault add` | 📝 Stub | Register files already in vault |
 | `svault sync` | 📝 Stub | Sync with another vault |
 | `svault reconcile` | 📝 Stub | Update paths for moved files |
@@ -92,6 +94,29 @@ svault/
 **Database:** Event-sourced SQLite — every state change is appended to an immutable event log with a SHA-256 tamper-evident hash chain
 
 **Hashing pipeline:** CRC32C (fast fingerprint) → XXH3-128 (collision resolution) → SHA-256 (content identity, lazy)
+
+---
+
+## Features / 功能特性
+
+### MTP Device Support / MTP 设备支持
+Import directly from cameras and phones via USB:
+```bash
+svault mtp ls mtp://1/           # List available storages
+svault mtp ls mtp://1/SD/        # List SD card contents
+svault mtp tree mtp://1/SD/      # Display as tree
+svault import mtp://1/SD/DCIM/   # Import from device
+```
+
+### Filename Conflict Resolution / 文件名冲突处理
+When multiple files have the same name (e.g., two cameras with `DSC0001.jpg`), Svault automatically renames subsequent files using the configured `rename_template`:
+```
+DSC0001.jpg       (first file)
+DSC0001.1.jpg     (second file - same name, different content)
+DSC0001.2.jpg     (third file)
+```
+
+This prevents overwrites when multiple photographers with the same camera model import on the same day.
 
 ---
 
@@ -178,6 +203,23 @@ Milestones worth watching:
 - First real-world import run
 - First bug found and diagnosed
 - Architecture comparison across model generations
+
+---
+
+## Testing / 测试
+
+Run the integrated test suite:
+```bash
+python3 tests/run_tests.py
+```
+
+This performs end-to-end validation including:
+- EXIF date extraction and device detection
+- Deduplication (exact duplicates by content hash)
+- Filename conflict resolution (same name, different content)
+- MTP device compatibility (when device connected)
+
+The test framework generates synthetic fixtures, runs imports in a RAM disk, and validates database state against expected outcomes.
 
 ---
 

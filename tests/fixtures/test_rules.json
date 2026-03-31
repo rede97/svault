@@ -47,8 +47,68 @@
     },
     {
       "id": "s4_duplicate",
-      "src": "duplicate_of_apple.jpg",
+      "src": "z_dup_apple_1.jpg",
       "scenario": "exact byte-for-byte duplicate of apple_with_exif.jpg",
+      "expected_status": "duplicate",
+      "expected_dup_reason": [
+        "db",
+        "batch"
+      ],
+      "expected_db_row": false,
+      "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup"
+    },
+    {
+      "id": "s4_duplicate_1",
+      "src": "z_dup_apple_2.jpg",
+      "scenario": "exact duplicate #2 of apple_with_exif.jpg",
+      "expected_status": "duplicate",
+      "expected_dup_reason": [
+        "db",
+        "batch"
+      ],
+      "expected_db_row": false,
+      "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup"
+    },
+    {
+      "id": "s4_duplicate_2",
+      "src": "z_dup_apple_3.jpg",
+      "scenario": "exact duplicate #3 of apple_with_exif.jpg",
+      "expected_status": "duplicate",
+      "expected_dup_reason": [
+        "db",
+        "batch"
+      ],
+      "expected_db_row": false,
+      "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup"
+    },
+    {
+      "id": "s4_duplicate_3",
+      "src": "z_dup_apple_4.jpg",
+      "scenario": "exact duplicate #4 of apple_with_exif.jpg",
+      "expected_status": "duplicate",
+      "expected_dup_reason": [
+        "db",
+        "batch"
+      ],
+      "expected_db_row": false,
+      "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup"
+    },
+    {
+      "id": "s4_duplicate_4",
+      "src": "z_dup_apple_5.jpg",
+      "scenario": "exact duplicate #5 of apple_with_exif.jpg",
+      "expected_status": "duplicate",
+      "expected_dup_reason": [
+        "db",
+        "batch"
+      ],
+      "expected_db_row": false,
+      "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup"
+    },
+    {
+      "id": "s4_duplicate_5",
+      "src": "z_dup_apple_6.jpg",
+      "scenario": "exact duplicate #6 of apple_with_exif.jpg",
       "expected_status": "duplicate",
       "expected_dup_reason": [
         "db",
@@ -84,6 +144,139 @@
       ],
       "expected_crc32c_nonnull": true,
       "expected_db_row": true
+    },
+    {
+      "id": "s7_camera_a_first",
+      "src": "camera_a/DSC0001.jpg",
+      "scenario": "camera_a DSC0001.jpg - first, no rename",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_original_name": "DSC0001.jpg"
+    },
+    {
+      "id": "s8_camera_b_conflict",
+      "src": "camera_b/DSC0001.jpg",
+      "scenario": "camera_b DSC0001.jpg - conflict #1, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_b"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
+    },
+    {
+      "id": "s9_camera_c_conflict",
+      "src": "camera_c/DSC0001.jpg",
+      "scenario": "camera_c DSC0001.jpg - conflict #2, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_c"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
+    },
+    {
+      "id": "s10_camera_d_conflict",
+      "src": "camera_d/DSC0001.jpg",
+      "scenario": "camera_d DSC0001.jpg - conflict #3, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_d"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
+    },
+    {
+      "id": "s11_camera_e_conflict",
+      "src": "camera_e/DSC0001.jpg",
+      "scenario": "camera_e DSC0001.jpg - conflict #4, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_e"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
+    },
+    {
+      "id": "s12_camera_f_conflict",
+      "src": "camera_f/DSC0001.jpg",
+      "scenario": "camera_f DSC0001.jpg - conflict #5, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_f"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
+    },
+    {
+      "id": "s13_camera_g_conflict",
+      "src": "camera_g/DSC0001.jpg",
+      "scenario": "camera_g DSC0001.jpg - conflict #6, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_g"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
+    },
+    {
+      "id": "s14_camera_h_conflict",
+      "src": "camera_h/DSC0001.jpg",
+      "scenario": "camera_h DSC0001.jpg - conflict #7, should be renamed",
+      "expected_status": "imported",
+      "expected_dest_contains": [
+        "2024",
+        "05-03",
+        "Sony A7IV"
+      ],
+      "expected_dest_not_contains": [
+        "camera_h"
+      ],
+      "expected_crc32c_nonnull": true,
+      "expected_db_row": true,
+      "check_renamed_from": "DSC0001.jpg"
     }
   ],
   "chaos_scenarios": [

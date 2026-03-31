@@ -227,10 +227,41 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let dst_fs = SystemFs::open(&vault_archive)
         .map_err(|e| anyhow::anyhow!("cannot open vault: {e}"))?;
 
+    // Pre-resolve destination paths in serial to avoid race conditions
+    // when multiple files map to the same destination
+    let mut prepared_entries: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = Vec::new();
+    let mut assigned_dests: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    
+
+    
+    for e in &likely_new {
+        let rel = e.src_path.strip_prefix(&opts.source).unwrap_or(&e.src_path);
+        let (taken_ms, device) = read_exif_date_device(&e.src_path, e.mtime_ms);
+        let dest_rel = resolve_dest_path(
+            &opts.import_config.path_template,
+            rel,
+            taken_ms,
+            &device,
+        );
+        let dest_abs = vault_archive.join(&dest_rel);
+        
+        // Handle filename conflicts - check both filesystem and already-assigned destinations
+        let unique_dest = resolve_unique_dest_path_serial(
+            &dst_fs,
+            &dest_abs,
+            &opts.import_config.rename_template,
+            &assigned_dests,
+        );
+        
+
+        assigned_dests.insert(unique_dest.clone());
+        prepared_entries.push((e.src_path.clone(), unique_dest, e.size, e.mtime_ms, e.crc32c));
+    }
+
     let copy_errors: Arc<Mutex<HashMap<std::path::PathBuf, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let copy_bar = ProgressBar::new(likely_new.len() as u64);
+    let copy_bar = ProgressBar::new(prepared_entries.len() as u64);
     copy_bar.set_style(
         ProgressStyle::with_template(
             "{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}",
@@ -240,26 +271,19 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     );
     copy_bar.set_prefix("Copying  ");
 
-    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = likely_new
-        .par_iter()
-        .filter_map(|e| {
-            let rel = e.src_path.strip_prefix(&opts.source).unwrap_or(&e.src_path);
-            let filename = rel.file_name()
+    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = prepared_entries
+        .into_par_iter()
+        .filter_map(|(src_path, dest_abs, size, mtime_ms, crc32c)| {
+            let filename = src_path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| rel.display().to_string());
-            let (taken_ms, device) = read_exif_date_device(&e.src_path, e.mtime_ms);
-            let dest_rel = resolve_dest_path(
-                &opts.import_config.path_template,
-                rel,
-                taken_ms,
-                &device,
-            );
-            let dest_abs = vault_archive.join(&dest_rel);
+                .unwrap_or_default();
+            
+            let rel = src_path.strip_prefix(&opts.source).unwrap_or(&src_path);
 
             if let Some(parent) = dest_abs.parent() {
                 if let Err(err) = fs::create_dir_all(parent) {
                     copy_errors.lock().unwrap()
-                        .insert(e.src_path.clone(), err.to_string());
+                        .insert(src_path.clone(), err.to_string());
                     copy_bar.inc(1);
                     return None;
                 }
@@ -267,9 +291,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
             match src_fs.copy_to(rel, &dst_fs, &dest_abs) {
                 Ok(_) => {
-                    // Debug delay to observe progress (temporary)
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    
                     // Show destination path relative to vault root
                     // Use progress bar's println for thread-safe output ordering
                     let vault_rel = dest_abs.strip_prefix(&opts.vault_root)
@@ -281,11 +302,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         style(vault_rel).dim()));
                     copy_bar.set_message(filename);
                     copy_bar.inc(1);
-                    Some((e.src_path.clone(), dest_abs, e.size, e.mtime_ms, e.crc32c))
+                    Some((src_path, dest_abs, size, mtime_ms, crc32c))
                 }
                 Err(err) => {
                     copy_errors.lock().unwrap()
-                        .insert(e.src_path.clone(), err.to_string());
+                        .insert(src_path, err.to_string());
                     copy_bar.inc(1);
                     None
                 }
@@ -296,6 +317,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     let copy_err_count = copy_errors.lock().unwrap().len();
     let copied_len = copied.len();
+    
+
 
     // ------------------------------------------------------------------
     // Stage D: strong hash + three-layer dedup
@@ -368,6 +391,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     // Pass D2: sequential DB lookup + DashMap dedup
     let seen: DashMap<Vec<u8>, std::path::PathBuf> = DashMap::new();
+    
     let hash_results: Vec<HashResult> = hashed
         .into_iter()
         .map(|mut r| {
@@ -490,6 +514,88 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         manifest_path: Some(_manifest_path),
         all_cache_hit: false,
     })
+}
+
+/// Resolve unique destination path, checking both filesystem and in-memory assigned destinations.
+/// Used during serial preparation phase to avoid conflicts between files in the same batch.
+fn resolve_unique_dest_path_serial(
+    dst_fs: &SystemFs,
+    dest_path: &Path,
+    rename_template: &str,
+    assigned: &std::collections::HashSet<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    use std::path::Path;
+    
+    // Check filesystem first
+    match dst_fs.exists(dest_path) {
+        Ok(true) => {
+            // Destination exists on filesystem - need to find unique name
+            return resolve_dest_conflict(dst_fs, dest_path, rename_template, assigned);
+        }
+        Ok(false) => {
+            // Destination doesn't exist on filesystem, check assigned set
+            if !assigned.contains(dest_path) {
+                return dest_path.to_path_buf();
+            }
+            // Destination is already assigned in this batch - need to find unique name
+        }
+        Err(_) => return dest_path.to_path_buf(), // On error, try original path
+    }
+
+    // Destination conflicts with assigned set - generate unique name
+    resolve_dest_conflict(dst_fs, dest_path, rename_template, assigned)
+}
+
+/// Helper to resolve destination conflicts against both filesystem and assigned set.
+fn resolve_dest_conflict(
+    dst_fs: &SystemFs,
+    dest_path: &Path,
+    rename_template: &str,
+    assigned: &std::collections::HashSet<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    use std::path::Path;
+    
+    let parent = dest_path.parent().unwrap_or(Path::new(""));
+    let filename = dest_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    
+    // Split into stem and extension
+    let (stem, ext) = if let Some(pos) = filename.rfind('.') {
+        (&filename[..pos], &filename[pos..]) // ext includes the dot
+    } else {
+        (&filename[..], "")
+    };
+
+    // Try incrementing counter until we find a free name
+    for n in 1..=9999 {
+        let new_filename = rename_template
+            .replace("$filename", stem)
+            .replace("$ext", ext.trim_start_matches('.'))
+            .replace("$n", &n.to_string());
+        
+        let new_dest = parent.join(&new_filename);
+        
+        // Check both filesystem and assigned set
+        let fs_exists = match dst_fs.exists(&new_dest) {
+            Ok(true) => true,
+            Ok(false) => false,
+            Err(_) => false, // On error, assume doesn't exist
+        };
+        
+        if !fs_exists && !assigned.contains(&new_dest) {
+            return new_dest;
+        }
+    }
+
+    // Fallback: append timestamp if all numbers exhausted
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let fallback_name = format!("{}.{}{}", stem, timestamp, ext);
+    parent.join(fallback_name)
 }
 
 #[cfg(test)]

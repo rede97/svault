@@ -356,10 +356,49 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         });
     }
 
-    // Stage C: Copy files
+    // Stage C: Prepare destinations (serial) and copy files (parallel/serial)
     use crate::vfs::system::SystemFs;
     let dst_fs = SystemFs::open(opts.vault_root)
         .map_err(|e| anyhow::anyhow!("cannot open vault: {e}"))?;
+
+    // Pre-resolve destination paths in serial to avoid race conditions
+    // when multiple files map to the same destination.
+    // We need to track assigned destinations in memory since the filesystem
+    // doesn't have the files yet (we're in the preparation phase).
+    let mut prepared_entries: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32)> = Vec::new();
+    let mut assigned_dests: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    
+
+    
+    for e in &likely_new {
+        let rel = e
+            .src_path
+            .strip_prefix(opts.src_path)
+            .unwrap_or(&e.src_path);
+        
+        // Read EXIF from source via VFS
+        let (taken_ms, device) = read_exif_from_vfs(opts.src_backend, &e.src_path, e.mtime_ms);
+        let dest_rel = resolve_dest_path(
+            &opts.import_config.path_template,
+            rel,
+            taken_ms,
+            &device,
+        );
+        let dest_path = opts.vault_root.join(&dest_rel);
+
+        // Handle filename conflicts with already-assigned destinations
+        // First check filesystem, then check in-memory assigned_dests
+        let unique_dest = resolve_unique_dest_path_with_assigned(
+            &dst_fs,
+            &dest_path,
+            &opts.import_config.rename_template,
+            &assigned_dests,
+        );
+        
+
+        assigned_dests.insert(unique_dest.clone());
+        prepared_entries.push((e.src_path.clone(), unique_dest, e.size as i64, taken_ms, e.crc32c));
+    }
 
     let copy_errors: Arc<Mutex<HashMap<std::path::PathBuf, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -369,7 +408,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         Arc::new(std::sync::atomic::AtomicBool::new(false));
     let disconnect_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    let copy_bar = ProgressBar::new(likely_new.len() as u64);
+    let copy_bar = ProgressBar::new(prepared_entries.len() as u64);
     copy_bar.set_style(
         ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
             .unwrap()
@@ -378,37 +417,16 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     copy_bar.set_prefix("Copying  ");
 
     // Copy files: parallel for local FS, sequential for MTP
-    let copy_op = |e: &&ScanEntry| -> Option<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> {
+    let copy_op = |(src_path, dest_path, size, taken_ms, crc): (std::path::PathBuf, std::path::PathBuf, i64, i64, u32)| -> Option<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32)> {
         // Check if already disconnected
         if disconnected.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
         
-        let rel = e
-            .src_path
-            .strip_prefix(opts.src_path)
-            .unwrap_or(&e.src_path);
-        let filename = rel
+        let filename = src_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| rel.display().to_string());
-
-        // Read EXIF from source via VFS
-        let (taken_ms, device) = read_exif_from_vfs(opts.src_backend, &e.src_path, e.mtime_ms);
-        let dest_rel = resolve_dest_path(
-            &opts.import_config.path_template,
-            rel,
-            taken_ms,
-            &device,
-        );
-        let mut dest_path = opts.vault_root.join(&dest_rel);
-
-        // Handle filename conflicts - generate unique filename if needed
-        dest_path = resolve_unique_dest_path(
-            &dst_fs,
-            &dest_path,
-            &opts.import_config.rename_template,
-        );
+            .unwrap_or_default();
 
         copy_bar.set_message(filename.clone());
 
@@ -416,17 +434,17 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         if let Some(parent) = dest_path.parent() {
             if let Err(err) = dst_fs.create_dir_all(parent) {
                 let mut errors = copy_errors.lock().unwrap();
-                errors.insert(e.src_path.clone(), err.to_string());
+                errors.insert(src_path.clone(), err.to_string());
                 copy_bar.inc(1);
                 return None;
             }
         }
 
         // Use VFS copy_to
-        match opts.src_backend.copy_to(&e.src_path, &dst_fs, &dest_path) {
+        match opts.src_backend.copy_to(&src_path, &dst_fs, &dest_path) {
             Ok(_) => {
                 copy_bar.inc(1);
-                Some((e.src_path.clone(), dest_path, e.size, taken_ms, e.crc32c))
+                Some((src_path, dest_path, size, taken_ms, crc))
             }
             Err(err) => {
                 let err_str = err.to_string();
@@ -443,17 +461,17 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 
                 // Regular error - just log it
                 let mut errors = copy_errors.lock().unwrap();
-                errors.insert(e.src_path.clone(), err_str);
+                errors.insert(src_path, err_str);
                 copy_bar.inc(1);
                 None
             }
         }
     };
 
-    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = if parallel {
-        likely_new.par_iter().filter_map(copy_op).collect()
+    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32)> = if parallel {
+        prepared_entries.into_par_iter().filter_map(copy_op).collect()
     } else {
-        likely_new.iter().filter_map(copy_op).collect()
+        prepared_entries.into_iter().filter_map(copy_op).collect()
     };
     
     // Check if disconnected
@@ -509,7 +527,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     );
     verify_bar.set_prefix("Verifying");
 
-    let verified: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32, Vec<u8>)> = copied
+    let verified: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32, Vec<u8>)> = copied
         .into_par_iter()
         .filter_map(|(src, dest, size, taken_ms, crc)| {
             let filename = src
@@ -645,6 +663,75 @@ fn resolve_unique_dest_path(
             Ok(false) => return new_dest,
             Ok(true) => continue, // Try next number
             Err(_) => return new_dest, // On error, try this path anyway
+        }
+    }
+
+    // Fallback: append timestamp if all numbers exhausted
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let fallback_name = format!("{}.{}{}", stem, timestamp, ext);
+    parent.join(fallback_name)
+}
+
+/// Resolve unique destination path, checking both filesystem and in-memory assigned destinations.
+/// This is used during the serial preparation phase to avoid conflicts between files
+/// that are being imported in the same batch.
+fn resolve_unique_dest_path_with_assigned(
+    dst_fs: &dyn VfsBackend,
+    dest_path: &Path,
+    rename_template: &str,
+    assigned: &std::collections::HashSet<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    // Check filesystem first
+    match dst_fs.exists(dest_path) {
+        Ok(true) => {
+            // Destination exists on filesystem - need to find unique name
+            return resolve_unique_dest_path(dst_fs, dest_path, rename_template);
+        }
+        Ok(false) => {
+            // Destination doesn't exist on filesystem, check assigned set
+            if !assigned.contains(dest_path) {
+                return dest_path.to_path_buf();
+            }
+            // Destination is already assigned in this batch - need to find unique name
+        }
+        Err(_) => return dest_path.to_path_buf(), // On error, try original path
+    }
+
+    // Destination conflicts with assigned set - generate unique name
+    let parent = dest_path.parent().unwrap_or(Path::new(""));
+    let filename = dest_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    
+    // Split into stem and extension
+    let (stem, ext) = if let Some(pos) = filename.rfind('.') {
+        (&filename[..pos], &filename[pos..]) // ext includes the dot
+    } else {
+        (&filename[..], "")
+    };
+
+    // Try incrementing counter until we find a free name
+    for n in 1..=9999 {
+        let new_filename = rename_template
+            .replace("$filename", stem)
+            .replace("$ext", ext.trim_start_matches('.'))
+            .replace("$n", &n.to_string());
+        
+        let new_dest = parent.join(&new_filename);
+        
+        // Check both filesystem and assigned set
+        let fs_exists = match dst_fs.exists(&new_dest) {
+            Ok(true) => true,
+            Ok(false) => false,
+            Err(_) => false, // On error, assume doesn't exist
+        };
+        
+        if !fs_exists && !assigned.contains(&new_dest) {
+            return new_dest;
         }
     }
 
@@ -824,7 +911,7 @@ fn write_pending_vfs(
 /// Write manifest file (VFS version).
 fn write_manifest_vfs(
     path: &std::path::Path,
-    entries: &[(std::path::PathBuf, std::path::PathBuf, u64, i64, u32, Vec<u8>)],
+    entries: &[(std::path::PathBuf, std::path::PathBuf, i64, i64, u32, Vec<u8>)],
 ) -> Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;

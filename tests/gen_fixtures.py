@@ -111,19 +111,31 @@ rules.append({
 })
 
 # ---------------------------------------------------------------------------
-# Scenario 4: Exact duplicate — same content as s1, different filename
+# Scenario 4: Exact duplicates — same content as s1, different filenames
+# Create 6 duplicates to test batch dedup with larger sample
 # ---------------------------------------------------------------------------
-p_dup = SOURCE_DIR / "duplicate_of_apple.jpg"
-shutil.copy2(SOURCE_DIR / "apple_with_exif.jpg", p_dup)
-rules.append({
-    "id": "s4_duplicate",
-    "src": "duplicate_of_apple.jpg",
-    "scenario": "exact byte-for-byte duplicate of apple_with_exif.jpg",
-    "expected_status": "duplicate",
-    "expected_dup_reason": ["db", "batch"],
-    "expected_db_row": False,
-    "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup",
-})
+# Use 'z_' prefix so duplicates come after 'apple_with_exif.jpg' alphabetically
+# This ensures apple_with_exif.jpg is imported first as the canonical file
+dup_names = [
+    "z_dup_apple_1.jpg",
+    "z_dup_apple_2.jpg", 
+    "z_dup_apple_3.jpg",
+    "z_dup_apple_4.jpg",
+    "z_dup_apple_5.jpg",
+    "z_dup_apple_6.jpg",
+]
+for i, dup_name in enumerate(dup_names):
+    p_dup = SOURCE_DIR / dup_name
+    shutil.copy2(SOURCE_DIR / "apple_with_exif.jpg", p_dup)
+    rules.append({
+        "id": f"s4_duplicate_{i}" if i > 0 else "s4_duplicate",
+        "src": dup_name,
+        "scenario": f"exact duplicate #{i+1} of apple_with_exif.jpg" if i > 0 else "exact byte-for-byte duplicate of apple_with_exif.jpg",
+        "expected_status": "duplicate",
+        "expected_dup_reason": ["db", "batch"],
+        "expected_db_row": False,
+        "note": "Must be imported AFTER apple_with_exif.jpg to trigger DB dedup",
+    })
 
 # ---------------------------------------------------------------------------
 # Scenario 5: Samsung device
@@ -157,6 +169,83 @@ rules.append({
     "expected_crc32c_nonnull": True,
     "expected_db_row": True,
 })
+
+# ---------------------------------------------------------------------------
+# Scenario 7 & 8: Filename conflict — same name, different content (collision rename)
+# ---------------------------------------------------------------------------
+# Create two directories to simulate two cameras with same model
+# Both have a file named DSC0001.jpg (camera default naming)
+# Need different GPS coordinates to ensure different CRC (CRC is computed from EXIF)
+
+def embed_exif_with_gps(path: Path, dt_original: str, make: str, model: str, 
+                        lat: float, lon: float) -> None:
+    """Embed EXIF metadata with GPS coordinates."""
+    cmd = ["exiftool", "-overwrite_original", "-ignoreMinorErrors"]
+    
+    cmd.extend([f"-DateTimeOriginal={dt_original}", f"-DateTime={dt_original}"])
+    cmd.extend([f"-Make={make}", f"-Model={model}"])
+    
+    # GPS coordinates
+    cmd.extend([
+        f"-GPSLatitude={abs(lat)}",
+        f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}",
+        f"-GPSLongitude={abs(lon)}",
+        f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}",
+    ])
+    
+    cmd.append(str(path))
+    subprocess.run(cmd, check=True, capture_output=True)
+
+# ---------------------------------------------------------------------------
+# Scenarios 7-14: Filename conflict stress test - 8 cameras with same filename
+# All have DSC0001.jpg (camera default naming), same model, same day
+# Different GPS coordinates ensure different CRC/content
+# ---------------------------------------------------------------------------
+
+cameras = [
+    # (camera_id, gps_location, pixel_rgb, time_offset)
+    ("camera_a", (35.6762, 139.6503), (100, 100, 100), "10:00:00"),   # Tokyo
+    ("camera_b", (51.5074, -0.1278), (110, 110, 110), "10:05:00"),    # London
+    ("camera_c", (40.7128, -74.0060), (120, 120, 120), "10:10:00"),   # New York
+    ("camera_d", (48.8566, 2.3522), (130, 130, 130), "10:15:00"),     # Paris
+    ("camera_e", (55.7558, 37.6173), (140, 140, 140), "10:20:00"),    # Moscow
+    ("camera_f", (39.9042, 116.4074), (150, 150, 150), "10:25:00"),   # Beijing
+    ("camera_g", (37.7749, -122.4194), (160, 160, 160), "10:30:00"),  # San Francisco
+    ("camera_h", (-33.8688, 151.2093), (170, 170, 170), "10:35:00"),  # Sydney
+]
+
+for i, (cam_id, (lat, lon), rgb, time_str) in enumerate(cameras):
+    (SOURCE_DIR / cam_id).mkdir(exist_ok=True)
+    p = SOURCE_DIR / cam_id / "DSC0001.jpg"
+    make_jpeg(p, pixel_rgb=rgb)
+    embed_exif_with_gps(p, dt_original=f"2024:05:03 {time_str}", 
+                        make="Sony", model="A7IV", lat=lat, lon=lon)
+    
+    if i == 0:
+        # First camera - should get original name
+        rules.append({
+            "id": f"s7_{cam_id}_first",
+            "src": f"{cam_id}/DSC0001.jpg",
+            "scenario": f"{cam_id} DSC0001.jpg - first, no rename",
+            "expected_status": "imported",
+            "expected_dest_contains": ["2024", "05-03", "Sony A7IV"],
+            "expected_crc32c_nonnull": True,
+            "expected_db_row": True,
+            "check_original_name": "DSC0001.jpg",
+        })
+    else:
+        # Subsequent cameras - should be renamed
+        rules.append({
+            "id": f"s{7+i}_{cam_id}_conflict",
+            "src": f"{cam_id}/DSC0001.jpg",
+            "scenario": f"{cam_id} DSC0001.jpg - conflict #{i}, should be renamed",
+            "expected_status": "imported",
+            "expected_dest_contains": ["2024", "05-03", "Sony A7IV"],
+            "expected_dest_not_contains": [cam_id],
+            "expected_crc32c_nonnull": True,
+            "expected_db_row": True,
+            "check_renamed_from": "DSC0001.jpg",
+        })
 
 # ---------------------------------------------------------------------------
 # Chaos fixtures — for AI agent scenarios

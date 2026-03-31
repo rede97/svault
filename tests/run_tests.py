@@ -126,9 +126,14 @@ class VaultEnv:
             check=True,
         )
 
-        # Copy fixtures into RAMDisk
-        for f in (FIXTURES_DIR / "source").glob("*"):
-            shutil.copy2(f, self.source_dir / f.name)
+        # Copy fixtures into RAMDisk (including subdirectories)
+        source_fixture_dir = FIXTURES_DIR / "source"
+        for f in source_fixture_dir.rglob("*"):
+            if f.is_file():
+                rel_path = f.relative_to(source_fixture_dir)
+                dest = self.source_dir / rel_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest)
         if (FIXTURES_DIR / "chaos").exists():
             shutil.copytree(FIXTURES_DIR / "chaos", self.chaos_dir, dirs_exist_ok=True)
         shutil.copy2(FIXTURES_DIR / "test_rules.json", self.results_dir / "test_rules.json")
@@ -184,7 +189,22 @@ def dump_db(vault_dir: Path, out_path: Path) -> list[dict]:
 # Result checker
 # ---------------------------------------------------------------------------
 def find_db_rows(db_rows: list[dict], filename: str) -> list[dict]:
-    return [r for r in db_rows if Path(r["path"]).name == filename]
+    """Find DB rows by filename. filename may include subdirs like 'camera_a/DSC0001.jpg'."""
+    # Extract just the basename for matching (import flattens subdirs)
+    basename = Path(filename).name
+    stem = Path(filename).stem
+    ext = Path(filename).suffix
+    
+    matches = []
+    for r in db_rows:
+        path_name = Path(r["path"]).name
+        # Exact match
+        if path_name == basename:
+            matches.append(r)
+        # Renamed match: stem.N.ext (e.g., DSC0001.1.jpg)
+        elif path_name.startswith(stem + ".") and path_name.endswith(ext):
+            matches.append(r)
+    return matches
 
 
 def check_scenario(scenario: dict, db_rows: list[dict], vault_dir: Path,
@@ -229,22 +249,48 @@ def check_scenario(scenario: dict, db_rows: list[dict], vault_dir: Path,
     # dest path contains expected substrings
     dest_contains = scenario.get("expected_dest_contains", [])
     if dest_contains and rows:
-        for row in rows:
-            actual_path = row.get("path", "")
-            for substr in dest_contains:
+        # For conflict tests, check that at least one row matches
+        require_all_rows = not scenario.get("check_renamed", False)
+        
+        for substr in dest_contains:
+            if require_all_rows:
+                # All rows must contain the substring
+                all_match = all(substr in row.get("path", "") for row in rows)
                 record(f"dest_contains:{substr}",
-                       substr in actual_path,
-                       f"path={actual_path}")
+                       all_match,
+                       f"all paths contain '{substr}'")
+            else:
+                # At least one row must contain the substring
+                any_match = any(substr in row.get("path", "") for row in rows)
+                record(f"dest_contains:{substr}",
+                       any_match,
+                       f"at least one path contains '{substr}'")
 
     # dest path must NOT contain certain substrings
     dest_not_contains = scenario.get("expected_dest_not_contains", [])
     if dest_not_contains and rows:
-        for row in rows:
-            actual_path = row.get("path", "")
-            for substr in dest_not_contains:
-                record(f"dest_not_contains:{substr}",
-                       substr not in actual_path,
-                       f"path={actual_path}")
+        # For each substring, all rows must NOT contain it
+        for substr in dest_not_contains:
+            all_match = all(substr not in row.get("path", "") for row in rows)
+            record(f"dest_not_contains:{substr}",
+                   all_match,
+                   f"no path contains '{substr}'")
+    
+    # Check for specific original filename (not renamed)
+    check_original = scenario.get("check_original_name")
+    if check_original and rows:
+        found = any(Path(r["path"]).name == check_original for r in rows)
+        record("original_name_exists", found, f"looking for {check_original}")
+    
+    # Check for renamed file (DSC0001.1.jpg style)
+    check_renamed_from = scenario.get("check_renamed_from")
+    if check_renamed_from and rows:
+        import re
+        stem = Path(check_renamed_from).stem
+        ext = Path(check_renamed_from).suffix
+        pattern = re.compile(re.escape(stem) + r'\.\d+' + re.escape(ext))
+        found = any(pattern.search(Path(r["path"]).name) for r in rows)
+        record("renamed_file_exists", found, f"looking for {stem}.N{ext}")
 
     # Duplicate: must appear in import log
     if expected_status == "duplicate":
