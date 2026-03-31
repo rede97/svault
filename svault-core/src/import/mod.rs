@@ -265,6 +265,14 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
             match src_fs.copy_to(rel, &dst_fs, &dest_abs) {
                 Ok(_) => {
+                    // Show destination path relative to vault root
+                    let vault_rel = dest_abs.strip_prefix(&opts.vault_root)
+                        .unwrap_or(&dest_abs)
+                        .display()
+                        .to_string();
+                    eprintln!("  {} {}",
+                        style("Added").green(),
+                        style(vault_rel).dim());
                     copy_bar.set_message(filename);
                     copy_bar.inc(1);
                     Some((e.src_path.clone(), dest_abs, e.size, e.mtime_ms, e.crc32c))
