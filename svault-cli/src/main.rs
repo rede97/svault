@@ -67,7 +67,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sync { .. } => todo!("sync"),
         Command::Reconcile { .. } => todo!("reconcile"),
         Command::Verify { .. } => todo!("verify"),
-        Command::Status => todo!("status"),
+        Command::Status => {
+            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+            let report = svault_core::status::generate_report(
+                &vault_root,
+                &db,
+                svault_core::status::StatusOptions::default(),
+            )?;
+            if matches!(cli.output, cli::OutputFormat::Json) {
+                println!("{}", svault_core::status::render_json(&report)?);
+            } else {
+                print!("{}", svault_core::status::render_human(&report));
+            }
+            Ok(())
+        }
         Command::History { .. } => todo!("history"),
         Command::BackgroundHash { .. } => todo!("background-hash"),
         Command::Clone { .. } => todo!("clone"),

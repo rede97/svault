@@ -13,8 +13,10 @@
 //!   6. COMMIT (steps 4+5 in one transaction).
 
 pub mod files;
+pub mod stats;
 
 pub use files::FileRow;
+pub use stats::{VaultStats, ExtensionStats, format_bytes, format_count};
 
 use rusqlite::{Connection, OptionalExtension, Result, params};
 use std::path::Path;
