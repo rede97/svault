@@ -306,7 +306,14 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 taken_ms,
                 &device,
             );
-            let dest_path = opts.vault_root.join(&dest_rel);
+            let mut dest_path = opts.vault_root.join(&dest_rel);
+
+            // Handle filename conflicts - generate unique filename if needed
+            dest_path = resolve_unique_dest_path(
+                &dst_fs,
+                &dest_path,
+                &opts.import_config.rename_template,
+            );
 
             copy_bar.set_message(filename.clone());
 
@@ -450,6 +457,59 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         manifest_path: Some(manifest_path),
         all_cache_hit: false,
     })
+}
+
+/// Resolve unique destination path by checking for conflicts and applying rename template.
+/// If the destination exists, generates a new name like "IMG_001.1.jpg" using the rename_template.
+fn resolve_unique_dest_path(
+    dst_fs: &dyn VfsBackend,
+    dest_path: &Path,
+    rename_template: &str,
+) -> std::path::PathBuf {
+    // If destination doesn't exist, use it as-is
+    match dst_fs.exists(dest_path) {
+        Ok(false) => return dest_path.to_path_buf(),
+        Ok(true) => {}
+        Err(_) => return dest_path.to_path_buf(), // On error, try original path
+    }
+
+    // Destination exists - generate unique name
+    let parent = dest_path.parent().unwrap_or(Path::new(""));
+    let filename = dest_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    
+    // Split into stem and extension
+    let (stem, ext) = if let Some(pos) = filename.rfind('.') {
+        (&filename[..pos], &filename[pos..]) // ext includes the dot
+    } else {
+        (&filename[..], "")
+    };
+
+    // Try incrementing counter until we find a free name
+    for n in 1..=9999 {
+        let new_filename = rename_template
+            .replace("$filename", stem)
+            .replace("$ext", ext.trim_start_matches('.'))
+            .replace("$n", &n.to_string());
+        
+        let new_dest = parent.join(&new_filename);
+        
+        match dst_fs.exists(&new_dest) {
+            Ok(false) => return new_dest,
+            Ok(true) => continue, // Try next number
+            Err(_) => return new_dest, // On error, try this path anyway
+        }
+    }
+
+    // Fallback: append timestamp if all numbers exhausted
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let fallback_name = format!("{}.{}{}", stem, timestamp, ext);
+    parent.join(fallback_name)
 }
 
 /// Read EXIF data from VFS file.
@@ -637,4 +697,278 @@ fn write_manifest_vfs(
         )?;
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vfs::system::SystemFs;
+    use std::io::Write;
+
+    /// Create a test file with the given content
+    fn create_test_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(content)?;
+        Ok(())
+    }
+
+    /// Create a mock JPEG file with EXIF-like content
+    fn create_mock_jpeg(path: &Path) -> std::io::Result<()> {
+        // Minimal JPEG-like header
+        let mut content = vec![0xFF, 0xD8, 0xFF, 0xE1]; // JPEG SOI + APP1 marker
+        // Add some padding to make it look like a file
+        content.extend_from_slice(&[0; 100]);
+        create_test_file(path, &content)
+    }
+
+    #[test]
+    fn test_resolve_unique_dest_path_no_conflict() {
+        // Create a temporary directory
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = SystemFs::open(temp_dir.path()).unwrap();
+        
+        let dest = temp_dir.path().join("test.jpg");
+        let result = resolve_unique_dest_path(&fs, &dest, "$filename.$n.$ext");
+        
+        // Should return original path since file doesn't exist
+        assert_eq!(result, dest);
+    }
+
+    #[test]
+    fn test_resolve_unique_dest_path_with_conflict() {
+        // Create a temporary directory
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = SystemFs::open(temp_dir.path()).unwrap();
+        
+        // Create existing file
+        let dest = temp_dir.path().join("IMG_001.jpg");
+        create_test_file(&dest, b"existing").unwrap();
+        
+        // Should generate a new name
+        let result = resolve_unique_dest_path(&fs, &dest, "$filename.$n.$ext");
+        
+        assert_ne!(result, dest);
+        assert!(result.to_string_lossy().contains("IMG_001.1.jpg"));
+    }
+
+    #[test]
+    fn test_resolve_unique_dest_path_multiple_conflicts() {
+        // Create a temporary directory
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = SystemFs::open(temp_dir.path()).unwrap();
+        
+        // Create multiple existing files with same base name
+        create_test_file(&temp_dir.path().join("IMG_001.jpg"), b"v1").unwrap();
+        create_test_file(&temp_dir.path().join("IMG_001.1.jpg"), b"v2").unwrap();
+        create_test_file(&temp_dir.path().join("IMG_001.2.jpg"), b"v3").unwrap();
+        
+        let dest = temp_dir.path().join("IMG_001.jpg");
+        let result = resolve_unique_dest_path(&fs, &dest, "$filename.$n.$ext");
+        
+        // Should find the next available number (3)
+        assert!(result.to_string_lossy().contains("IMG_001.3.jpg"));
+    }
+
+    /// Test scenario: Multiple cameras with same model importing simultaneously
+    /// 
+    /// This tests the critical scenario where two photographers with the same
+    /// camera model (e.g., two "RICOH GR IV" cameras) import at the same time.
+    /// The files will have the same device name in the path template, causing
+    /// potential conflicts.
+    #[test]
+    fn test_multi_camera_same_model_conflict() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_dir = tempfile::tempdir().unwrap();
+        let _fs = SystemFs::open(temp_dir.path()).unwrap();
+        
+        // Simulate Camera A files
+        let camera_a_dir = temp_dir.path().join("camera_a");
+        create_mock_jpeg(&camera_a_dir.join("IMG_001.jpg")).unwrap();
+        create_mock_jpeg(&camera_a_dir.join("IMG_002.jpg")).unwrap();
+        
+        // Simulate Camera B files (same model, same filenames, same date)
+        // This happens when two photographers use the same camera model
+        // and shoot on the same day, resulting in identical filenames
+        let camera_b_dir = temp_dir.path().join("camera_b");
+        create_mock_jpeg(&camera_b_dir.join("IMG_001.jpg")).unwrap(); // Same name!
+        create_mock_jpeg(&camera_b_dir.join("IMG_002.jpg")).unwrap(); // Same name!
+        
+        // Import Camera A first
+        let entries_a = vec![
+            DirEntry {
+                path: camera_a_dir.join("IMG_001.jpg"),
+                size: 100,
+                mtime_ms: 1714552800000, // 2024-05-01 10:00:00
+                is_dir: false,
+            },
+            DirEntry {
+                path: camera_a_dir.join("IMG_002.jpg"),
+                size: 100,
+                mtime_ms: 1714552800000,
+                is_dir: false,
+            },
+        ];
+        
+        // Copy files to vault (simulating Camera A import)
+        let vault_fs = SystemFs::open(vault_dir.path()).unwrap();
+        let device_name = "RICOH_GR_IV"; // Same device for both cameras
+        
+        for entry in &entries_a {
+            let filename = entry.path.file_name().unwrap();
+            let dest_rel = resolve_dest_path(
+                "$year/$mon-$day/$device/$filename",
+                Path::new(filename),
+                entry.mtime_ms,
+                device_name,
+            );
+            let dest_path = vault_dir.path().join(&dest_rel);
+            let unique_dest = resolve_unique_dest_path(&vault_fs, &dest_path, "$filename.$n.$ext");
+            
+            // Create parent directories and copy
+            if let Some(parent) = unique_dest.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::copy(&entry.path, &unique_dest).unwrap();
+        }
+        
+        // Verify Camera A files are in place
+        let expected_a1 = vault_dir.path().join("2024/05-01/RICOH_GR_IV/IMG_001.jpg");
+        let expected_a2 = vault_dir.path().join("2024/05-01/RICOH_GR_IV/IMG_002.jpg");
+        assert!(expected_a1.exists());
+        assert!(expected_a2.exists());
+        
+        // Now import Camera B (same model, same filenames)
+        let entries_b = vec![
+            DirEntry {
+                path: camera_b_dir.join("IMG_001.jpg"),
+                size: 150, // Different size (different content)
+                mtime_ms: 1714552800000, // Same timestamp
+                is_dir: false,
+            },
+            DirEntry {
+                path: camera_b_dir.join("IMG_002.jpg"),
+                size: 150,
+                mtime_ms: 1714552800000,
+                is_dir: false,
+            },
+        ];
+        
+        let mut renamed_count = 0;
+        for entry in &entries_b {
+            let filename = entry.path.file_name().unwrap();
+            let dest_rel = resolve_dest_path(
+                "$year/$mon-$day/$device/$filename",
+                Path::new(filename),
+                entry.mtime_ms,
+                device_name,
+            );
+            let dest_path = vault_dir.path().join(&dest_rel);
+            let unique_dest = resolve_unique_dest_path(&vault_fs, &dest_path, "$filename.$n.$ext");
+            
+            // Should have been renamed to avoid conflict
+            if unique_dest != dest_path {
+                renamed_count += 1;
+            }
+            
+            // Create parent directories and copy
+            if let Some(parent) = unique_dest.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::copy(&entry.path, &unique_dest).unwrap();
+        }
+        
+        // Both files should have been renamed (conflict with Camera A)
+        assert_eq!(renamed_count, 2, "Both Camera B files should be renamed");
+        
+        // Verify renamed files exist
+        let expected_b1_renamed = vault_dir.path().join("2024/05-01/RICOH_GR_IV/IMG_001.1.jpg");
+        let expected_b2_renamed = vault_dir.path().join("2024/05-01/RICOH_GR_IV/IMG_002.1.jpg");
+        assert!(expected_b1_renamed.exists(), "Camera B IMG_001 should be renamed");
+        assert!(expected_b2_renamed.exists(), "Camera B IMG_002 should be renamed");
+        
+        // Verify we have 4 files total
+        let vault_files: Vec<_> = walkdir::WalkDir::new(vault_dir.path())
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .collect();
+        assert_eq!(vault_files.len(), 4, "Should have 4 total files (2 from each camera)");
+    }
+
+    /// Test scenario: Same camera, same date, burst mode creates sequential files
+    /// 
+    /// This tests that burst shots like IMG_001.jpg, IMG_002.jpg don't conflict
+    /// with existing files from an earlier import of the same camera.
+    #[test]
+    fn test_same_camera_burst_mode_import() {
+        let _temp_dir = tempfile::tempdir().unwrap();
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_fs = SystemFs::open(vault_dir.path()).unwrap();
+        
+        // First import: Burst shots 001-003
+        let first_import = vec!["IMG_001.jpg", "IMG_002.jpg", "IMG_003.jpg"];
+        for name in &first_import {
+            let dest = vault_dir.path().join("2024/05-01/Camera/").join(name);
+            create_test_file(&dest, b"first").unwrap();
+        }
+        
+        // Second import from same camera: More burst shots, overlapping sequence
+        let second_import = vec!["IMG_002.jpg", "IMG_003.jpg", "IMG_004.jpg"];
+        let mut rename_results = vec![];
+        
+        for name in &second_import {
+            let dest = vault_dir.path().join("2024/05-01/Camera/").join(name);
+            let unique = resolve_unique_dest_path(&vault_fs, &dest, "$filename.$n.$ext");
+            create_test_file(&unique, b"second").unwrap();
+            
+            rename_results.push((name.to_string(), unique.file_name().unwrap().to_string_lossy().to_string()));
+        }
+        
+        // IMG_002 and IMG_003 should be renamed (conflict)
+        assert!(rename_results[0].1.contains("IMG_002.1.jpg") || rename_results[0].1 == "IMG_002.jpg",
+            "IMG_002 from second import should be renamed or original if not exists: got {}", rename_results[0].1);
+        // Actually IMG_002 exists from first import, so should be renamed
+        assert!(rename_results[0].1.contains(".1."), "IMG_002 should be renamed to .1.: got {}", rename_results[0].1);
+        assert!(rename_results[1].1.contains(".1."), "IMG_003 should be renamed: got {}", rename_results[1].1);
+        // IMG_004 is new, should not be renamed
+        assert_eq!(rename_results[2].1, "IMG_004.jpg", "IMG_004 should not be renamed");
+    }
+
+    /// Test edge case: Filename with multiple dots
+    #[test]
+    fn test_filename_with_multiple_dots() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = SystemFs::open(temp_dir.path()).unwrap();
+        
+        // Create file with multiple dots in name
+        let dest = temp_dir.path().join("IMG_001.COPY.jpg");
+        create_test_file(&dest, b"existing").unwrap();
+        
+        let new_dest = temp_dir.path().join("IMG_001.COPY.jpg");
+        let result = resolve_unique_dest_path(&fs, &new_dest, "$filename.$n.$ext");
+        
+        // Should handle the extension correctly (last dot)
+        let result_str = result.to_string_lossy();
+        assert!(result_str.contains("IMG_001.COPY.1.jpg"), "Should insert counter before extension: got {}", result_str);
+    }
+
+    /// Test edge case: File without extension
+    #[test]
+    fn test_filename_without_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs = SystemFs::open(temp_dir.path()).unwrap();
+        
+        let dest = temp_dir.path().join("README");
+        create_test_file(&dest, b"existing").unwrap();
+        
+        let new_dest = temp_dir.path().join("README");
+        let result = resolve_unique_dest_path(&fs, &new_dest, "$filename.$n$ext");
+        
+        let result_str = result.to_string_lossy();
+        assert!(result_str.contains("README.1"), "Should add counter to file without extension: got {}", result_str);
+    }
 }
