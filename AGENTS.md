@@ -72,6 +72,29 @@ cargo run -p svault-cli -- import <source-dir>
 - 更新 [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) 添加新测试记录
 - Python E2E 测试用于验证端到端场景
 
+### ⚠️ 重要：必须在 RAMDisk 中测试
+
+**永远不要**在项目目录中运行 `svault init` 或 `svault import`！
+
+✅ **正确做法**:
+```bash
+# 方法 1: Python 测试框架（推荐）
+python3 tests/run_tests.py --verbose
+
+# 方法 2: 手动进入 RAMDisk
+bash tests/setup_ramdisk.sh
+cd .ramdisk/vault
+svault status
+```
+
+❌ **错误做法**:
+```bash
+cd /home/mxq/Codes/svault
+svault init      # 错误！会污染项目目录
+```
+
+详见 [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) 的 "重要测试规则" 章节。
+
 ---
 
 ## 架构提醒

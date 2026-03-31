@@ -48,6 +48,11 @@
 | *待添加* | `src/db/files.rs` | CRC32C 查询 | 🔲 TODO | |
 | *待添加* | `src/db/files.rs` | 哈希查询 | 🔲 TODO | |
 | *待添加* | `src/db/files.rs` | 文件插入 | 🔲 TODO | |
+| `test_format_bytes` | `src/db/stats.rs` | 字节格式化 | ✅ PASS | 内联测试 |
+| `test_format_count` | `src/db/stats.rs` | 数字千分位格式化 | ✅ PASS | 内联测试 |
+| *待添加* | `src/db/stats.rs` | vault_stats 查询 | 🔲 TODO | |
+| *待添加* | `src/db/stats.rs` | extension_stats 查询 | 🔲 TODO | |
+| *待添加* | `src/db/stats.rs` | recent_imports 查询 | 🔲 TODO | |
 
 ### vfs 模块
 
@@ -144,6 +149,7 @@
 | 2026-03-31 | 初始版本：记录现有测试状态，添加待办清单 | Kimi |
 | 2026-03-31 | 修复 EXIF 测试：使用 exiftool 生成测试固件 | Kimi |
 | 2026-03-31 | 删除 scratch_exif.rs 临时测试文件，更新测试计数 | Kimi |
+| 2026-03-31 | 实现 `svault status` 命令，添加 2 个单元测试 | Kimi |
 
 ---
 
@@ -160,12 +166,54 @@ cargo test -p svault-cli
 # 特定模块测试
 cargo test -p svault-core hash
 
-# Python E2E 测试
+# Python E2E 测试（推荐：自动使用 RAMDisk）
 tests/.venv/bin/python3 tests/run_tests.py --verbose
 
 # 包含 chaos 场景
 tests/.venv/bin/python3 tests/run_tests.py --verbose --chaos
 ```
+
+---
+
+## ⚠️ 重要测试规则
+
+### 必须在 RAMDisk 中测试
+
+**永远不要**在项目目录（`/home/mxq/Codes/svault` 或其子目录）中运行 `svault init` 或 `svault import`！
+
+✅ **正确做法** - 使用 RAMDisk:
+```bash
+# 方法 1: 使用 Python 测试框架（自动管理 RAMDisk）
+tests/.venv/bin/python3 tests/run_tests.py
+
+# 方法 2: 手动使用 RAMDisk
+cd /tmp/svault-ramdisk/vault    # 或 cd .ramdisk/vault
+svault status
+svault import /some/source/dir
+```
+
+❌ **错误做法** - 在项目目录中:
+```bash
+cd /home/mxq/Codes/svault
+svault init      # 错误！会在项目目录创建 .svault/
+svault import    # 错误！会污染项目目录
+```
+
+### 为什么使用 RAMDisk？
+
+1. **隔离性** - 测试不会污染项目目录
+2. **性能** - tmpfs 内存操作比磁盘快
+3. **安全性** - 测试中的 bug 不会删除真实数据
+4. **可重复性** - 每次测试从干净状态开始
+
+### RAMDisk 位置
+
+| 路径 | 说明 |
+|------|------|
+| `/tmp/svault-ramdisk` | 实际挂载点 |
+| `.ramdisk` | 项目根目录的软链接（方便访问）|
+| `.ramdisk/vault` | 测试 vault 目录 |
+| `.ramdisk/source` | 测试源文件目录 |
 
 ---
 
