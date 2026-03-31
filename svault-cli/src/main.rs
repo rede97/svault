@@ -199,7 +199,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!("failed to list directory: {e}"))?;
                     
                     if entries.is_empty() {
-                        println!("Directory is empty.");
+                        // Check if this is root directory
+                        let is_root = mtp_path.as_os_str().is_empty() || mtp_path == std::path::Path::new("/");
+                        if is_root {
+                            eprintln!("Device root appears empty.");
+                            eprintln!();
+                            eprintln!("This can happen if:");
+                            eprintln!("  1. The device was 'ejected' in the file manager");
+                            eprintln!("     → Reconnect the USB cable");
+                            eprintln!("  2. The device is locked or screen is off");
+                            eprintln!("     → Unlock the device and keep screen on");
+                            eprintln!("  3. MTP permission was denied");
+                            eprintln!("     → Check the device screen for permission prompt");
+                        } else {
+                            println!("Directory is empty.");
+                        }
                     } else {
                         for entry in entries {
                             let type_str = if entry.is_dir { "d" } else { "-" };
