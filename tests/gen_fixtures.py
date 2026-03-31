@@ -12,11 +12,10 @@ Outputs:
 import json
 import os
 import shutil
-import struct
+import subprocess
 import time
 from pathlib import Path
 
-import piexif
 from PIL import Image
 
 ROOT = Path(__file__).parent
@@ -35,25 +34,23 @@ def make_jpeg(path: Path, pixel_rgb=(128, 64, 32), size=(4, 4)) -> None:
 
 
 def embed_exif(path: Path, dt_original: str = None, make: str = None, model: str = None) -> None:
-    """Embed EXIF metadata by re-saving via Pillow with exif bytes.
-
-    piexif.insert() can produce IFD chains that the `exif` Rust crate
-    rejects with 'Unexpected next IFD'. Re-saving via Pillow avoids
-    that by letting Pillow write the JFIF/APP1 markers cleanly.
+    """Embed EXIF metadata using exiftool (more reliable than piexif).
+    
+    piexif can produce IFD chains that the `exif` Rust crate rejects.
+    exiftool generates properly formatted EXIF data.
     """
-    # ASCII EXIF strings must be null-terminated (20 bytes for datetime).
-    exif_dict = {"0th": {}, "Exif": {}}
+    cmd = ["exiftool", "-overwrite_original", "-ignoreMinorErrors"]
+    
     if dt_original:
-        val = dt_original.encode() + b"\x00"
-        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = val
-        exif_dict["0th"][piexif.ImageIFD.DateTime] = val
+        # Format: "2024:05:01 10:30:00"
+        cmd.extend([f"-DateTimeOriginal={dt_original}", f"-DateTime={dt_original}"])
     if make:
-        exif_dict["0th"][piexif.ImageIFD.Make] = make.encode() + b"\x00"
+        cmd.extend([f"-Make={make}"])
     if model:
-        exif_dict["0th"][piexif.ImageIFD.Model] = model.encode() + b"\x00"
-    exif_bytes = piexif.dump(exif_dict)
-    img = Image.open(path)
-    img.save(path, format="JPEG", quality=85, exif=exif_bytes)
+        cmd.extend([f"-Model={model}"])
+    
+    cmd.append(str(path))
+    subprocess.run(cmd, check=True, capture_output=True)
 
 
 def exif_ts(dt_str: str) -> float:
@@ -185,6 +182,12 @@ with open(p_trunc, "r+b") as f:
 p_extra = CHAOS_DIR / "extra_unique.jpg"
 make_jpeg(p_extra, pixel_rgb=(0, 0, 255))
 embed_exif(p_extra, dt_original="2023:11:06 12:00:00", make="Google", model="Pixel 8")
+# Remove EXIF from other chaos files that shouldn't have it
+for chaos_file in ["interrupted_copy.jpg"]:
+    p = CHAOS_DIR / chaos_file
+    if p.exists():
+        subprocess.run(["exiftool", "-overwrite_original", "-all=", str(p)], 
+                      check=False, capture_output=True)
 
 # ---------------------------------------------------------------------------
 # Write test_rules.json
