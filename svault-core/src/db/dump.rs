@@ -1,9 +1,9 @@
 //! Database dump utilities for debugging.
 
-use rusqlite::{Connection, Result, types::Value};
 use std::collections::HashMap;
-use console::style;
-use tabled::{Table, settings::{Style, Width, Modify, object::Columns, Alignment, Padding}};
+
+use comfy_table::{Table, ContentArrangement};
+use rusqlite::{Connection, Result, types::Value};
 
 /// A row of data from a database table.
 pub type RowData = HashMap<String, Value>;
@@ -130,13 +130,14 @@ pub fn format_value(value: &Value, max_len: usize) -> String {
     }
 }
 
-/// Converts a table dump to a tabled Table.
-fn dump_to_tabled(dump: &TableDump, max_col_width: usize) -> Table {
-    // Build data: header + rows
-    let mut data: Vec<Vec<String>> = Vec::new();
-    data.push(dump.columns.clone());
+/// Converts a table dump to a comfy_table Table.
+fn dump_to_table(dump: &TableDump, max_col_width: usize) -> Table {
+    let mut table = Table::new();
+    table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(dump.columns.clone());
     
-    // Build rows
+    // Add rows
     for row in &dump.rows {
         let row_values: Vec<String> = dump.columns.iter()
             .map(|col| {
@@ -144,39 +145,27 @@ fn dump_to_tabled(dump: &TableDump, max_col_width: usize) -> Table {
                 format_value(val, max_col_width)
             })
             .collect();
-        data.push(row_values);
+        table.add_row(row_values);
     }
-    
-    let mut table = Table::from_iter(&data);
-    
-    // Clean style: psql-like with header separator only
-    table.with(Style::psql());
-    table.with(Padding::new(0, 1, 0, 0));
-    
-    // Left-align all columns
-    table.with(Modify::new(Columns::new(..)).with(Alignment::left()));
-    
-    // Set max width for columns to prevent overflow
-    table.with(Modify::new(Columns::new(..)).with(Width::truncate(max_col_width).suffix("…")));
     
     table
 }
 
-/// Renders table dump with clean style.
+/// Renders table dump as human-readable text.
 pub fn render_table(dump: &TableDump) -> String {
     if dump.rows.is_empty() {
-        return format!("\n{} (0 rows)\n   (empty table)\n", style(&dump.name).bold());
+        return format!("\n{} (0 rows)\n   (empty table)\n", dump.name);
     }
     
-    let table = dump_to_tabled(dump, 40);
+    let table = dump_to_table(dump, 40);
     
-    format!("\n{} ({} rows)\n{}\n", style(&dump.name).bold(), dump.rows.len(), table)
+    format!("\n{} ({} rows)\n{}\n", dump.name, dump.rows.len(), table)
 }
 
-/// Renders all tables with clean style.
+/// Renders all tables as human-readable text.
 pub fn render_tables(dumps: &[TableDump]) -> String {
     let mut output = String::new();
-    output.push_str(&format!("{}\n\n", style("📊 Database Dump").bold()));
+    output.push_str("📊 Database Dump\n\n");
     
     for dump in dumps {
         output.push_str(&render_table(dump));
