@@ -1,98 +1,40 @@
 //! Import pipeline (Stages A–E).
 //!
-//! Stage A: directory scan via VFS walk
-//! Stage B: CRC32C fingerprint + DB cache lookup → likely_new / likely_duplicate
-//! Stage C: copy likely_new files to vault
-//! Stage D: strong hash (xxh3_128 or sha256) + three-layer dedup
-//! Stage E: batch DB write + manifest
+//! This module is split into sub-modules:
+//! - `types`: ImportOptions, FileStatus, ScanEntry, ImportSummary
+//! - `exif`: EXIF metadata extraction (date, device)
+//! - `path`: Path template resolution ($year, $mon, etc.)
+//! - `staging`: Pending/staging files and manifest writing
+//! - `utils`: Time utilities
 
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
-};
+pub mod types;
+pub mod exif;
+pub mod path;
+pub mod staging;
+pub mod utils;
+
+pub use types::{ImportOptions, FileStatus, ScanEntry, ImportSummary};
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use console::style;
 use dashmap::DashMap;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use exif;
+use crate::config::HashAlgorithm;
+use crate::db::Db;
+use crate::hash::{crc32c_region, xxh3_128_file, sha256_file};
+use crate::vfs::system::SystemFs;
+use crate::vfs::VfsBackend;
 
-use crate::{
-    config::{HashAlgorithm, ImportConfig, RecheckMode},
-    db::Db,
-    hash::{crc32c_region, sha256_file, xxh3_128_file},
-    vfs::system::SystemFs,
-    vfs::VfsBackend,
-};
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/// Options controlling a single import run.
-pub struct ImportOptions {
-    /// Source directory to scan.
-    pub source: PathBuf,
-    /// Vault root directory (contains `.svault/`).
-    pub vault_root: PathBuf,
-    /// Hash algorithm to use for Stage D (strong hash).
-    pub hash: HashAlgorithm,
-    /// Recheck mode for all-cache-hit scenario.
-    pub recheck: RecheckMode,
-    /// If true, scan and report but do not copy files or write to DB.
-    pub dry_run: bool,
-    /// If true, skip the interactive y/N confirmation after Stage B.
-    pub yes: bool,
-    /// If true, print duplicate files during the scan.
-    pub show_dup: bool,
-    /// Import configuration from `svault.toml`.
-    pub import_config: ImportConfig,
-}
-
-/// Per-file status after Stage B.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FileStatus {
-    /// CRC32C cache miss — probably a new file.
-    LikelyNew,
-    /// CRC32C cache hit — probably already in vault.
-    LikelyCacheDuplicate,
-    /// Confirmed imported (Stage E complete).
-    Imported,
-    /// Confirmed duplicate (Stage D dedup).
-    Duplicate,
-    /// Processing failed.
-    Failed(String),
-}
-
-/// Per-file scan result from Stage B.
-#[derive(Debug, Clone)]
-pub struct ScanEntry {
-    pub src_path: PathBuf,
-    pub size: u64,
-    pub mtime_ms: i64,
-    pub crc32c: u32,
-    pub status: FileStatus,
-}
-
-/// Final summary returned to the caller.
-#[derive(Debug, Default)]
-pub struct ImportSummary {
-    pub total: usize,
-    pub imported: usize,
-    pub duplicate: usize,
-    pub failed: usize,
-    pub manifest_path: Option<PathBuf>,
-    /// Set when all files were cache hits and import exited early.
-    pub all_cache_hit: bool,
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
+use exif::read_exif_date_device;
+use path::resolve_dest_path;
+use staging::{write_pending, write_staging, write_manifest};
+use utils::{unix_now_ms, session_id_now};
 
 /// Run the full import pipeline (Stages A–E).
 pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
@@ -118,10 +60,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // ------------------------------------------------------------------
     // Stage B: CRC32C fingerprint
     // ------------------------------------------------------------------
-    // CRC32C IO runs in a rayon thread pool; DB lookups run on the calling
-    // thread afterwards (rusqlite Connection is !Sync and cannot cross threads).
-
-    // Step B1: compute CRC32C for every file in parallel
     let scan_bar = ProgressBar::new(total as u64);
     scan_bar.set_style(
         ProgressStyle::with_template(
@@ -161,7 +99,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             
             let crc = match crc_result {
                 Err(err) => {
-                    // Always show errors
                     eprintln!("  {} {}", 
                         style("Error").red(), 
                         style(&rel_path).dim());
@@ -174,7 +111,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 Ok(v) => v,
             };
             
-            // Check if duplicate via DB
             let cached = db.lookup_by_crc32c(e.size as i64, crc).unwrap_or(None);
             let status = if cached.is_some() {
                 FileStatus::LikelyCacheDuplicate
@@ -182,7 +118,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 FileStatus::LikelyNew
             };
             
-            // Real-time display based on status and show_dup flag
             match status {
                 FileStatus::LikelyNew => {
                     eprintln!("  {} {}", 
@@ -194,7 +129,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         style("Duplicate").yellow(), 
                         style(&rel_path).dim());
                 }
-                _ => {} // Don't show duplicates unless show_dup is true
+                _ => {}
             }
             
             ScanEntry {
@@ -290,8 +225,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let dst_fs = SystemFs::open(&vault_archive)
         .map_err(|e| anyhow::anyhow!("cannot open vault: {e}"))?;
 
-    // Shared error collector for Stage C
-    let copy_errors: Arc<Mutex<HashMap<PathBuf, String>>> =
+    let copy_errors: Arc<Mutex<HashMap<std::path::PathBuf, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     let copy_bar = ProgressBar::new(likely_new.len() as u64);
@@ -304,8 +238,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     );
     copy_bar.set_prefix("Copying  ");
 
-    // Compute dest paths and copy
-    let copied: Vec<(PathBuf, PathBuf, u64, i64, u32)> = likely_new
+    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = likely_new
         .par_iter()
         .filter_map(|e| {
             let rel = e.src_path.strip_prefix(&opts.source).unwrap_or(&e.src_path);
@@ -321,7 +254,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             );
             let dest_abs = vault_archive.join(&dest_rel);
 
-            // Create parent dirs
             if let Some(parent) = dest_abs.parent() {
                 if let Err(err) = fs::create_dir_all(parent) {
                     copy_errors.lock().unwrap()
@@ -331,7 +263,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 }
             }
 
-            // Copy (best strategy)
             match src_fs.copy_to(rel, &dst_fs, &dest_abs) {
                 Ok(_) => {
                     copy_bar.set_message(filename);
@@ -355,12 +286,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // ------------------------------------------------------------------
     // Stage D: strong hash + three-layer dedup
     // ------------------------------------------------------------------
-    // Pass D1: parallel strong hash (IO-bound, no DB access)
-    #[allow(dead_code)]
     #[derive(Debug)]
     struct HashResult {
-        src: PathBuf,
-        dest: PathBuf,
+        src: std::path::PathBuf,
+        dest: std::path::PathBuf,
         size: u64,
         mtime_ms: i64,
         crc32c: u32,
@@ -422,23 +351,20 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .collect();
     hash_bar.finish_and_clear();
 
-    // Pass D2: sequential DB lookup + DashMap dedup (calling thread, !Sync safe)
-    // Layer 1: in-memory DashMap for same-batch dedup
-    let seen: DashMap<Vec<u8>, PathBuf> = DashMap::new();
+    // Pass D2: sequential DB lookup + DashMap dedup
+    let seen: DashMap<Vec<u8>, std::path::PathBuf> = DashMap::new();
     let hash_results: Vec<HashResult> = hashed
         .into_iter()
         .map(|mut r| {
             if r.dup_reason.is_some() {
-                return r; // already failed at hash stage
+                return r;
             }
-            // Layer 2: DB lookup (cross-session dedup)
             let existing = db.lookup_by_hash(&r.hash_bytes, &opts.hash).unwrap_or(None);
             if existing.is_some() {
                 r.is_duplicate = true;
                 r.dup_reason = Some("db".to_string());
                 return r;
             }
-            // Layer 1: DashMap (same-batch dedup)
             use dashmap::mapref::entry::Entry;
             match seen.entry(r.hash_bytes.clone()) {
                 Entry::Vacant(v) => { v.insert(r.dest.clone()); }
@@ -452,11 +378,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         })
         .collect();
 
-    eprintln!("{} {}/{} files",
-        style("Hashing  ").bold().cyan(),
-        style(hash_results.len()).green(),
-        likely_new.len());
-
     // ------------------------------------------------------------------
     // Stage E: batch DB write + manifest
     // ------------------------------------------------------------------
@@ -469,7 +390,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         if let Some(reason) = &r.dup_reason {
             if reason != "hash error" {
                 dup_count += 1;
-                // Remove the copied file (it's a duplicate)
                 let _ = fs::remove_file(&r.dest);
             } else {
                 fail_count += 1;
@@ -512,7 +432,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         match result {
             Ok(()) => imported_count += 1,
             Err(e) => {
-                // Layer 3: UNIQUE constraint — it's a duplicate
                 let msg = e.to_string();
                 if msg.contains("UNIQUE constraint") {
                     dup_count += 1;
@@ -526,7 +445,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     }
 
     // Write manifest
-    let manifest_path = write_manifest(
+    let _manifest_path = write_manifest(
         &opts.vault_root, &session_id, &scan_entries, &hash_results
             .iter().filter(|r| r.dup_reason.is_none()).map(|r| r.dest.clone()).collect::<Vec<_>>(),
     )?;
@@ -534,10 +453,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Delete .pending
     let _ = fs::remove_file(&pending_path);
 
-    // Delete .pending
-    let _ = fs::remove_file(&pending_path);
-
-    // Print summary like cargo build
+    // Print summary
     eprintln!("{} {} file(s) imported", 
         style("Finished:").bold().green(),
         style(imported_count).green());
@@ -550,249 +466,24 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         eprintln!("         {} file(s) failed", 
             style(fail_count).red());
     }
-    
-    eprintln!("         Manifest: {}", 
-        style(manifest_path.display()).dim());
 
     Ok(ImportSummary {
         total,
         imported: imported_count,
         duplicate: dup_count,
         failed: fail_count,
-        manifest_path: Some(manifest_path),
+        manifest_path: Some(_manifest_path),
         all_cache_hit: false,
     })
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-fn session_id_now() -> String {
-    let ms = unix_now_ms();
-    // Format: YYYYMMDDTHHMMSS (seconds precision is fine for session IDs)
-    let secs = ms / 1000;
-    // Use a simple numeric ID since we don't have a date library
-    format!("{secs}")
-}
-
-/// Resolve the destination path from the template and file metadata.
-/// Supported tokens: `$year`, `$mon`, `$day`, `$device`, `$filename`, `$stem`, `$ext`
-fn resolve_dest_path(template: &str, rel: &Path, taken_ms: i64, device: &str) -> PathBuf {
-    let secs = taken_ms / 1000;
-    let (year, month, day) = secs_to_ymd(secs);
-    let filename = rel.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let ext = rel.extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stem = rel.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
-    let rendered = template
-        .replace("$year",     &format!("{year:04}"))
-        .replace("$mon",      &format!("{month:02}"))
-        .replace("$day",      &format!("{day:02}"))
-        .replace("$device",   device)
-        .replace("$filename", &filename)
-        .replace("$stem",     &stem)
-        .replace("$ext",      &ext);
-
-    PathBuf::from(rendered)
-}
-
-/// Naive Unix timestamp → (year, month, day) without external crates.
-fn secs_to_ymd(secs: i64) -> (i32, u32, u32) {
-    // Days since 1970-01-01
-    let days = (secs / 86400) as i32;
-    // Shift epoch to 1 Mar 2000 for the leap-year algorithm
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i32 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-/// Returns `(taken_ms, device)` from EXIF metadata, with fallbacks.
-/// - `taken_ms`: EXIF `DateTimeOriginal` → `DateTime` → `mtime_ms` fallback
-/// - `device`:   `"Make Model"` sanitised for path use → `"Unknown"` fallback
-fn read_exif_date_device(path: &Path, mtime_ms: i64) -> (i64, String) {
-    use std::fs::File;
-    use std::io::BufReader;
-
-    let Ok(file) = File::open(path) else {
-        return (mtime_ms, "Unknown".to_string());
-    };
-    let mut reader = BufReader::new(file);
-    let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) else {
-        return (mtime_ms, "Unknown".to_string());
-    };
-
-    // Date: prefer DateTimeOriginal, fallback to DateTime
-    let taken_ms = exif
-        .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
-        .or_else(|| exif.get_field(exif::Tag::DateTime, exif::In::PRIMARY))
-        .and_then(|f| {
-            if let exif::Value::Ascii(ref vec) = f.value {
-                vec.first().and_then(|b| {
-                    let s = std::str::from_utf8(b).ok()?;
-                    parse_exif_datetime_ms(s)
-                })
-            } else {
-                None
-            }
-        })
-        .unwrap_or(mtime_ms);
-
-    // Device: "Make Model", sanitised for use as a path component
-    let make = exif
-        .get_field(exif::Tag::Make, exif::In::PRIMARY)
-        .and_then(|f| exif_ascii_first(&f.value))
-        .unwrap_or_default();
-    let model = exif
-        .get_field(exif::Tag::Model, exif::In::PRIMARY)
-        .and_then(|f| exif_ascii_first(&f.value))
-        .unwrap_or_default();
-    let device = if make.is_empty() && model.is_empty() {
-        "Unknown".to_string()
-    } else {
-        let raw = if make.is_empty() {
-            model
-        } else if model.starts_with(&make) {
-            model // avoid "Apple Apple iPhone"
-        } else {
-            format!("{make} {model}")
-        };
-        // Replace path-unsafe chars with '_'
-        raw.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>()
-            .trim()
-            .to_string()
-    };
-
-    (taken_ms, device)
-}
-
-fn exif_ascii_first(v: &exif::Value) -> Option<String> {
-    if let exif::Value::Ascii(vec) = v {
-        vec.first()
-            .and_then(|b| std::str::from_utf8(b).ok())
-            .map(|s| s.trim_end_matches('\0').trim().to_string())
-    } else {
-        None
+    #[test]
+    fn test_file_status_equality() {
+        assert_eq!(FileStatus::LikelyNew, FileStatus::LikelyNew);
+        assert_ne!(FileStatus::LikelyNew, FileStatus::LikelyCacheDuplicate);
     }
 }
-
-/// Parse EXIF datetime string `"YYYY:MM:DD HH:MM:SS"` → Unix milliseconds.
-fn parse_exif_datetime_ms(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    if b.len() < 19 {
-        return None;
-    }
-    let year:  i64 = std::str::from_utf8(&b[0..4]).ok()?.parse().ok()?;
-    let month: i64 = std::str::from_utf8(&b[5..7]).ok()?.parse().ok()?;
-    let day:   i64 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
-    let hour:  i64 = std::str::from_utf8(&b[11..13]).ok()?.parse().ok()?;
-    let min:   i64 = std::str::from_utf8(&b[14..16]).ok()?.parse().ok()?;
-    let sec:   i64 = std::str::from_utf8(&b[17..19]).ok()?.parse().ok()?;
-    let days = ymd_to_days(year as i32, month as u32, day as u32)?;
-    let secs = days * 86400 + hour * 3600 + min * 60 + sec;
-    Some(secs * 1000)
-}
-
-/// Calendar date → days since 1970-01-01 (inverse of `secs_to_ymd`).
-fn ymd_to_days(y: i32, m: u32, d: u32) -> Option<i64> {
-    let m = m as i32;
-    let d = d as i32;
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u32;
-    let m_adj = if m > 2 { (m - 3) as u32 } else { (m + 9) as u32 };
-    let doy = (153 * m_adj + 2) / 5 + d as u32 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some((era as i64) * 146097 + doe as i64 - 719468)
-}
-
-/// Write the .pending file listing all likely_new entries.
-fn write_pending(path: &Path, source: &Path, session_id: &str, entries: &[ScanEntry]) -> anyhow::Result<()> {
-    use std::fmt::Write;
-    let mut buf = String::new();
-    writeln!(buf, "source={}", source.display())?;
-    writeln!(buf, "session={session_id}")?;
-    let new_count = entries.iter().filter(|e| e.status == FileStatus::LikelyNew).count();
-    let dup_count = entries.iter().filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count();
-    writeln!(buf, "total={} new={} duplicate={}", entries.len(), new_count, dup_count)?;
-    for e in entries.iter().filter(|e| e.status == FileStatus::LikelyNew) {
-        writeln!(buf, "{}\t{}", e.src_path.display(), e.size)?;
-    }
-    fs::write(path, buf)?;
-    Ok(())
-}
-
-/// Write the staging file listing all likely_new entries with their resolved
-/// destination paths. Lives at `.svault/staging/import-<session>.txt`.
-/// Format (plain text, one entry per line):
-///   # source=<path>  session=<id>  total=N new=N duplicate=N
-///   <src_path>\t<dest_path>\t<size>
-fn write_staging(path: &Path, source: &Path, session_id: &str, entries: &[ScanEntry]) -> anyhow::Result<()> {
-    use std::fmt::Write;
-    let mut buf = String::new();
-    let new_count = entries.iter().filter(|e| e.status == FileStatus::LikelyNew).count();
-    let dup_count = entries.iter().filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count();
-    writeln!(buf, "# source={}  session={}  total={}  new={}  duplicate={}",
-        source.display(), session_id, entries.len(), new_count, dup_count)?;
-    for e in entries.iter().filter(|e| e.status == FileStatus::LikelyNew) {
-        writeln!(buf, "{}\t{}", e.src_path.display(), e.size)?;
-    }
-    fs::write(path, buf)?;
-    Ok(())
-}
-
-/// Write the final manifest file and return its path.
-fn write_manifest(
-    vault_root: &Path,
-    session_id: &str,
-    scan: &[ScanEntry],
-    imported_dests: &[PathBuf],
-) -> anyhow::Result<PathBuf> {
-    let manifests_dir = vault_root.join(".svault").join("manifests");
-    fs::create_dir_all(&manifests_dir)?;
-    let manifest_path = manifests_dir.join(format!("import-{session_id}.txt"));
-    use std::fmt::Write;
-    let mut buf = String::new();
-    writeln!(buf, "session={session_id}")?;
-    writeln!(buf, "source=(multiple)")?;
-    writeln!(buf, "total={} imported={} duplicate={}",
-        scan.len(),
-        imported_dests.len(),
-        scan.iter().filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count(),
-    )?;
-    for dest in imported_dests {
-        writeln!(buf, "{}", dest.display())?;
-    }
-    fs::write(&manifest_path, buf)?;
-    Ok(manifest_path)
-}
-

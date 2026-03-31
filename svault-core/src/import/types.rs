@@ -1,0 +1,63 @@
+//! Import pipeline types and options.
+
+use std::path::PathBuf;
+
+use crate::config::{ImportConfig, RecheckMode};
+use crate::config::HashAlgorithm;
+
+/// Options controlling a single import run.
+pub struct ImportOptions {
+    /// Source directory to scan.
+    pub source: PathBuf,
+    /// Vault root directory (contains `.svault/`).
+    pub vault_root: PathBuf,
+    /// Hash algorithm to use for Stage D (strong hash).
+    pub hash: HashAlgorithm,
+    /// Recheck mode for all-cache-hit scenario.
+    pub recheck: RecheckMode,
+    /// If true, scan and report but do not copy files or write to DB.
+    pub dry_run: bool,
+    /// If true, skip the interactive y/N confirmation after Stage B.
+    pub yes: bool,
+    /// If true, print duplicate files during the scan.
+    pub show_dup: bool,
+    /// Import configuration from `svault.toml`.
+    pub import_config: ImportConfig,
+}
+
+/// Per-file status after Stage B.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileStatus {
+    /// CRC32C cache miss — probably a new file.
+    LikelyNew,
+    /// CRC32C cache hit — probably already in vault.
+    LikelyCacheDuplicate,
+    /// Confirmed imported (Stage E complete).
+    Imported,
+    /// Confirmed duplicate (Stage D dedup).
+    Duplicate,
+    /// Processing failed.
+    Failed(String),
+}
+
+/// Per-file scan result from Stage B.
+#[derive(Debug, Clone)]
+pub struct ScanEntry {
+    pub src_path: PathBuf,
+    pub size: u64,
+    pub mtime_ms: i64,
+    pub crc32c: u32,
+    pub status: FileStatus,
+}
+
+/// Final summary returned to the caller.
+#[derive(Debug, Default)]
+pub struct ImportSummary {
+    pub total: usize,
+    pub imported: usize,
+    pub duplicate: usize,
+    pub failed: usize,
+    pub manifest_path: Option<PathBuf>,
+    /// Set when all files were cache hits and import exited early.
+    pub all_cache_hit: bool,
+}
