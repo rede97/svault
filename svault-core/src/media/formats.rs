@@ -160,6 +160,7 @@ impl MediaFormat {
     }
 
     /// Get the checksum strategy for this format.
+    #[allow(dead_code)]
     pub(crate) fn checksum_strategy(&self) -> CrcStrategy {
         CrcStrategy::for_format(self)
     }

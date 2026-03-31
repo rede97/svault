@@ -24,6 +24,7 @@ pub fn compute_checksum(path: &Path, format: &MediaFormat) -> Result<u32> {
 
 /// Checksum strategy implementations.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum CrcStrategy {
     /// Read first N bytes from start of file.
     Head(usize),

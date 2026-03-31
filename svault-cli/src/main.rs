@@ -178,21 +178,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                     println!("    Serial:     {}", source.unique_id);
                                     if !source.roots.is_empty() {
                                         println!("    Storages:");
-                                        for (i, storage_name) in source.roots.iter().enumerate() {
-                                            if i == 0 {
-                                                println!("      {}/  (default)", storage_name);
-                                            } else {
-                                                println!("      {}/", storage_name);
-                                            }
+                                        for storage_name in source.roots.iter() {
+                                            println!("      {}/", storage_name);
                                         }
                                     }
                                     println!();
                                 }
                                 println!("Browse examples:");
-                                println!("  svault mtp ls mtp://1/                 # List storages");
-                                println!("  svault mtp ls mtp://1/DCIM             # List default storage");
-                                println!("  svault mtp ls \"mtp://1/SD Card/\"       # List SD card");
-                                println!("  svault mtp tree mtp://1/DCIM --depth 2 # Tree view");
+                                println!("  svault mtp ls mtp://1/                    # List storages");
+                                println!("  svault mtp ls mtp://1/\"Internal Storage\"/# List internal storage");
+                                println!("  svault mtp ls \"mtp://1/SD Card/\"          # List SD card");
+                                println!("  svault mtp tree mtp://1/DCIM --depth 2    # Tree view");
                                 println!();
                                 println!("Then import with:");
                                 println!("  svault import mtp://1/DCIM/Camera --target phone_backup");
@@ -224,16 +220,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             println!("Directory is empty.");
                         }
                     } else if is_root && entries.iter().all(|e| e.is_dir) {
-                        // Listing storages - show with default marker
+                        // Listing storages
                         println!("Available storages:");
                         println!();
-                        for (i, entry) in entries.iter().enumerate() {
+                        for entry in entries.iter() {
                             let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
-                            if i == 0 {
-                                println!("  {}/  (default)", name);
-                            } else {
-                                println!("  {}/", name);
-                            }
+                            println!("  {}/", name);
                         }
                         println!();
                         println!("Access a storage with: svault mtp ls mtp://1/\"Storage Name\"/");

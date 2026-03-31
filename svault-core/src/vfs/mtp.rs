@@ -174,7 +174,7 @@ impl VfsProvider for MtpProvider {
         }
     }
 
-    fn open_path(&self, authority: &str, path: &Path) -> VfsResult<Box<dyn VfsBackend>> {
+    fn open_path(&self, authority: &str, _path: &Path) -> VfsResult<Box<dyn VfsBackend>> {
         // authority is the device name/index/serial, path is the path within device
         if authority.is_empty() {
             // No authority specified, open first available device
@@ -221,8 +221,6 @@ pub struct MtpFs {
     runtime: tokio::runtime::Runtime,
     /// All available storages on this device.
     storages: HashMap<String, StorageId>,
-    /// Default storage (usually internal storage).
-    default_storage: StorageId,
 }
 
 impl MtpFs {
@@ -309,16 +307,11 @@ impl MtpFs {
 
         // Build storage name -> ID mapping
         let mut storages = HashMap::new();
-        let mut default_storage = None;
 
-        for (idx, storage) in mtp_storages.iter().enumerate() {
+        for storage in mtp_storages.iter() {
             let info = storage.info();
             let name = info.description.clone();
             let id = storage.id();
-            
-            if idx == 0 {
-                default_storage = Some(id);
-            }
             storages.insert(name, id);
         }
 
@@ -333,7 +326,6 @@ impl MtpFs {
             caps,
             runtime,
             storages,
-            default_storage: default_storage.unwrap(),
         })
     }
 
@@ -412,12 +404,14 @@ impl MtpFs {
 
     /// Get storage ID from path. 
     /// Path format: [storage_name]/rest/of/path
-    /// If first non-root component matches a storage name, use it; otherwise use default.
-    fn resolve_storage(&self, path: &Path) -> (StorageId, PathBuf) {
+    /// Returns Err if no storage name is found in path.
+    fn resolve_storage(&self, path: &Path) -> VfsResult<(StorageId, PathBuf)> {
         let components: Vec<_> = path.components().collect();
         
         if components.is_empty() {
-            return (self.default_storage, PathBuf::new());
+            return Err(VfsError::Other(
+                "Path must include storage name. Use 'mtp://1/' to list available storages.".to_string()
+            ));
         }
 
         // Find first Normal component (skip RootDir, CurDir, etc.)
@@ -427,15 +421,21 @@ impl MtpFs {
                 if let Some(&storage_id) = self.storages.get(name_str.as_ref()) {
                     // Build remaining path from components after the storage name
                     let remaining: PathBuf = components[i + 1..].iter().collect();
-                    return (storage_id, remaining);
+                    return Ok((storage_id, remaining));
                 }
-                // First normal component is not a storage name, use default
-                break;
+                // First normal component is not a storage name
+                return Err(VfsError::Other(format!(
+                    "Unknown storage: '{}'. Available storages: {}",
+                    name_str,
+                    self.storage_names().join(", ")
+                )));
             }
         }
 
-        // Use default storage, return full path
-        (self.default_storage, path.to_path_buf())
+        // No Normal component found
+        Err(VfsError::Other(
+            "Path must include storage name. Use 'mtp://1/' to list available storages.".to_string()
+        ))
     }
 
     /// Get storage for operations.
@@ -530,12 +530,12 @@ impl VfsBackend for MtpFs {
         if path.as_os_str().is_empty() || path == Path::new("/") {
             return Ok(true);
         }
-        let (storage_id, subpath) = self.resolve_storage(path);
+        let (storage_id, subpath) = self.resolve_storage(path)?;
         self.find_object(storage_id, &subpath).map(|o| o.is_some())
     }
 
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>> {
-        let (storage_id, subpath) = self.resolve_storage(dir);
+        let (storage_id, subpath) = self.resolve_storage(dir)?;
 
         let storage = self.get_storage(storage_id)?;
         
@@ -598,7 +598,7 @@ impl VfsBackend for MtpFs {
     }
 
     fn open_read(&self, path: &Path) -> VfsResult<Box<dyn Read>> {
-        let (storage_id, subpath) = self.resolve_storage(path);
+        let (storage_id, subpath) = self.resolve_storage(path)?;
         let (handle, info) = match self.find_object(storage_id, &subpath)? {
             Some((h, i)) => (h, i),
             None => return Err(VfsError::NotFound(path.to_path_buf())),

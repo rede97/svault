@@ -121,7 +121,8 @@ pub trait VfsProvider: Send + Sync {
 /// Manager for all VFS providers and active connections.
 pub struct VfsManager {
     providers: HashMap<String, Box<dyn VfsProvider>>,
-    /// Cache of opened connections
+    /// Cache of opened connections (reserved for future use)
+    #[allow(dead_code)]
     connections: Mutex<HashMap<String, Arc<dyn VfsBackend>>>,
 }
 
