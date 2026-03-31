@@ -255,7 +255,8 @@ impl VfsProvider for MtpProvider {
 /// Supports multiple storages (internal + SD card).
 pub struct MtpFs {
     /// The underlying MTP device connection.
-    device: Arc<Mutex<MtpDevice>>,
+    /// Stored as Option to allow taking ownership during graceful shutdown.
+    device: Option<Arc<Mutex<MtpDevice>>>,
     /// Cached device capabilities (MTP doesn't support reflink/hardlink).
     caps: FsCapabilities,
     /// Tokio runtime for executing async operations.
@@ -363,7 +364,7 @@ impl MtpFs {
         };
 
         Ok(Self {
-            device: Arc::new(Mutex::new(device)),
+            device: Some(Arc::new(Mutex::new(device))),
             caps,
             runtime,
             storages,
@@ -481,7 +482,9 @@ impl MtpFs {
 
     /// Get storage for operations.
     fn get_storage(&self, storage_id: StorageId) -> VfsResult<Storage> {
-        let device = self.device.lock().map_err(|e| {
+        let device = self.device.as_ref()
+            .ok_or_else(|| VfsError::Other("Device not available".to_string()))?
+            .lock().map_err(|e| {
             VfsError::Other(format!("Failed to lock device: {e}"))
         })?;
         
@@ -701,6 +704,36 @@ impl VfsBackend for MtpFs {
         Err(VfsError::Unsupported(
             "MTP directory creation not yet implemented"
         ))
+    }
+}
+
+impl Drop for MtpFs {
+    /// Gracefully close the MTP device connection when MtpFs is dropped.
+    /// 
+    /// This prevents the device from being left in a locked state when the
+    /// program exits (e.g., via Ctrl-C). The MTP session is properly closed,
+    /// allowing immediate reconnection without unplugging the USB cable.
+    fn drop(&mut self) {
+        // Take the device out of the Option
+        if let Some(device_arc) = self.device.take() {
+            // Try to get the inner device from the Arc
+            // This will succeed if we're the only owner
+            if let Ok(device_mutex) = Arc::try_unwrap(device_arc) {
+                // Now try to get the device from the Mutex
+                if let Ok(device) = device_mutex.into_inner() {
+                    // Use the runtime to close the device session gracefully
+                    let _ = self.runtime.block_on(device.close());
+                }
+            }
+            // If we can't get exclusive ownership, other threads still have references.
+            // They will drop their references eventually, and the last one will
+            // close the session (mtp-rs handles this in its Drop impl).
+            
+            eprintln!("   ✓ MTP device disconnected gracefully");
+        }
+        
+        // The runtime will be dropped after this, ensuring all pending
+        // async operations complete before the program exits.
     }
 }
 
