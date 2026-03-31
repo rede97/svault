@@ -1,6 +1,8 @@
-//! Vault status reporting.
+//! Vault status reporting with rich formatted output.
 
 use std::path::Path;
+
+use tabled::{Table, Tabled, settings::{Style, Alignment, Modify, object::Rows}};
 
 use crate::db::{Db, VaultStats, ExtensionStats, format_bytes, format_count};
 
@@ -58,61 +60,111 @@ pub fn generate_report(vault_root: &Path, db: &Db, opts: StatusOptions) -> anyho
     })
 }
 
-/// Renders a status report as human-readable text.
+#[derive(Tabled)]
+struct StatRow {
+    metric: String,
+    value: String,
+}
+
+#[derive(Tabled)]
+struct ExtRow {
+    extension: String,
+    files: String,
+    size: String,
+}
+
+/// Renders a status report as human-readable text with rich formatting.
 pub fn render_human(report: &StatusReport) -> String {
     let mut output = String::new();
-
-    // Header
-    output.push_str(&format!("📦 Svault Status\n"));
-    output.push_str(&format!("   Path: {}\n", report.vault_root.display()));
-    output.push_str(&format!("   DB:   {}\n", report.db_path.display()));
-    output.push('\n');
-
-    // Files overview
-    output.push_str(&format!("📁 Files\n"));
-    output.push_str(&format!("   Total:    {} files\n", format_count(report.stats.total_files)));
-    output.push_str(&format!("   Size:     {}\n", format_bytes(report.stats.total_size_bytes)));
-    output.push_str(&format!("   Imported: {}\n", format_count(report.stats.imported_count)));
-    if report.stats.duplicate_count > 0 {
-        output.push_str(&format!("   Dups:     {} (excluded from storage)\n", 
-            format_count(report.stats.duplicate_count)));
-    }
-    output.push('\n');
-
-    // Hash status
-    output.push_str(&format!("🔐 Hash Status\n"));
-    output.push_str(&format!("   SHA-256:    {} files\n", format_count(report.stats.has_sha256_count)));
+    
+    // Header box
+    output.push_str("╔══════════════════════════════════════════════════════════════════════════════╗\n");
+    output.push_str("║                         📦 Svault Vault Status                                 ║\n");
+    output.push_str("╚══════════════════════════════════════════════════════════════════════════════╝\n\n");
+    
+    // Vault info
+    output.push_str(&format!("📁 Vault: {}\n", report.vault_root.display()));
+    output.push_str(&format!("🗄️  Database: {}\n\n", report.db_path.display()));
+    
+    // Files section
+    let file_stats = vec![
+        StatRow { metric: "Total Files".to_string(), value: format_count(report.stats.total_files) },
+        StatRow { metric: "Total Size".to_string(), value: format_bytes(report.stats.total_size_bytes) },
+        StatRow { metric: "Imported".to_string(), value: format_count(report.stats.imported_count) },
+        StatRow { metric: "Duplicates".to_string(), value: format_count(report.stats.duplicate_count) },
+    ];
+    
+    let mut files_table = Table::new(&file_stats);
+    files_table.with(Style::modern_rounded());
+    files_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    
+    output.push_str("📊 Files\n");
+    output.push_str(&format!("{}\n", files_table));
+    
+    // Hash status section
+    let hash_stats = vec![
+        StatRow { metric: "SHA-256 Computed".to_string(), value: format_count(report.stats.has_sha256_count) },
+        StatRow { metric: "Pending SHA-256".to_string(), value: format_count(report.stats.pending_sha256_count) },
+    ];
+    
+    let mut hash_table = Table::new(&hash_stats);
+    hash_table.with(Style::modern_rounded());
+    hash_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    
+    output.push_str("🔐 Hash Status\n");
+    output.push_str(&format!("{}\n", hash_table));
+    
     if report.stats.pending_sha256_count > 0 {
-        output.push_str(&format!("   Pending:    {} files (run `svault background-hash`)\n", 
-            format_count(report.stats.pending_sha256_count)));
+        output.push_str("   💡 Run `svault background-hash` to compute pending hashes\n\n");
+    } else {
+        output.push('\n');
     }
-    output.push('\n');
-
-    // Recent activity
-    output.push_str(&format!("📈 Recent Imports\n"));
-    output.push_str(&format!("   Last 24h:  {}\n", format_count(report.imports_last_24h)));
-    output.push_str(&format!("   Last 7d:   {}\n", format_count(report.imports_last_7d)));
-    output.push_str(&format!("   Last 30d:  {}\n", format_count(report.imports_last_30d)));
-    output.push('\n');
-
-    // Event log
-    output.push_str(&format!("📝 Event Log\n"));
-    output.push_str(&format!("   Events:    {}\n", format_count(report.stats.total_events)));
-    output.push_str(&format!("   DB Size:   {}\n", format_bytes(report.stats.db_size_bytes)));
-    output.push('\n');
-
-    // Top extensions
+    
+    // Recent imports section
+    let import_stats = vec![
+        StatRow { metric: "Last 24 hours".to_string(), value: format_count(report.imports_last_24h) },
+        StatRow { metric: "Last 7 days".to_string(), value: format_count(report.imports_last_7d) },
+        StatRow { metric: "Last 30 days".to_string(), value: format_count(report.imports_last_30d) },
+    ];
+    
+    let mut import_table = Table::new(&import_stats);
+    import_table.with(Style::modern_rounded());
+    import_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    
+    output.push_str("📈 Recent Imports\n");
+    output.push_str(&format!("{}\n", import_table));
+    
+    // Event log section
+    let event_stats = vec![
+        StatRow { metric: "Total Events".to_string(), value: format_count(report.stats.total_events) },
+        StatRow { metric: "Database Size".to_string(), value: format_bytes(report.stats.db_size_bytes) },
+    ];
+    
+    let mut event_table = Table::new(&event_stats);
+    event_table.with(Style::modern_rounded());
+    event_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+    
+    output.push_str("📝 Event Log\n");
+    output.push_str(&format!("{}\n", event_table));
+    
+    // Top extensions section
     if !report.top_extensions.is_empty() {
-        output.push_str(&format!("📊 Top File Types\n"));
-        for ext in &report.top_extensions {
-            output.push_str(&format!("   {:<8} {:>8} files  {}\n", 
-                ext.extension,
-                format_count(ext.count),
-                format_bytes(ext.total_size_bytes)
-            ));
-        }
+        let ext_rows: Vec<ExtRow> = report.top_extensions.iter().map(|e| {
+            ExtRow {
+                extension: format!(".{}", e.extension),
+                files: format_count(e.count),
+                size: format_bytes(e.total_size_bytes),
+            }
+        }).collect();
+        
+        let mut ext_table = Table::new(&ext_rows);
+        ext_table.with(Style::modern_rounded());
+        ext_table.with(Modify::new(Rows::first()).with(Alignment::center()));
+        
+        output.push_str("📁 Top File Types\n");
+        output.push_str(&format!("{}\n", ext_table));
     }
-
+    
     output
 }
 

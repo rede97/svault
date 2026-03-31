@@ -2,6 +2,7 @@
 
 use rusqlite::{Connection, Result, types::Value};
 use std::collections::HashMap;
+use tabled::{Table, settings::{Style, Width, Modify, object::Columns, Alignment}};
 
 /// A row of data from a database table.
 pub type RowData = HashMap<String, Value>;
@@ -70,7 +71,6 @@ pub fn dump_table(conn: &Connection, table_name: &str, limit: Option<usize>) -> 
     };
     
     let mut stmt = conn.prepare(&sql)?;
-    let _column_count = columns.len();
     
     let rows = stmt.query_map([], |row| {
         let mut row_data = HashMap::new();
@@ -113,87 +113,70 @@ pub fn dump_database(conn: &Connection, opts: DumpOptions) -> Result<Vec<TableDu
 }
 
 /// Formats a SQL value for display.
-pub fn format_value(value: &Value) -> String {
+pub fn format_value(value: &Value, max_len: usize) -> String {
     match value {
-        Value::Null => "NULL".to_string(),
+        Value::Null => "∅".to_string(),
         Value::Integer(i) => i.to_string(),
         Value::Real(f) => format!("{:.6}", f),
         Value::Text(s) => {
-            if s.len() > 60 {
-                format!("{}...", &s[..57])
+            if s.len() > max_len {
+                format!("{}…", &s[..max_len.saturating_sub(1)])
             } else {
                 s.clone()
             }
         }
-        Value::Blob(b) => format!("<BLOB:{} bytes>", b.len()),
+        Value::Blob(b) => format!("⟨BLOB:{}⟩", b.len()),
     }
 }
 
-/// Renders table dump as human-readable text.
+/// Converts a table dump to a tabled Table.
+fn dump_to_tabled(dump: &TableDump, max_col_width: usize) -> Table {
+    // Build data: header + rows
+    let mut data: Vec<Vec<String>> = Vec::new();
+    data.push(dump.columns.clone());
+    
+    // Build rows
+    for row in &dump.rows {
+        let row_values: Vec<String> = dump.columns.iter()
+            .map(|col| {
+                let val = row.get(col).unwrap_or(&Value::Null);
+                format_value(val, max_col_width)
+            })
+            .collect();
+        data.push(row_values);
+    }
+    
+    let mut table = Table::from_iter(&data);
+    
+    // Style: modern rounded borders
+    table.with(Style::modern_rounded());
+    
+    // Left-align all columns
+    table.with(Modify::new(Columns::new(..)).with(Alignment::left()));
+    
+    // Set max width for columns to prevent overflow
+    table.with(Modify::new(Columns::new(..)).with(Width::truncate(max_col_width).suffix("…")));
+    
+    table
+}
+
+/// Renders table dump as human-readable text using tabled.
 pub fn render_table(dump: &TableDump) -> String {
-    let mut output = String::new();
-    
-    output.push_str(&format!("\nTable: {} ({} rows)\n", dump.name, dump.rows.len()));
-    output.push_str(&"─".repeat(80));
-    output.push('\n');
-    
     if dump.rows.is_empty() {
-        output.push_str("(no rows)\n");
-        return output;
+        return format!("\n📋 {} (0 rows)\n   (empty table)\n", dump.name);
     }
     
-    // Calculate column widths
-    let mut widths: HashMap<String, usize> = HashMap::new();
-    for col in &dump.columns {
-        widths.insert(col.clone(), col.len().max(8));
-    }
+    let table = dump_to_tabled(dump, 40);
     
-    for row in &dump.rows {
-        for col in &dump.columns {
-            let val_str = format_value(row.get(col).unwrap_or(&Value::Null));
-            let width = widths.get_mut(col).unwrap();
-            *width = (*width).max(val_str.len().min(40));
-        }
-    }
-    
-    // Header
-    for col in &dump.columns {
-        let width = widths.get(col).unwrap_or(&8);
-        output.push_str(&format!("{:<width$} | ", col, width = width));
-    }
-    output.push('\n');
-    
-    for col in &dump.columns {
-        let width = widths.get(col).unwrap_or(&8);
-        output.push_str(&"─".repeat(*width));
-        output.push_str("─┼─");
-    }
-    output.push('\n');
-    
-    // Rows
-    for row in &dump.rows {
-        for col in &dump.columns {
-            let width = widths.get(col).unwrap_or(&8);
-            let val_str = format_value(row.get(col).unwrap_or(&Value::Null));
-            let display = if val_str.len() > *width {
-                format!("{}...", &val_str[..width.saturating_sub(3)])
-            } else {
-                val_str
-            };
-            output.push_str(&format!("{:<width$} | ", display, width = width));
-        }
-        output.push('\n');
-    }
-    
-    output
+    format!("\n📋 {} ({} rows)\n{}\n", dump.name, dump.rows.len(), table)
 }
 
 /// Renders all tables as human-readable text.
 pub fn render_tables(dumps: &[TableDump]) -> String {
     let mut output = String::new();
-    output.push_str("📊 Database Dump\n");
-    output.push_str(&"=".repeat(80));
-    output.push('\n');
+    output.push_str("╔══════════════════════════════════════════════════════════════════════════════╗\n");
+    output.push_str("║                      📊 Svault Database Dump                                 ║\n");
+    output.push_str("╚══════════════════════════════════════════════════════════════════════════════╝\n");
     
     for dump in dumps {
         output.push_str(&render_table(dump));
@@ -277,9 +260,10 @@ mod tests {
 
     #[test]
     fn test_format_value() {
-        assert_eq!(format_value(&Value::Null), "NULL");
-        assert_eq!(format_value(&Value::Integer(42)), "42");
-        assert_eq!(format_value(&Value::Text("hello".to_string())), "hello");
+        assert_eq!(format_value(&Value::Null, 20), "∅");
+        assert_eq!(format_value(&Value::Integer(42), 20), "42");
+        assert_eq!(format_value(&Value::Text("hello".to_string()), 20), "hello");
+        assert_eq!(format_value(&Value::Text("a very long string that exceeds limit".to_string()), 10), "a very lon…");
     }
 
     #[test]
