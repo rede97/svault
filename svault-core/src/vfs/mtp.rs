@@ -412,7 +412,7 @@ impl MtpFs {
 
     /// Get storage ID from path. 
     /// Path format: [storage_name]/rest/of/path
-    /// If first component matches a storage name, use it; otherwise use default.
+    /// If first non-root component matches a storage name, use it; otherwise use default.
     fn resolve_storage(&self, path: &Path) -> (StorageId, PathBuf) {
         let components: Vec<_> = path.components().collect();
         
@@ -420,17 +420,21 @@ impl MtpFs {
             return (self.default_storage, PathBuf::new());
         }
 
-        // Check if first component is a storage name
-        if let Some(first) = components.first() {
-            let name = first.as_os_str().to_string_lossy();
-            if let Some(&storage_id) = self.storages.get(name.as_ref()) {
-                // Build remaining path
-                let remaining: PathBuf = components[1..].iter().collect();
-                return (storage_id, remaining);
+        // Find first Normal component (skip RootDir, CurDir, etc.)
+        for (i, component) in components.iter().enumerate() {
+            if let std::path::Component::Normal(name) = component {
+                let name_str = name.to_string_lossy();
+                if let Some(&storage_id) = self.storages.get(name_str.as_ref()) {
+                    // Build remaining path from components after the storage name
+                    let remaining: PathBuf = components[i + 1..].iter().collect();
+                    return (storage_id, remaining);
+                }
+                // First normal component is not a storage name, use default
+                break;
             }
         }
 
-        // Use default storage
+        // Use default storage, return full path
         (self.default_storage, path.to_path_buf())
     }
 
@@ -443,6 +447,24 @@ impl MtpFs {
         self.runtime
             .block_on(device.storage(storage_id))
             .map_err(|e| VfsError::Other(format!("Failed to get storage: {e}")))
+    }
+
+    /// List objects with fallback for devices that need ObjectHandle::ALL.
+    /// Some cameras (like RICOH) return empty results when parent=None,
+    /// but work correctly with parent=ObjectHandle::ALL.
+    fn list_objects_with_fallback(&self, storage: &Storage, parent: Option<ObjectHandle>) -> VfsResult<Vec<ObjectInfo>> {
+        if parent.is_none() {
+            // Try with ObjectHandle::ALL first (0xFFFFFFFF)
+            match self.runtime.block_on(storage.list_objects(Some(mtp_rs::ptp::ObjectHandle::ALL))) {
+                Ok(objs) if !objs.is_empty() => return Ok(objs),
+                Ok(_) => {}, // Empty result, fall through
+                Err(_) => {}, // Error, fall through
+            }
+        }
+        
+        self.runtime
+            .block_on(storage.list_objects(parent))
+            .map_err(|e| VfsError::Other(format!("MTP list_objects error: {e}")))
     }
 
     /// Find an object by path, returning its handle and info.
@@ -459,14 +481,13 @@ impl MtpFs {
         for (i, component) in components.iter().enumerate() {
             let name = component.as_os_str().to_string_lossy();
             
-            let objects = self.runtime
-                .block_on(storage.list_objects(parent))
-                .map_err(|e| VfsError::Other(format!("MTP list_objects error: {e}")))?;
+            // Use fallback method for root listing
+            let objects = self.list_objects_with_fallback(&storage, parent)?;
             
             let mut found = None;
-            for obj in objects {
+            for obj in &objects {
                 if obj.filename == name.as_ref() {
-                    found = Some((obj.handle, obj));
+                    found = Some((obj.handle, obj.clone()));
                     break;
                 }
             }
@@ -515,9 +536,12 @@ impl VfsBackend for MtpFs {
 
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>> {
         let (storage_id, subpath) = self.resolve_storage(dir);
+
         let storage = self.get_storage(storage_id)?;
         
         // Check if we're listing storages (root of device)
+        // This happens when path is empty or "/", OR when subpath is empty
+        // (meaning the path was just a storage name like "/SD")
         if dir.as_os_str().is_empty() || dir == Path::new("/") {
             // Return storages as "directories"
             let mut entries = Vec::new();
@@ -532,21 +556,25 @@ impl VfsBackend for MtpFs {
             return Ok(entries);
         }
         
-        let parent = match self.find_object(storage_id, &subpath)? {
-            Some((handle, info)) => {
-                if !Self::is_folder(&info) {
-                    return Err(VfsError::Other(format!(
-                        "Not a directory: {}", dir.display()
-                    )));
+        // If subpath is empty, we're listing the root of a specific storage
+        let parent = if subpath.as_os_str().is_empty() || subpath == Path::new("/") {
+            None  // Root of storage
+        } else {
+            match self.find_object(storage_id, &subpath)? {
+                Some((handle, info)) => {
+                    if !Self::is_folder(&info) {
+                        return Err(VfsError::Other(format!(
+                            "Not a directory: {}", dir.display()
+                        )));
+                    }
+                    Some(handle)
                 }
-                Some(handle)
+                None => return Err(VfsError::NotFound(dir.to_path_buf())),
             }
-            None => return Err(VfsError::NotFound(dir.to_path_buf())),
         };
 
-        let objects = self.runtime
-            .block_on(storage.list_objects(parent))
-            .map_err(|e| VfsError::Other(format!("MTP list_objects error: {e}")))?;
+        // Use fallback method for listing objects
+        let objects = self.list_objects_with_fallback(&storage, parent)?;
 
         let mut entries = Vec::new();
         for obj in objects {

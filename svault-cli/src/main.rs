@@ -180,9 +180,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                         println!("    Storages:");
                                         for (i, storage_name) in source.roots.iter().enumerate() {
                                             if i == 0 {
-                                                println!("      📁 {}/  (default)", storage_name);
+                                                println!("      {}/  (default)", storage_name);
                                             } else {
-                                                println!("      📁 {}/", storage_name);
+                                                println!("      {}/", storage_name);
                                             }
                                         }
                                     }
@@ -224,15 +224,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             println!("Directory is empty.");
                         }
                     } else if is_root && entries.iter().all(|e| e.is_dir) {
-                        // Listing storages - show with emoji and highlight default
+                        // Listing storages - show with default marker
                         println!("Available storages:");
                         println!();
                         for (i, entry) in entries.iter().enumerate() {
                             let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
                             if i == 0 {
-                                println!("  📁 {}/  ← default", name);
+                                println!("  {}/  (default)", name);
                             } else {
-                                println!("  📁 {}/", name);
+                                println!("  {}/", name);
                             }
                         }
                         println!();
