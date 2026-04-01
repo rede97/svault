@@ -2,7 +2,8 @@
 # Run E2E tests with proper environment isolation
 #
 # Usage:
-#   ./run.sh                           # Run all tests
+#   ./run.sh                           # Run all tests (debug build)
+#   ./run.sh --release                 # Run with release build
 #   ./run.sh --ramdisk-size 512m       # Use 512MB RAMDisk
 #   ./run.sh --ramdisk-size 1g --cleanup  # Use 1GB RAMDisk and cleanup after
 #   ./run.sh -v -k test_import         # Verbose, only matching tests
@@ -23,9 +24,15 @@ PYTEST="$SCRIPT_DIR/.venv/bin/pytest"
 
 # Parse options - pytest handles --ramdisk-* and --cleanup via conftest.py
 PYTEST_ARGS=()
+RELEASE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --release)
+            RELEASE=true
+            PYTEST_ARGS+=("$1")
+            shift
+            ;;
         --ramdisk-size|--ramdisk-path)
             PYTEST_ARGS+=("$1" "$2")
             shift 2
@@ -42,11 +49,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Ensure binary is built
-echo "Checking svault binary..."
-if [ ! -f "$SCRIPT_DIR/../target/release/svault" ]; then
+if [ "$RELEASE" = true ]; then
+    BINARY="$SCRIPT_DIR/../target/release/svault"
+    BUILD_ARGS="--release -p svault-cli -q"
+else
+    BINARY="$SCRIPT_DIR/../target/debug/svault"
+    BUILD_ARGS="-p svault-cli -q"
+fi
+
+echo "Checking svault binary ($([ "$RELEASE" = true ] && echo release || echo debug))..."
+if [ ! -f "$BINARY" ]; then
     echo "Building svault..."
     cd "$SCRIPT_DIR/.."
-    cargo build --release -p svault-cli -q
+    cargo build $BUILD_ARGS
 fi
 
 # Check for exiftool (used by some tests)

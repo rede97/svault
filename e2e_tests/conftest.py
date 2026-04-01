@@ -48,6 +48,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="RAMDisk size (e.g., 128m, 512m, 1g). Default: 256m",
     )
     parser.addoption(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Use release build of svault instead of debug",
+    )
+    parser.addoption(
         "--ramdisk-path",
         action="store",
         default="/tmp/svault-ramdisk",
@@ -87,7 +93,8 @@ E2E_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = E2E_DIR.parent
 TESTS_DIR = PROJECT_ROOT / "tests"
 FIXTURES_DIR = E2E_DIR / "fixtures"
-TARGET_DIR = PROJECT_ROOT / "target" / "release"
+def get_target_dir(release: bool = False) -> Path:
+    return PROJECT_ROOT / "target" / ("release" if release else "debug")
 
 
 # =============================================================================
@@ -318,17 +325,23 @@ class VaultEnv:
 # =============================================================================
 
 @pytest.fixture(scope="session")
-def svault_binary() -> Path:
+def svault_binary(request: pytest.FixtureRequest) -> Path:
     """Path to the compiled svault binary.
     
-    Builds in release mode if binary doesn't exist.
+    Builds in debug mode by default; use --release for release builds.
     """
-    binary = TARGET_DIR / "svault"
+    release = request.config.getoption("--release")
+    target_dir = get_target_dir(release)
+    binary = target_dir / "svault"
     
     if not binary.exists():
         # Build the binary
+        cmd = ["cargo", "build"]
+        if release:
+            cmd.append("--release")
+        cmd.extend(["-p", "svault-cli", "-q"])
         result = subprocess.run(
-            ["cargo", "build", "--release", "-p", "svault-cli", "-q"],
+            cmd,
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,

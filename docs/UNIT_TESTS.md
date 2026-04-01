@@ -229,11 +229,14 @@ cargo test -p svault-cli
 # 特定模块测试
 cargo test -p svault-core hash
 
-# E2E 测试（推荐：自动使用 RAMDisk）
+# E2E 测试（推荐：自动使用 RAMDisk，默认 debug 构建）
 cd e2e_tests && bash run.sh --verbose
 
 # 只跑特定测试文件
 cd e2e_tests && bash run.sh --verbose test_import_force.py
+
+# 使用 release 构建跑 E2E
+cd e2e_tests && bash run.sh --release --verbose
 ```
 
 ---

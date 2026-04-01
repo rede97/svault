@@ -27,7 +27,7 @@ uv pip install -e "."
 ### 2. 运行测试
 
 ```bash
-# 运行所有测试
+# 运行所有测试（默认使用 debug 构建）
 ./run.sh
 
 # 详细输出
@@ -35,6 +35,9 @@ uv pip install -e "."
 
 # 只运行特定测试
 ./run.sh -v -k test_import
+
+# 使用 release 构建
+./run.sh --release
 
 # 使用更大的 RAMDisk
 ./run.sh --ramdisk-size 512m
@@ -47,6 +50,7 @@ uv pip install -e "."
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
+| `--release` | 使用 release 构建（默认使用 debug） | False |
 | `--ramdisk-size` | RAMDisk 大小 (e.g., 128m, 512m, 1g) | 256m |
 | `--ramdisk-path` | RAMDisk 挂载路径 | /tmp/svault-ramdisk |
 | `--cleanup` | 测试后清理 RAMDisk | False (保留用于检查) |
