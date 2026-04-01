@@ -24,7 +24,7 @@ class TestReconcileCommand:
         assert new_path.exists()
 
         # Reconcile with --yes
-        result = vault.run("reconcile", "--yes", f"--root={vault.vault_dir}")
+        result = vault.run("reconcile", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Matched:" in combined
@@ -51,7 +51,7 @@ class TestReconcileCommand:
 
         # Run without --yes (dry-run by implication, but reconcile doesn't have explicit dry-run flag in CLI)
         # Actually reconcile uses `cli.dry_run` and `cli.yes` — let's run without --yes
-        result = vault.run("reconcile", f"--root={vault.vault_dir}")
+        result = vault.run("reconcile", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Matches found:" in combined
@@ -66,7 +66,7 @@ class TestReconcileCommand:
         create_minimal_jpeg(src_file, "STAY_PUT_12345")
         vault.import_dir(vault.source_dir)
 
-        result = vault.run("reconcile", f"--root={vault.vault_dir}")
+        result = vault.run("reconcile", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "nothing to reconcile" in combined.lower() or "All tracked files exist" in combined

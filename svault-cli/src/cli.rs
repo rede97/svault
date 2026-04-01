@@ -80,12 +80,12 @@ pub enum Command {
         show_dup: bool,
     },
 
-    /// Re-check source files against the vault.
+    /// Re-check a previous import against its manifest.
     ///
-    /// Reads an import manifest and verifies both the source files and the
-    /// vault copies against the recorded hashes. A report is written to
-    /// `.svault/staging/` so you can decide which side is correct.
-    /// No files are imported or deleted.
+    /// Reads an import manifest and verifies both the original source files
+    /// and the vault copies against the hashes recorded at import time.
+    /// A report is written to `.svault/staging/` so you can decide which
+    /// side is correct. No files are imported or deleted.
     Recheck {
         /// Optional source directory to verify against the manifest.
         /// Must match the source_root recorded in the manifest.
@@ -145,9 +145,10 @@ pub enum Command {
 
     /// Update database paths for moved files
     Reconcile {
-        /// Root directory to scan for relocated files
+        /// Sub-directory inside the vault to scan for relocated files.
+        /// Defaults to the current working directory (same discovery rules as import).
         #[arg(long, value_name = "PATH")]
-        root: std::path::PathBuf,
+        target: Option<std::path::PathBuf>,
     },
 
     /// Verify archive integrity
