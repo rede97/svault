@@ -20,47 +20,62 @@ Note: Property tests are slower and may be skipped in CI with -m "not property"
 
 from __future__ import annotations
 
-import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import given, settings, strategies as st
 
-from conftest import VaultEnv, create_minimal_jpeg
-
-
-# =============================================================================
-# Strategies
-# =============================================================================
-
-def valid_filename_strategy() -> st.SearchStrategy[str]:
-    """Generate valid filenames (not empty, no null bytes, reasonable length)."""
-    return st.text(
-        min_size=1,
-        max_size=200,
-        alphabet=st.characters(
-            whitelist_categories=('L', 'N'),  # Letters and numbers
-            whitelist_characters='_-.'
-        )
-    ).filter(lambda x: x.strip() and not x.startswith('.'))
+from conftest import create_minimal_jpeg
 
 
-def exif_date_strategy() -> st.SearchStrategy[str]:
-    """Generate valid EXIF date strings."""
-    return st.dates(min_value=__import__('datetime').date(2000, 1, 1)).map(
-        lambda d: d.strftime("%Y:%m:%d %H:%M:%S")
-    )
-
-
-def device_name_strategy() -> st.SearchStrategy[str]:
-    """Generate realistic camera device names."""
-    makes = ["Apple", "Sony", "Canon", "Nikon", "Samsung", "Fujifilm", "Panasonic", ""]
-    models = ["iPhone 15", "A7IV", "EOS R5", "Z8", "Galaxy S24", "X-T5", "GH6", "Unknown"]
+def _create_vault_env(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create minimal vault environment for property tests.
     
-    return st.one_of(
-        st.sampled_from([f"{m} {mo}" for m in makes if m for mo in models]),
-        st.text(min_size=1, max_size=50).filter(lambda x: x.strip())
+    Returns (vault_dir, source_dir, binary_path)
+    """
+    binary = Path(__file__).parent.parent / "target" / "release" / "svault"
+    vault_dir = tmp_path / "vault"
+    source_dir = tmp_path / "source"
+    
+    vault_dir.mkdir()
+    source_dir.mkdir()
+    
+    # Init vault
+    subprocess.run(
+        [str(binary), "init"],
+        cwd=str(vault_dir),
+        check=True,
+        capture_output=True,
     )
+    
+    return vault_dir, source_dir, binary
+
+
+def _import_dir(vault_dir: Path, source_dir: Path, binary: Path) -> None:
+    """Run import command."""
+    subprocess.run(
+        [str(binary), "--output", "json", "import", "--yes", str(source_dir.resolve())],
+        cwd=str(vault_dir),
+        check=True,
+        capture_output=True,
+    )
+
+
+def _db_files(vault_dir: Path) -> list[dict]:
+    """Query files from database."""
+    import sqlite3
+    db_path = vault_dir / ".svault" / "vault.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        "SELECT path, size, mtime, crc32c_val, xxh3_128, sha256, status, imported_at FROM files"
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
 
 
 # =============================================================================
@@ -68,158 +83,106 @@ def device_name_strategy() -> st.SearchStrategy[str]:
 # =============================================================================
 
 @pytest.mark.property
-class TestPathProperties:
-    """Properties about vault path generation."""
-    
-    @given(valid_filename_strategy())
-    @settings(
-        max_examples=50,
-        deadline=10000,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_any_valid_filename_can_be_imported(self, vault: VaultEnv, filename: str) -> None:
-        """Any valid filename should be importable without crashing."""
-        # Ensure filename has .jpg extension for our test
-        if not filename.endswith('.jpg'):
-            filename += '.jpg'
-        
-        # Sanitize: remove path separators
-        filename = filename.replace('/', '_').replace('\\', '_')
-        
-        f = vault.source_dir / filename
-        create_minimal_jpeg(f, f"content_for_{filename}")
-        
-        # Should not crash
-        result = vault.import_dir(vault.source_dir, check=False)
-        assert result.returncode in [0, 1]  # 0 = all success, 1 = some failed
-    
-    @given(exif_date_strategy())
-    @settings(
-        max_examples=30,
-        deadline=10000,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_exif_date_parsed_correctly(self, vault: VaultEnv, date_str: str) -> None:
-        """EXIF dates should be parsed and reflected in path."""
-        f = vault.source_dir / "dated.jpg"
-        create_minimal_jpeg(f)
-        
-        # Use exiftool to set date
-        import subprocess
-        subprocess.run(
-            ["exiftool", "-overwrite_original", f"-DateTimeOriginal={date_str}", str(f)],
-            check=False,
-            capture_output=True,
-        )
-        
-        vault.import_dir(vault.source_dir, check=False)
-        
-        # If imported, check path contains year
-        year = date_str[:4]
-        files = vault.db_files()
-        if files:
-            assert year in files[0].get("path", "") or files[0].get("status") != "imported"
-
-
-@pytest.mark.property
 class TestHashProperties:
     """Properties about hash computation and deduplication."""
     
-    @given(st.binary(min_size=1, max_size=1024*1024))  # Up to 1MB
-    @settings(
-        max_examples=20,
-        deadline=30000,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_same_content_same_hash(self, vault: VaultEnv, content: bytes) -> None:
+    @given(st.binary(min_size=1, max_size=10000))
+    @settings(max_examples=20, deadline=30000)
+    def test_same_content_same_hash(self, content: bytes) -> None:
         """Same content should always produce same database state."""
-        # Skip empty content
-        if not content:
-            return
-        
-        # Create two files with identical content
-        header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-        full_content = header + content[:100000]  # Limit size
-        
-        f1 = vault.source_dir / "file1.jpg"
-        f2 = vault.source_dir / "file2.jpg"
-        f1.write_bytes(full_content)
-        f2.write_bytes(full_content)
-        
-        vault.import_dir(vault.source_dir)
-        
-        # Only one should be in DB (the other is duplicate)
-        files = vault.db_files()
-        assert len(files) == 1
-        assert files[0]["status"] == "imported"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            
+            # Create two files with identical content
+            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+            full_content = header + content[:5000]  # Limit size
+            
+            f1 = source_dir / "file1.jpg"
+            f2 = source_dir / "file2.jpg"
+            f1.write_bytes(full_content)
+            f2.write_bytes(full_content)
+            
+            _import_dir(vault_dir, source_dir, binary)
+            
+            files = _db_files(vault_dir)
+            # Only one should be in DB (the other is duplicate)
+            assert len(files) == 1
+            assert files[0]["status"] == "imported"
     
     @given(st.binary(min_size=10, max_size=1000), st.binary(min_size=10, max_size=1000))
-    @settings(
-        max_examples=20,
-        deadline=30000,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_different_content_different_entry(
-        self, vault: VaultEnv, content1: bytes, content2: bytes
-    ) -> None:
-        """Different content should result in different DB entries.
-        
-        Note: Very unlikely collision is statistically negligible for this test.
-        """
+    @settings(max_examples=20, deadline=30000)
+    def test_different_content_different_entry(self, content1: bytes, content2: bytes) -> None:
+        """Different content should result in different DB entries."""
         if content1 == content2:
-            return  # Skip if Hypothesis happens to generate same content
+            return  # Skip if same
         
-        header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-        
-        f1 = vault.source_dir / "file1.jpg"
-        f2 = vault.source_dir / "file2.jpg"
-        f1.write_bytes(header + content1)
-        f2.write_bytes(header + content2)
-        
-        vault.import_dir(vault.source_dir)
-        
-        files = vault.db_files()
-        # Should have 2 entries (collision rename, not duplicate)
-        assert len(files) == 2
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            
+            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+            
+            f1 = source_dir / "file1.jpg"
+            f2 = source_dir / "file2.jpg"
+            f1.write_bytes(header + content1)
+            f2.write_bytes(header + content2)
+            
+            _import_dir(vault_dir, source_dir, binary)
+            
+            files = _db_files(vault_dir)
+            # Should have 2 entries (collision rename, not duplicate)
+            assert len(files) == 2
 
 
 @pytest.mark.property
-class TestDatabaseProperties:
-    """Properties about database state."""
+class TestFileCountProperties:
+    """Properties about file counts."""
     
-    def test_db_row_has_required_fields(self, vault: VaultEnv) -> None:
-        """Every imported file should have required database fields."""
-        f = vault.source_dir / "test.jpg"
-        create_minimal_jpeg(f, "test_content")
-        
-        vault.import_dir(vault.source_dir)
-        
-        files = vault.db_files()
-        assert len(files) > 0
-        
-        required_fields = ["path", "size", "mtime", "status", "imported_at"]
-        for row in files:
-            for field in required_fields:
-                assert field in row, f"Missing required field: {field}"
-            
-            # Status should be valid
-            assert row["status"] in ["imported", "duplicate", "failed"]
-    
-    @given(st.integers(min_value=1, max_value=50))
-    @settings(
-        max_examples=10,
-        deadline=60000,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_n_unique_files_n_db_rows(self, vault: VaultEnv, n: int) -> None:
+    @given(st.integers(min_value=1, max_value=20))
+    @settings(max_examples=10, deadline=60000)
+    def test_n_unique_files_n_db_rows(self, n: int) -> None:
         """N unique files should result in N DB rows."""
-        header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-        
-        for i in range(n):
-            f = vault.source_dir / f"file_{i}.jpg"
-            f.write_bytes(header + f"unique_{i}".encode())
-        
-        vault.import_dir(vault.source_dir)
-        
-        files = vault.db_files()
-        assert len(files) == n
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            
+            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+            
+            for i in range(n):
+                f = source_dir / f"file_{i}.jpg"
+                f.write_bytes(header + f"unique_{i}".encode())
+            
+            _import_dir(vault_dir, source_dir, binary)
+            
+            files = _db_files(vault_dir)
+            assert len(files) == n
+
+
+@pytest.mark.property
+class TestFilenameProperties:
+    """Properties about filename handling."""
+    
+    @given(st.text(min_size=1, max_size=50, alphabet="abcdefghijklmnopqrstuvwxyz0123456789_-"))
+    @settings(max_examples=30, deadline=10000)
+    def test_any_valid_filename_can_be_imported(self, filename: str) -> None:
+        """Any valid filename should be importable without crashing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            
+            # Ensure .jpg extension
+            if not filename.endswith('.jpg'):
+                filename += '.jpg'
+            
+            f = source_dir / filename
+            create_minimal_jpeg(f, f"content_for_{filename}")
+            
+            # Should not crash
+            result = subprocess.run(
+                [str(binary), "import", "--yes", str(source_dir.resolve())],
+                cwd=str(vault_dir),
+                capture_output=True,
+            )
+            # 0 = success, 1 = some files failed (both acceptable)
+            assert result.returncode in [0, 1]

@@ -4,4 +4,5 @@ pub mod hash;
 pub mod import;
 pub mod media;
 pub mod status;
+pub mod verify;
 pub mod vfs;

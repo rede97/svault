@@ -105,6 +105,30 @@ impl Db {
         )?;
         Ok(self.conn.last_insert_rowid())
     }
+
+    // -----------------------------------------------------------------------
+    // Query all files
+    // -----------------------------------------------------------------------
+
+    /// Get all files in the vault.
+    pub fn get_all_files(&self) -> Result<Vec<FileRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, size, mtime, crc32c_val, xxh3_128, sha256, status \
+             FROM files ORDER BY path"
+        )?;
+        let rows = stmt.query_map([], file_row_from_row)?;
+        rows.collect()
+    }
+
+    /// Get a file by its path.
+    pub fn get_file_by_path(&self, path: &str) -> Result<Option<FileRow>> {
+        self.conn.query_row(
+            "SELECT id, path, size, mtime, crc32c_val, xxh3_128, sha256, status \
+             FROM files WHERE path = ?1 LIMIT 1",
+            params![path],
+            file_row_from_row,
+        ).optional()
+    }
 }
 
 // ---------------------------------------------------------------------------

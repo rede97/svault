@@ -47,6 +47,15 @@ pub enum HashAlgorithm {
     Sha256,
 }
 
+impl std::fmt::Display for HashAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HashAlgorithm::Xxh3_128 => write!(f, "xxh3_128"),
+            HashAlgorithm::Sha256 => write!(f, "sha256"),
+        }
+    }
+}
+
 /// Recheck mode for when all files hit the CRC32C cache.
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "cli", derive(ValueEnum))]
