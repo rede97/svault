@@ -47,7 +47,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use crate::config::{HashAlgorithm, ImportConfig, RecheckMode};
+use crate::config::{HashAlgorithm, ImportConfig};
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::vfs::{DirEntry, VfsBackend, VfsError};
@@ -67,8 +67,6 @@ pub struct VfsImportOptions<'a> {
     pub vault_root: &'a Path,
     /// Hash algorithm
     pub hash: HashAlgorithm,
-    /// Recheck mode
-    pub recheck: RecheckMode,
     /// Dry run
     pub dry_run: bool,
     /// Skip confirmation
@@ -92,7 +90,6 @@ impl<'a> VfsImportOptions<'a> {
             src_path: Path::new(""),
             vault_root,
             hash: crate::config::HashAlgorithm::Xxh3_128,
-            recheck: crate::config::RecheckMode::Fast,
             dry_run: false,
             yes: false,
             show_dup: false,
@@ -218,8 +215,13 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
             };
 
             let cached = db.lookup_by_crc32c(e.size as i64, crc).unwrap_or(None);
-            let status = if cached.is_some() {
-                FileStatus::LikelyCacheDuplicate
+            let status = if let Some(ref row) = cached {
+                let vault_path = opts.vault_root.join(&row.path);
+                if vault_path.exists() {
+                    FileStatus::LikelyCacheDuplicate
+                } else {
+                    FileStatus::LikelyNew
+                }
             } else {
                 FileStatus::LikelyNew
             };
@@ -286,6 +288,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
             "All {} files matched cache (no new files detected).",
             total
         );
+        eprintln!("To verify duplicates, run:",);
+        eprintln!("  {} <source>", style("svault recheck").cyan());
         return Ok(ImportSummary {
             total,
             duplicate: likely_dup,

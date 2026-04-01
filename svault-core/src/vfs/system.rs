@@ -19,6 +19,7 @@ use jwalk;
 pub struct SystemFs {
     root: PathBuf,
     caps: FsCapabilities,
+    forced_strategy: Option<TransferStrategy>,
 }
 
 impl SystemFs {
@@ -31,7 +32,13 @@ impl SystemFs {
             return Err(VfsError::NotFound(root));
         }
         let caps = probe_capabilities(&root)?;
-        Ok(Self { root, caps })
+        Ok(Self { root, caps, forced_strategy: None })
+    }
+
+    /// Force a specific transfer strategy for all `copy_to` calls.
+    pub fn with_strategy(mut self, strategy: TransferStrategy) -> Self {
+        self.forced_strategy = Some(strategy);
+        self
     }
 
     /// Re-probe capabilities for a specific path (e.g. a sub-directory that
@@ -114,7 +121,7 @@ impl VfsBackend for SystemFs {
         dest: &dyn VfsBackend,
         dst: &Path,
     ) -> VfsResult<TransferStrategy> {
-        let strategy = self.caps.best_strategy(dest.capabilities());
+        let strategy = self.forced_strategy.unwrap_or_else(|| self.caps.best_strategy(dest.capabilities()));
         let src_full = self.root.join(src);
 
         match strategy {

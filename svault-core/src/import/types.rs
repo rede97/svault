@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::config::{ImportConfig, RecheckMode};
+use crate::config::{ImportConfig, SyncStrategy};
 use crate::config::HashAlgorithm;
 
 /// Options controlling a single import run.
@@ -13,8 +13,8 @@ pub struct ImportOptions {
     pub vault_root: PathBuf,
     /// Hash algorithm to use for Stage D (strong hash).
     pub hash: HashAlgorithm,
-    /// Recheck mode for all-cache-hit scenario.
-    pub recheck: RecheckMode,
+    /// File transfer strategy.
+    pub strategy: SyncStrategy,
     /// If true, scan and report but do not copy files or write to DB.
     pub dry_run: bool,
     /// If true, skip the interactive y/N confirmation after Stage B.

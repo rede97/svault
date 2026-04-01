@@ -2,7 +2,7 @@
 
 > 本文档跟踪所有单元测试和集成测试的状态，随时更新。
 > 
-> 最后更新：2026-03-31
+> 最后更新：2026-04-02
 
 ---
 
@@ -12,8 +12,8 @@
 |------|------|------|------|------|
 | 单元测试 (Unit) | 10 | 10 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 | 6 | 6 | 0 | 0 |
-| **总计** | **16** | **16** | **0** | **0** |
+| Python E2E 测试 | 11 | 11 | 0 | 0 |
+| **总计** | **21** | **21** | **0** | **0** |
 
 ---
 
@@ -106,8 +106,18 @@
 | c1 | 导入前重命名 | 重命名文件后仍检测为重复 | 🔲 TODO | |
 | c2 | 移动到子目录 | 移动到子目录后仍能找到 | 🔲 TODO | |
 | c3 | 中断复制 | 截断的 JPEG 文件处理 | 🔲 TODO | 应记录为失败 |
-| c4 | 导入中增删文件 | 导入过程中源目录文件变化 | 🔲 TODO | 应优雅处理 |
-| c5 | 重复导入 | 同一目录导入两次，第二次全为缓存命中 | 🔲 TODO | |
+| c4 | 导入中增删文件 | 导入过程中源目录文件变化 | ✅ PASS | `test_concurrent_modification.py` |
+| c5 | 重复导入 | 同一目录导入两次，第二次全为缓存命中 | ✅ PASS | `test_chaos.py` |
+
+### Recheck 场景 (Recheck Scenarios)
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| r1 | `test_recheck_detects_corruption_and_reimport_succeeds` | recheck 检测 vault 文件损坏，删除后重新导入 | ✅ PASS | `test_recheck.py` |
+| r2 | `test_recheck_no_cache_hits` | 对从未导入的源运行 recheck | ✅ PASS | `test_recheck.py` |
+| r3 | `test_recheck_all_ok` | 正常导入后 recheck 全通过 | ✅ PASS | `test_recheck.py` |
+| r4 | `test_strategy_copy_no_hardlink` | `--strategy copy` 必须真正二进制复制 | ✅ PASS | 修复了 copy 被忽略的问题 |
+| r5 | `test_deleted_file_can_be_reimported_after_verify_failure` | verify 异常/文件删除后可重新导入 | ✅ PASS | `test_recheck.py` |
 
 ---
 
@@ -161,6 +171,7 @@
 | 2026-03-31 | 删除 scratch_exif.rs 临时测试文件，更新测试计数 | Kimi |
 | 2026-03-31 | 实现 `svault status` 命令，添加 2 个单元测试 | Kimi |
 | 2026-03-31 | 实现 `svault db dump` 命令，添加 3 个单元测试 | Kimi |
+| 2026-04-02 | 将 `recheck` 从 `import --recheck` 改为独立命令；修复 `--strategy copy` 未生效问题；添加 vault 进程锁；添加 recheck/re-import E2E 测试 | Kimi |
 
 ---
 
@@ -178,10 +189,10 @@ cargo test -p svault-cli
 cargo test -p svault-core hash
 
 # Python E2E 测试（推荐：自动使用 RAMDisk）
-tests/.venv/bin/python3 tests/run_tests.py --verbose
+e2e_tests/.venv/bin/python3 e2e_tests/run.sh --verbose
 
 # 包含 chaos 场景
-tests/.venv/bin/python3 tests/run_tests.py --verbose --chaos
+e2e_tests/.venv/bin/python3 e2e_tests/run.sh --verbose --chaos
 ```
 
 ---

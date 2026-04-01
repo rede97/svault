@@ -11,6 +11,7 @@
 pub mod types;
 pub mod exif;
 pub mod path;
+pub mod recheck;
 pub mod staging;
 pub mod utils;
 pub mod vfs_import;
@@ -50,6 +51,12 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     let src_fs = SystemFs::open(&opts.source)
         .map_err(|e| anyhow::anyhow!("cannot open source: {e}"))?;
+    let src_fs = match opts.strategy {
+        crate::config::SyncStrategy::Auto => src_fs,
+        crate::config::SyncStrategy::Reflink => src_fs.with_strategy(crate::vfs::TransferStrategy::Reflink),
+        crate::config::SyncStrategy::Hardlink => src_fs.with_strategy(crate::vfs::TransferStrategy::Hardlink),
+        crate::config::SyncStrategy::Copy => src_fs.with_strategy(crate::vfs::TransferStrategy::StreamCopy),
+    };
     let dir_entries = src_fs.walk(Path::new(""), &exts)
         .map_err(|e| anyhow::anyhow!("scan failed: {e}"))?;
     let total = dir_entries.len();
@@ -114,8 +121,15 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             };
             
             let cached = db.lookup_by_crc32c(e.size as i64, crc).unwrap_or(None);
-            let status = if cached.is_some() {
-                FileStatus::LikelyCacheDuplicate
+            let status = if let Some(ref row) = cached {
+                // If the DB says it exists but the actual vault file is gone
+                // (e.g. user manually deleted it), treat it as new so it can be re-imported.
+                let vault_path = opts.vault_root.join(&row.path);
+                if vault_path.exists() {
+                    FileStatus::LikelyCacheDuplicate
+                } else {
+                    FileStatus::LikelyNew
+                }
             } else {
                 FileStatus::LikelyNew
             };
@@ -166,9 +180,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     if likely_new.is_empty() {
         eprintln!();
         eprintln!("All {} files matched cache (no new files detected).", total);
-        eprintln!("To verify duplicates, re-run with:");
-        eprintln!("  {} EXIF binary comparison (recommended)", style("-R exif ").cyan());
-        eprintln!("  {} full-file hash comparison", style("-R hash ").cyan());
+        eprintln!("To verify duplicates, run:",);
+        eprintln!("  {} <source>", style("svault recheck").cyan());
         return Ok(ImportSummary {
             total, duplicate: likely_dup, failed: failed_b,
             all_cache_hit: true, ..Default::default()
@@ -429,10 +442,16 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 return r;
             }
             let existing = db.lookup_by_hash(&r.hash_bytes, &opts.hash).unwrap_or(None);
-            if existing.is_some() {
-                r.is_duplicate = true;
-                r.dup_reason = Some("db".to_string());
-                return r;
+            if let Some(ref row) = existing {
+                let vault_path = opts.vault_root.join(&row.path);
+                // Allow re-importing the same path even if the hash is already in the DB.
+                // This happens when the user deleted a corrupted vault file and wants to
+                // replace it by re-importing from source.
+                if vault_path != r.dest && vault_path.exists() {
+                    r.is_duplicate = true;
+                    r.dup_reason = Some("db".to_string());
+                    return r;
+                }
             }
             use dashmap::mapref::entry::Entry;
             match seen.entry(r.hash_bytes.clone()) {

@@ -1,4 +1,105 @@
-mod cli;
+//! # svault-cli
+//!
+//! Command-line interface for **Svault** — a content-addressed multimedia archive.
+//!
+//! ## Quick start
+//!
+//! ```bash
+//! # Initialize a vault
+//! svault init
+//!
+//! # Import photos from a directory or device
+//! svault import /path/to/photos
+//!
+//! # Check vault health
+//! svault status
+//! svault verify
+//! ```
+//!
+//! ## Global flags
+//!
+//! | Flag | Description |
+//! |------|-------------|
+//! | `--output human\|json` | Output format |
+//! | `--dry-run` | Preview changes without writing |
+//! | `--yes` | Skip confirmation prompts |
+//! | `--quiet` | Suppress non-error output |
+//! | `--progress` | Emit JSON progress events to stderr |
+//! | `--config <PATH>` | Path to config file |
+//! | `--vault <PATH>` | Override vault root directory |
+//!
+//! ## Commands
+//!
+//! ### `init`
+//! Initialize a new vault in the current directory by creating `.svault/` and the database.
+//!
+//! ### `import <SOURCE>`
+//! Import media files from a source directory or device.
+//!
+//! - **Vault discovery**: svault walks up from `--target` (or CWD) to find `.svault/vault.db`.
+//! - **Path template**: `svault.toml` controls the destination path. Default is `$year/$mon-$day/$device`.
+//!   - `$year` / `$mon` / `$day` — from EXIF DateTimeOriginal, or file mtime if missing.
+//!   - `$device` — EXIF camera model, or "Unknown Device".
+//! - **Transfer strategy**: `--strategy auto|reflink|hardlink|copy`.
+//! - **Hash algorithm**: `-H xxh3_128|sha256` for full-file collision resolution.
+//! - **Manifest**: every import writes a timestamped manifest to `<vault_root>/manifest/`.
+//!
+//! > Svault never deletes your originals. Review the manifest and delete source files yourself.
+//!
+//! ### `recheck <SOURCE>`
+//! Compare source files against the vault when everything hits the CRC32C cache.
+//! Computes full-file hashes and writes a report to `.svault/staging/`.
+//! Use this when you suspect previously-imported vault files may be corrupt,
+//! or when you want to verify that your source files are still intact.
+//! No files are imported or deleted — review the report and act manually.
+//!
+//! ### `add <PATH>`
+//! Register files already physically inside the vault without moving them.
+//! Use this when you have manually copied files into the vault directory.
+//!
+//! ### `sync <SOURCE_VAULT>`
+//! Pull files and database records from another vault.
+//! Event logs are compared directly, so duplicates are detected without re-hashing.
+//! No files are deleted on either side.
+//!
+//! ### `reconcile --root <PATH>`
+//! Locate files that were moved outside svault and update their paths in the database.
+//!
+//! ### `verify`
+//! Check every file in the vault against its stored hash.
+//!
+//! | Option | Description |
+//! |--------|-------------|
+//! | `-H sha256\|xxh3_128` | Hash algorithm |
+//! | `--file <PATH>` | Verify a single file |
+//! | `--recent <SECONDS>` | Verify files imported in the last N seconds |
+//!
+//! ### `verify-source`
+//! Compare source files with the import manifest to detect post-import changes or deletions.
+//!
+//! ### `status`
+//! Show a summary of the vault: imported files, duplicates, pending hashes, events, and DB size.
+//!
+//! ### `history`
+//! Query the immutable event log. All changes are stored as events with a tamper-evident hash chain.
+//!
+//! ### `background-hash`
+//! Compute SHA-256 for files that were imported without it. Safe to run when the system is idle.
+//!
+//! ### `clone --target <DIR>`
+//! Copy a filtered subset of the vault to a local working directory (e.g. for offline editing).
+//!
+//! ### `mtp ls [PATH]` / `mtp tree <PATH>`
+//! Browse MTP devices (Android phones, cameras) before importing. Use `svault import mtp://...`
+//! to actually import files.
+//!
+//! ### `db`
+//! Database maintenance subcommands:
+//! - `db verify-chain` — verify the event-log hash chain.
+//! - `db replay` — rebuild materialised views from the event log.
+//! - `db dump [TABLES]` — export table contents for debugging.
+
+pub mod cli;
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +135,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let root = std::env::current_dir().expect("cannot read cwd");
             db::init(&root)
         }
-        Command::Import { source, target, hash, recheck, show_dup, .. } => {
+        Command::Import { source, target, hash, strategy, show_dup, .. } => {
             // Check if source is a URL (mtp://) or local path
             let source_str = source.to_string_lossy();
             if source_str.starts_with("mtp://") {
@@ -45,6 +146,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
                     
                     let vault_root = find_vault_root(target.clone(), &std::env::current_dir()?)?;
+                    let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
                     let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                         .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
                     
@@ -60,7 +162,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         src_path: &mtp_path,
                         vault_root: &vault_root,
                         hash: hash_algo,
-                        recheck,
                         dry_run: cli.dry_run,
                         yes: cli.yes,
                         show_dup,
@@ -90,6 +191,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } else {
                 // Local filesystem import
                 let vault_root = find_vault_root(target, &source)?;
+                let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
                 let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                     .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
                 let config = svault_core::config::Config::load(&vault_root)?;
@@ -98,7 +200,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     source,
                     vault_root,
                     hash: hash_algo,
-                    recheck,
+                    strategy,
                     dry_run: cli.dry_run,
                     yes: cli.yes,
                     show_dup,
@@ -118,6 +220,52 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         }
+        Command::Recheck { source, target, hash } => {
+            let source_str = source.to_string_lossy();
+            let vault_root = find_vault_root(target, &source)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+            let config = svault_core::config::Config::load(&vault_root)?;
+            let hash_algo = hash.unwrap_or(config.global.hash.clone());
+
+            if source_str.starts_with("mtp://") {
+                #[cfg(feature = "mtp")]
+                {
+                    use svault_core::vfs::manager::VfsManager;
+                    use svault_core::import::recheck::{run_vfs_recheck, VfsRecheckOptions};
+
+                    let manager = VfsManager::new();
+                    let (backend, mtp_path) = manager.open_url(&source_str)
+                        .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
+
+                    let opts = VfsRecheckOptions {
+                        src_backend: &*backend,
+                        src_path: &mtp_path,
+                        vault_root: &vault_root,
+                        hash: hash_algo,
+                        import_config: config.import,
+                        source_name: source_str.to_string(),
+                        crc_buffer_size: 64 * 1024,
+                    };
+                    run_vfs_recheck(opts, &db)?;
+                }
+                #[cfg(not(feature = "mtp"))]
+                {
+                    Err(anyhow::anyhow!("MTP support not enabled. Build with --features mtp"))
+                }
+            } else {
+                use svault_core::import::recheck::{run_recheck, RecheckOptions};
+                let opts = RecheckOptions {
+                    source,
+                    vault_root,
+                    hash: hash_algo,
+                    import_config: config.import,
+                };
+                run_recheck(opts, &db)?;
+            }
+            Ok(())
+        }
         Command::Add { .. } => todo!("add"),
         Command::Sync { .. } => todo!("sync"),
         Command::Reconcile { .. } => todo!("reconcile"),
@@ -126,6 +274,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             use console::style;
 
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
             let algo = hash;
@@ -305,6 +454,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             use console::style;
 
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let manager = ManifestManager::new(&vault_root);
 
             // Get manifest to verify
@@ -408,6 +558,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Status => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
             let report = svault_core::status::generate_report(
@@ -422,9 +573,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::History { .. } => todo!("history"),
-        Command::BackgroundHash { .. } => todo!("background-hash"),
-        Command::Clone { .. } => todo!("clone"),
+        Command::History { .. } => {
+            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+            todo!("history")
+        }
+        Command::BackgroundHash { .. } => {
+            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+            todo!("background-hash")
+        }
+        Command::Clone { .. } => {
+            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+            todo!("clone")
+        }
         #[cfg(feature = "mtp")]
         Command::Mtp { command } => {
             use cli::MtpCommand;
@@ -540,6 +703,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let vault_root = cli.vault
                 .or_else(|| std::env::current_dir().ok())
                 .ok_or_else(|| anyhow::anyhow!("cannot determine vault root"))?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db_path = vault_root.join(".svault").join("vault.db");
             
             match command {

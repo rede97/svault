@@ -56,18 +56,7 @@ impl std::fmt::Display for HashAlgorithm {
     }
 }
 
-/// Recheck mode for when all files hit the CRC32C cache.
-#[derive(Debug, Default, Clone)]
-#[cfg_attr(feature = "cli", derive(ValueEnum))]
-pub enum RecheckMode {
-    /// Skip recheck, trust CRC32C cache result (default)
-    #[default]
-    Fast,
-    /// Binary-compare EXIF header from archive vs source (64KB, fast)
-    Exif,
-    /// Compute full-file hash and compare against database
-    Hash,
-}
+
 
 /// File-transfer strategy used during sync operations.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
