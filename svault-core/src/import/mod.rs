@@ -278,6 +278,36 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             
+            // Check if source file still exists (may have been deleted during import)
+            if !src_path.exists() {
+                copy_errors.lock().unwrap()
+                    .insert(src_path.clone(), "File deleted during import".to_string());
+                copy_bar.println(format!("  {} {} - {}",
+                    style("Error").red(),
+                    style(&filename).dim(),
+                    "File deleted during import"));
+                copy_bar.inc(1);
+                return None;
+            }
+            
+            // Check if file was modified (size or mtime changed)
+            if let Ok(meta) = fs::metadata(&src_path) {
+                let current_size = meta.len();
+                let current_mtime = meta.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                
+                if current_size != size || current_mtime != mtime_ms {
+                    copy_bar.println(format!("  {} {} - {}",
+                        style("Warning").yellow(),
+                        style(&filename).dim(),
+                        "File modified during import, using current version"));
+                    // Continue with copy, but note that hash may differ
+                }
+            }
+            
             let rel = src_path.strip_prefix(&opts.source).unwrap_or(&src_path);
 
             if let Some(parent) = dest_abs.parent() {

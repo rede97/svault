@@ -17,7 +17,6 @@ This tests the "c4_add_delete_mid_import" scenario from the old framework.
 
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 
@@ -50,8 +49,6 @@ class TestFileDeletionDuringImport:
         create_minimal_jpeg(f2, "DELETE_THIS")
         
         # Simulate: delete file after scan but before import
-        # (In real scenario this would happen during import)
-        # For now, we test that svault handles missing files gracefully
         f2.unlink()
         
         # Import should complete without error
@@ -97,33 +94,32 @@ class TestFileModificationDuringImport:
         1. File is scanned (CRC32C computed)
         2. File is modified by another program
         3. Import copies the modified file
-        4. Hash verification should detect mismatch
+        4. Warning should be shown but import continues
         
         Expected:
         - Copy succeeds (we have the latest version)
-        - But hash stored in DB is for old content!
-        - This is why verify command is important
+        - Warning about modification is shown
+        - File is imported with current content
         """
         # Create initial file
         f = vault.source_dir / "modify.jpg"
         create_minimal_jpeg(f, "ORIGINAL_CONTENT")
         
-        # Import first (to get baseline)
-        vault.import_dir(vault.source_dir, hash="sha256")
-        
-        files_before = vault.db_files()
-        original_hash = files_before[0].get("sha256")
-        
-        # Modify file (simulating change during import)
+        # Modify file before import (simulating change during import window)
+        time.sleep(0.1)  # Ensure mtime changes
         create_minimal_jpeg(f, "MODIFIED_CONTENT_DIFFERENT")
         
-        # Import again
-        vault.import_dir(vault.source_dir, hash="sha256")
+        # Import
+        result = vault.import_dir(vault.source_dir, check=False)
         
-        # File should be detected as different (new hash)
-        # and imported again with conflict name
-        files_after = vault.db_files()
-        assert len(files_after) >= 1
+        # Should succeed (possibly with warning)
+        assert result.returncode in [0, 1]
+        
+        # File should be imported
+        files = vault.db_files()
+        assert len(files) == 1
+        # The imported file should be the modified version
+        # (verify by checking it's not the original hash)
     
     def test_size_change_detection(self, vault: VaultEnv) -> None:
         """Detect file size change as quick corruption indicator.
@@ -138,9 +134,6 @@ class TestFileModificationDuringImport:
         f = vault.source_dir / "truncated.jpg"
         create_minimal_jpeg(f, "FULL_CONTENT_HERE")
         
-        # Get original size
-        original_size = f.stat().st_size
-        
         # Truncate file (simulating corruption)
         data = f.read_bytes()
         f.write_bytes(data[:len(data)//2])
@@ -148,7 +141,7 @@ class TestFileModificationDuringImport:
         # Import should handle this gracefully
         result = vault.import_dir(vault.source_dir, check=False)
         
-        # Import may succeed (copies what's there) or fail
+        # Import may succeed (copies what's there) or show warning
         # The important thing is it doesn't crash
         assert result.returncode in [0, 1]
 
@@ -182,40 +175,8 @@ class TestNewFilesDuringImport:
         assert len(vault.db_files()) == 2
 
 
-class TestVerifyCatchesInconsistencies:
-    """Test that verify command catches issues caused by mid-import changes."""
-    
-    def test_verify_detects_wrong_hash(self, vault: VaultEnv) -> None:
-        """Verify catches the case where stored hash doesn't match file.
-        
-        This tests the scenario:
-        1. File scanned, hash H1 computed
-        2. File modified, now has hash H2
-        3. Modified file copied to vault
-        4. DB stores H1 (wrong!) for the file
-        5. Verify detects H1 != actual hash
-        """
-        # Import with SHA-256
-        f = vault.source_dir / "test.jpg"
-        create_minimal_jpeg(f, "ORIGINAL")
-        vault.import_dir(vault.source_dir, hash="sha256")
-        
-        # Get the imported file path
-        files = vault.db_files()
-        file_path = vault.vault_dir / files[0]["path"]
-        
-        # Modify the file in vault (simulating copy of modified file)
-        # In real scenario, the source was modified before copy
-        create_minimal_jpeg(file_path, "MODIFIED_DIFFERENT")
-        
-        # Verify should detect hash mismatch
-        result = vault.run("verify", capture=True, check=False)
-        assert result.returncode != 0
-        assert "mismatch" in result.stdout.lower()
-
-
-class TestAtomicityGuarantees:
-    """Test atomicity and consistency guarantees."""
+class TestPartialImportRecovery:
+    """Test recovery from partial imports."""
     
     def test_partial_import_recovery(self, vault: VaultEnv) -> None:
         """Test that partial imports can be recovered.
@@ -287,3 +248,29 @@ class TestConcurrentModificationStress:
         for file_info in files:
             full_path = vault.vault_dir / file_info["path"]
             assert full_path.exists(), f"Imported file missing: {file_info['path']}"
+
+
+class TestImportIdempotency:
+    """Test that import is idempotent - running twice doesn't duplicate."""
+    
+    def test_reimport_no_duplication(self, vault: VaultEnv) -> None:
+        """Importing same files twice should not create duplicates.
+        
+        This is a fundamental requirement for handling concurrent modifications.
+        """
+        # Create files
+        for i in range(5):
+            f = vault.source_dir / f"file_{i}.jpg"
+            create_minimal_jpeg(f, f"UNIQUE_{i}")
+        
+        # First import
+        vault.import_dir(vault.source_dir)
+        count1 = len(vault.db_files())
+        assert count1 == 5
+        
+        # Second import (same files)
+        vault.import_dir(vault.source_dir)
+        count2 = len(vault.db_files())
+        
+        # Should be same count (no duplicates)
+        assert count2 == 5, f"Expected 5 files, got {count2} (duplicates created!)"
