@@ -170,7 +170,7 @@ pub fn format_count(n: i64) -> String {
     let len = chars.len();
 
     for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(*c);

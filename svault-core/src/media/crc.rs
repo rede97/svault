@@ -76,7 +76,7 @@ fn compute_head(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
 fn compute_tail(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
 
     let len = reader.len()?;
-    let start = if len > n as u64 { len - n as u64 } else { 0 };
+    let start = len.saturating_sub(n as u64);
 
     reader.seek(SeekFrom::Start(start))?;
     let mut buffer = vec![0u8; n];

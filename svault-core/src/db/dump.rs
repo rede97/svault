@@ -17,20 +17,12 @@ pub struct TableDump {
 
 /// Options for dumping database contents.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct DumpOptions {
     /// Specific tables to dump (empty = all tables).
     pub tables: Vec<String>,
     /// Maximum rows per table.
     pub limit: Option<usize>,
-}
-
-impl Default for DumpOptions {
-    fn default() -> Self {
-        Self {
-            tables: Vec::new(),
-            limit: None,
-        }
-    }
 }
 
 /// Returns a list of all user tables in the database.
@@ -56,7 +48,7 @@ pub fn dump_table(conn: &Connection, table_name: &str, limit: Option<usize>) -> 
     let pragma_sql = format!("PRAGMA table_info({})", table_name);
     let mut stmt = conn.prepare(&pragma_sql)?;
     let column_rows = stmt.query_map([], |row| {
-        Ok(row.get::<_, String>(1)?) // column name is at index 1
+        row.get::<_, String>(1) // column name is at index 1
     })?;
     
     let mut columns = Vec::new();

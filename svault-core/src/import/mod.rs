@@ -336,13 +336,13 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             
             let rel = src_path.strip_prefix(&opts.source).unwrap_or(&src_path);
 
-            if let Some(parent) = dest_abs.parent() {
-                if let Err(err) = fs::create_dir_all(parent) {
-                    copy_errors.lock().unwrap()
-                        .insert(src_path.clone(), err.to_string());
-                    copy_bar.inc(1);
-                    return None;
-                }
+            if let Some(parent) = dest_abs.parent()
+                && let Err(err) = fs::create_dir_all(parent)
+            {
+                copy_errors.lock().unwrap()
+                    .insert(src_path.clone(), err.to_string());
+                copy_bar.inc(1);
+                return None;
             }
 
             match transfer_file(&src_fs, rel, &dst_fs, &dest_abs, transfer_strategy) {
@@ -573,7 +573,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 mtime_ms: r.mtime_ms,
                 crc32c: r.crc32c,
                 xxh3_128: xxh3,
-                sha256: sha256,
+                sha256,
                 imported_at: now_ms,
             }
         })

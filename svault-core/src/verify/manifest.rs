@@ -120,7 +120,7 @@ impl ManifestManager {
         for entry in fs::read_dir(&self.manifests_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 match ImportManifest::load(&path) {
                     Ok(m) => manifests.push((path, m)),
                     Err(e) => eprintln!("Warning: failed to load manifest {}: {}", path.display(), e),

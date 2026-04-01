@@ -190,8 +190,7 @@ impl VfsProvider for MtpProvider {
             .strip_prefix("mtp://")
             .ok_or_else(|| VfsError::Other(format!("Invalid MTP source ID: {}", source_id)))?;
 
-        if identifier.starts_with("SN:") {
-            let serial = &identifier[3..];
+        if let Some(serial) = identifier.strip_prefix("SN:") {
             Ok(Box::new(MtpFs::open_by_serial(serial)?))
         } else {
             // Try to parse as numeric index (1, 2, 3...)
@@ -222,8 +221,7 @@ impl VfsProvider for MtpProvider {
             return Ok(Box::new(MtpFs::open_first()?));
         }
 
-        if authority.starts_with("SN:") {
-            let serial = &authority[3..];
+        if let Some(serial) = authority.strip_prefix("SN:") {
             Ok(Box::new(MtpFs::open_by_serial(serial)?))
         } else {
             // Try to match by name or open by index
@@ -335,12 +333,12 @@ impl MtpFs {
                     let err_str = e.to_string();
                     last_error = Some(e);
                     
-                    if err_str.contains("busy") || err_str.contains("locked") || err_str.contains("access") {
-                        if attempt < max_retries {
-                            eprintln!("MTP device busy (attempt {}/{}), waiting...", attempt, max_retries);
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-                            continue;
-                        }
+                    if (err_str.contains("busy") || err_str.contains("locked") || err_str.contains("access"))
+                        && attempt < max_retries
+                    {
+                        eprintln!("MTP device busy (attempt {}/{}), waiting...", attempt, max_retries);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
                     }
                     break;
                 }
@@ -561,7 +559,7 @@ impl VfsBackend for MtpFs {
         if dir.as_os_str().is_empty() || dir == Path::new("/") {
             // Return storages as "directories"
             let mut entries = Vec::new();
-            for (name, _) in &self.storages {
+            for name in self.storages.keys() {
                 entries.push(DirEntry {
                     path: PathBuf::from(name),
                     size: 0,

@@ -47,7 +47,7 @@ impl VfsBackend for SystemFs {
     }
 
     fn exists(&self, path: &Path) -> VfsResult<bool> {
-        Ok(self.root.join(path).try_exists().map_err(VfsError::Io)?)
+        self.root.join(path).try_exists().map_err(VfsError::Io)
     }
 
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>> {
@@ -84,10 +84,10 @@ impl VfsBackend for SystemFs {
             .skip_hidden(false)
             .process_read_dir(|_depth, _path, _state, children| {
                 children.iter_mut().for_each(|child_result| {
-                    if let Ok(child) = child_result {
-                        if child.file_name == std::ffi::OsStr::new(".svault") {
-                            child.read_children_path = None;
-                        }
+                    if let Ok(child) = child_result
+                        && child.file_name == std::ffi::OsStr::new(".svault")
+                    {
+                        child.read_children_path = None;
                     }
                 });
             })
@@ -134,13 +134,12 @@ impl VfsBackend for SystemFs {
     fn reflink_to(&self, src: &Path, dst_backend: &dyn VfsBackend, dst: &Path) -> VfsResult<()> {
         let src_full = self.root.join(src);
         let dst_sys = dst_backend.as_system_fs()
-            .ok_or_else(|| VfsError::Unsupported("reflink requires local filesystem"))?;
+            .ok_or(VfsError::Unsupported("reflink requires local filesystem"))?;
         let dst_full = dst_sys.root.join(dst);
         if try_reflink(&src_full, &dst_full)? {
             Ok(())
         } else {
-            Err(VfsError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(VfsError::Io(std::io::Error::other(
                 "reflink not supported by filesystem",
             )))
         }
@@ -149,7 +148,7 @@ impl VfsBackend for SystemFs {
     fn hard_link_to(&self, src: &Path, dst_backend: &dyn VfsBackend, dst: &Path) -> VfsResult<()> {
         let src_full = self.root.join(src);
         let dst_sys = dst_backend.as_system_fs()
-            .ok_or_else(|| VfsError::Unsupported("hardlink requires local filesystem"))?;
+            .ok_or(VfsError::Unsupported("hardlink requires local filesystem"))?;
         let dst_full = dst_sys.root.join(dst);
         fs::hard_link(&src_full, &dst_full).map_err(VfsError::Io)
     }

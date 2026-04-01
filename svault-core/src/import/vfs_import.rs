@@ -451,13 +451,13 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         copy_bar.set_message(filename.clone());
 
         // Create parent dirs and copy
-        if let Some(parent) = dest_path.parent() {
-            if let Err(err) = dst_fs.create_dir_all(parent) {
-                let mut errors = copy_errors.lock().unwrap();
-                errors.insert(src_path.clone(), err.to_string());
-                copy_bar.inc(1);
-                return None;
-            }
+        if let Some(parent) = dest_path.parent()
+            && let Err(err) = dst_fs.create_dir_all(parent)
+        {
+            let mut errors = copy_errors.lock().unwrap();
+            errors.insert(src_path.clone(), err.to_string());
+            copy_bar.inc(1);
+            return None;
         }
 
         // Use VFS transfer engine
@@ -588,7 +588,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
 
         let _ = db.insert_file_row(
             &relpath_str,
-            *size as i64,
+            *size,
             *taken_ms,
             Some(*crc),
             xxh3_bytes,
@@ -625,8 +625,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 mtime_ms: *taken_ms,
                 crc32c: *crc,
                 xxh3_128: xxh3,
-                sha256: sha256,
-                imported_at: imported_at,
+                sha256,
+                imported_at,
             }
         })
         .collect();
@@ -854,9 +854,7 @@ fn parse_exif_from_buffer(buf: &[u8], fallback_ms: i64) -> (i64, String) {
     let device = if make.is_empty() && model.is_empty() {
         "Unknown".to_string()
     } else {
-        let raw = if make.is_empty() {
-            model
-        } else if model.starts_with(&make) {
+        let raw = if make.is_empty() || model.starts_with(&make) {
             model
         } else {
             format!("{make} {model}")

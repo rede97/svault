@@ -45,9 +45,7 @@ pub fn read_exif_date_device(path: &Path, mtime_ms: i64) -> (i64, String) {
     let device = if make.is_empty() && model.is_empty() {
         "Unknown".to_string()
     } else {
-        let raw = if make.is_empty() {
-            model
-        } else if model.starts_with(&make) {
+        let raw = if make.is_empty() || model.starts_with(&make) {
             model // avoid "Apple Apple iPhone"
         } else {
             format!("{make} {model}")

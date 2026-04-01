@@ -77,6 +77,7 @@ impl Db {
 
     /// Insert a newly imported file into the `files` materialised view.
     /// Must be called inside `append_event`'s `update_fn` closure.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_file_row(
         &self,
         path: &str,

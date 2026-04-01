@@ -134,10 +134,10 @@ impl BindingDetector {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() {
-                if let Ok(info) = MediaInfo::from_path(&path) {
-                    files.push(info);
-                }
+            if path.is_file()
+                && let Ok(info) = MediaInfo::from_path(&path)
+            {
+                files.push(info);
             }
         }
 
@@ -174,10 +174,10 @@ impl BindingDetector {
             }
 
             // Create binding if we found a group
-            if group.len() > 1 || self.is_binding_candidate(&files[group[0]]) {
-                if let Some(binding) = self.create_binding(&files, &group) {
-                    bindings.push(binding);
-                }
+            if (group.len() > 1 || self.is_binding_candidate(&files[group[0]]))
+                && let Some(binding) = self.create_binding(&files, &group)
+            {
+                bindings.push(binding);
             }
         }
 

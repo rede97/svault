@@ -291,7 +291,7 @@ fn write_report(
     let report_path = staging_dir.join(format!("recheck-{session_id}.txt"));
 
     let mut buf = String::new();
-    buf.push_str(&format!("# Recheck Report\n"));
+    buf.push_str("# Recheck Report\n");
     buf.push_str(&format!("# Session: {session_id}\n"));
     buf.push_str(&format!("# Source: {source_name}\n"));
     buf.push_str(&format!("# Hash: {hash_algo:?}\n"));
