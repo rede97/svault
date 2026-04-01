@@ -8,10 +8,12 @@
 //! - `utils`: Time utilities
 //! - `vfs_import`: VFS-based import (supports MTP, local, etc.)
 
+pub mod add;
 pub mod types;
 pub mod exif;
 pub mod path;
 pub mod recheck;
+pub mod reconcile;
 pub mod staging;
 pub mod utils;
 pub mod vfs_import;

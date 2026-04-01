@@ -114,8 +114,9 @@ pub enum Command {
         path: std::path::PathBuf,
 
         /// Hash algorithm to use for add.
-        #[arg(short = 'H', long, default_value = "sha256", value_enum)]
-        hash: HashAlgorithm,
+        /// Defaults to `global.hash` in svault.toml (fast if unset).
+        #[arg(short = 'H', long, value_enum)]
+        hash: Option<HashAlgorithm>,
     },
 
 
@@ -138,8 +139,8 @@ pub enum Command {
 
         /// Hash algorithm used for verification and collision resolution.
         /// Overrides the default set in svault.toml (`global.hash`).
-        #[arg(short = 'H', long, default_value = "sha256", value_enum)]
-        hash: HashAlgorithm,
+        #[arg(short = 'H', long, value_enum)]
+        hash: Option<HashAlgorithm>,
     },
 
     /// Update database paths for moved files
@@ -152,8 +153,9 @@ pub enum Command {
     /// Verify archive integrity
     Verify {
         /// Hash algorithm to use for verification.
-        #[arg(short = 'H', long, default_value = "sha256", value_enum)]
-        hash: HashAlgorithm,
+        /// Defaults to `global.hash` in svault.toml (fast if unset).
+        #[arg(short = 'H', long, value_enum)]
+        hash: Option<HashAlgorithm>,
 
         /// Verify only this file
         #[arg(long, value_name = "PATH")]

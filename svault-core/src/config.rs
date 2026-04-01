@@ -40,18 +40,20 @@ pub struct GlobalConfig {
 #[cfg_attr(feature = "cli", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum HashAlgorithm {
-    /// XXH3-128 (high throughput, non-cryptographic, default)
+    /// Fast hash (XXH3-128, default)
     #[default]
+    #[cfg_attr(feature = "cli", clap(name = "fast"))]
     Xxh3_128,
-    /// SHA-256 (cryptographic strength)
+    /// Secure hash (SHA-256)
+    #[cfg_attr(feature = "cli", clap(name = "secure"))]
     Sha256,
 }
 
 impl std::fmt::Display for HashAlgorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HashAlgorithm::Xxh3_128 => write!(f, "xxh3_128"),
-            HashAlgorithm::Sha256 => write!(f, "sha256"),
+            HashAlgorithm::Xxh3_128 => write!(f, "fast"),
+            HashAlgorithm::Sha256 => write!(f, "secure"),
         }
     }
 }

@@ -7,9 +7,12 @@ pub mod manifest;
 
 use std::path::Path;
 
+use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
+
 use crate::config::HashAlgorithm;
 use crate::db::{Db, FileRow};
-use crate::hash::{xxh3_128_file, sha256_file};
+use crate::hash::{sha256_file, xxh3_128_file};
 
 /// Result of a single file verification.
 #[derive(Debug, Clone)]
@@ -81,13 +84,11 @@ pub fn verify_file(
     // Check hash based on algorithm
     match algo {
         HashAlgorithm::Xxh3_128 => {
-            // Check if we have xxh3_128 hash stored
             let stored_hash = match &file.xxh3_128 {
                 Some(h) => h,
                 None => return VerifyResult::HashNotAvailable,
             };
 
-            // Compute hash
             let computed = match xxh3_128_file(&full_path) {
                 Ok(h) => h,
                 Err(e) => return VerifyResult::IoError(e.to_string()),
@@ -100,13 +101,11 @@ pub fn verify_file(
             }
         }
         HashAlgorithm::Sha256 => {
-            // Check if we have sha256 hash stored
             let stored_hash = match &file.sha256 {
                 Some(h) => h,
                 None => return VerifyResult::HashNotAvailable,
             };
 
-            // Compute hash
             let computed = match sha256_file(&full_path) {
                 Ok(h) => h,
                 Err(e) => return VerifyResult::IoError(e.to_string()),
@@ -128,23 +127,45 @@ pub fn verify_all(
     vault_root: &Path,
     db: &Db,
     algo: &HashAlgorithm,
-    progress_fn: Option<impl Fn(&str)>,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
-    // Get all files from database
     let files = db.get_all_files()?;
-    let mut results = Vec::new();
+    let total = files.len();
+
+    if total == 0 {
+        return Ok((Vec::new(), VerifySummary::default()));
+    }
+
+    let bar = ProgressBar::new(total as u64);
+    bar.set_style(
+        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+            .unwrap()
+            .progress_chars("=> "),
+    );
+    bar.set_prefix("Verifying");
+
+    let vault_root = vault_root.to_path_buf();
+    let algo = algo.clone();
+
+    let results: Vec<(String, VerifyResult)> = files
+        .into_par_iter()
+        .map(|file| {
+            let filename = Path::new(&file.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            bar.set_message(filename);
+
+            let result = verify_file(&vault_root, &file, &algo);
+            bar.inc(1);
+            (file.path, result)
+        })
+        .collect();
+
+    bar.finish_and_clear();
+
     let mut summary = VerifySummary::default();
-
-    for file in files {
-        if let Some(ref callback) = progress_fn {
-            callback(&file.path);
-        }
-
-        let result = verify_file(vault_root, &file, algo);
-        
-        // Update summary
-        summary.total += 1;
-        match &result {
+    for (_, result) in &results {
+        match result {
             VerifyResult::Ok => summary.ok += 1,
             VerifyResult::Missing => summary.missing += 1,
             VerifyResult::SizeMismatch { .. } => summary.size_mismatch += 1,
@@ -152,9 +173,8 @@ pub fn verify_all(
             VerifyResult::IoError(_) => summary.io_error += 1,
             VerifyResult::HashNotAvailable => summary.hash_not_available += 1,
         }
-
-        results.push((file.path, result));
     }
+    summary.total = results.len();
 
     Ok((results, summary))
 }
@@ -178,21 +198,45 @@ pub fn verify_recent(
     db: &Db,
     algo: &HashAlgorithm,
     seconds: u64,
-    progress_fn: Option<impl Fn(&str)>,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_recent_files(seconds)?;
-    let mut results = Vec::new();
+    let total = files.len();
+
+    if total == 0 {
+        return Ok((Vec::new(), VerifySummary::default()));
+    }
+
+    let bar = ProgressBar::new(total as u64);
+    bar.set_style(
+        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+            .unwrap()
+            .progress_chars("=> "),
+    );
+    bar.set_prefix("Verifying");
+
+    let vault_root = vault_root.to_path_buf();
+    let algo = algo.clone();
+
+    let results: Vec<(String, VerifyResult)> = files
+        .into_par_iter()
+        .map(|file| {
+            let filename = Path::new(&file.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            bar.set_message(filename);
+
+            let result = verify_file(&vault_root, &file, &algo);
+            bar.inc(1);
+            (file.path, result)
+        })
+        .collect();
+
+    bar.finish_and_clear();
+
     let mut summary = VerifySummary::default();
-
-    for file in files {
-        if let Some(ref callback) = progress_fn {
-            callback(&file.path);
-        }
-
-        let result = verify_file(vault_root, &file, algo);
-        
-        summary.total += 1;
-        match &result {
+    for (_, result) in &results {
+        match result {
             VerifyResult::Ok => summary.ok += 1,
             VerifyResult::Missing => summary.missing += 1,
             VerifyResult::SizeMismatch { .. } => summary.size_mismatch += 1,
@@ -200,9 +244,8 @@ pub fn verify_recent(
             VerifyResult::IoError(_) => summary.io_error += 1,
             VerifyResult::HashNotAvailable => summary.hash_not_available += 1,
         }
-
-        results.push((file.path, result));
     }
+    summary.total = results.len();
 
     Ok((results, summary))
 }

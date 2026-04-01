@@ -12,8 +12,8 @@
 |------|------|------|------|------|
 | 单元测试 (Unit) | 10 | 10 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 | 67 | 65 | 0 | 2 |
-| **总计** | **77** | **75** | **0** | **2** |
+| Python E2E 测试 | 73 | 71 | 0 | 2 |
+| **总计** | **83** | **81** | **0** | **2** |
 
 ---
 
@@ -135,6 +135,28 @@
 |----|------|------|------|------|
 | v1 | `test_import_from_ancestor_skips_vault` | 从祖先目录导入时跳过 vault 自身文件 | ✅ PASS | `test_import_ignore.py` |
 
+### Add / Reconcile 场景
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| a1 | `test_add_tracks_existing_files` | `add` 注册已存在于 vault 内的文件 | ✅ PASS | `test_add.py` |
+| a2 | `test_add_skips_already_tracked` | `add` 对已跟踪文件无重复写入 | ✅ PASS | `test_add.py` |
+| a3 | `test_add_detects_duplicates` | `add` 检测并跳过重复内容 | ✅ PASS | `test_add.py` |
+| rc1 | `test_reconcile_finds_moved_file` | `reconcile` 恢复 vault 内被重命名的文件路径 | ✅ PASS | `test_reconcile.py` |
+| rc2 | `test_reconcile_dry_run_no_changes` | `reconcile` dry-run 不修改数据库 | ✅ PASS | `test_reconcile.py` |
+| rc3 | `test_reconcile_no_missing_files` | 无缺失文件时 `reconcile` 正常报告 | ✅ PASS | `test_reconcile.py` |
+
+### Verify 场景
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| vy1 | `test_verify_all_ok` | 默认 hash 配置下全部通过 | ✅ PASS | `test_verify.py` |
+| vy2 | `test_verify_detects_bit_flip` | 检测单字节损坏 | ✅ PASS | `test_verify.py` |
+| vy3 | `test_verify_detects_truncation` | 检测文件截断 | ✅ PASS | `test_verify.py` |
+| vy4 | `test_verify_detects_missing_file` | 检测文件缺失 | ✅ PASS | `test_verify.py` |
+| vy5 | `test_verify_with_sha256` | 使用 `secure` 算法验证 | ✅ PASS | `test_verify.py` |
+| vy6 | `test_verify_with_xxh3_128` | 使用 `fast` 算法验证 | ✅ PASS | `test_verify.py` |
+
 ---
 
 ## 测试覆盖率目标
@@ -190,6 +212,7 @@
 | 2026-04-02 | 将 `recheck` 从 `import --recheck` 改为独立命令；修复 `--strategy copy` 未生效问题；添加 vault 进程锁；添加 recheck/re-import E2E 测试 | Kimi |
 | 2026-04-02 | VFS 重构：引入 `transfer.rs` 解耦传输策略；`--ignore-duplicate` 重命名为 `--force`；导入扫描自动忽略 `.svault` 和 vault root；E2E 新增 `test_import_force.py`、`test_import_ignore.py`（共 64 passed） | Kimi |
 | 2026-04-02 | `recheck` 改为基于 manifest 工作；`verify-source` 合并入 `recheck`；导入时写入 JSON manifest；E2E 更新至 65 passed | Kimi |
+| 2026-04-02 | 实现 `svault add` / `reconcile`；Verify 统一使用全局 hash 配置、统一进度条和输出风格；CLI hash 参数简化为 `fast`/`secure`；E2E 新增 `test_add.py`、`test_reconcile.py`，更新 `test_verify.py`；全部 71 passed | Kimi |
 
 ---
 

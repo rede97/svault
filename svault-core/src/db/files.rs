@@ -145,6 +145,32 @@ impl Db {
         let since_ms = crate::import::utils::unix_now_ms() - (seconds as i64 * 1000);
         self.get_files_imported_since(since_ms)
     }
+
+    /// Get all imported files whose path no longer exists on disk.
+    pub fn get_missing_files(&self, vault_root: &std::path::Path) -> Result<Vec<FileRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, size, mtime, crc32c_val, xxh3_128, sha256, status \
+             FROM files WHERE status = 'imported' ORDER BY path"
+        )?;
+        let rows = stmt.query_map([], file_row_from_row)?;
+        rows.filter(|r| {
+            if let Ok(row) = r {
+                let full_path = vault_root.join(&row.path);
+                !full_path.exists()
+            } else {
+                true
+            }
+        }).collect()
+    }
+
+    /// Update the path of a file by its ID.
+    pub fn update_file_path(&self, id: i64, new_path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE files SET path = ?1 WHERE id = ?2",
+            params![new_path, id],
+        )?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

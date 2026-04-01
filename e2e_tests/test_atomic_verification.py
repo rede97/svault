@@ -45,7 +45,7 @@ class TestCorruptedHashScenario:
         # Create and import file
         f = vault.source_dir / "test.jpg"
         create_minimal_jpeg(f, "ORIGINAL_DATA")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir, hash="secure")
         
         # Get the vault file
         files = vault.db_files()
@@ -93,7 +93,7 @@ class TestPostImportSourceVerification:
         create_minimal_jpeg(f, "SOURCE_DATA_V1_UNIQUE")
         
         # Import
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir, hash="secure")
         
         # Get imported file location
         files = vault.db_files()
@@ -163,7 +163,7 @@ class TestWriteThenVerify:
         source_hash_before = compute_file_hash(f)
         
         # Import
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir, hash="secure")
         
         # Get vault file
         files = vault.db_files()

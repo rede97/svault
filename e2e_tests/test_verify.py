@@ -36,7 +36,7 @@ class TestVerifyBasic:
         # Import some files with SHA-256 (so default verify works)
         copy_fixture(vault, "apple_with_exif.jpg")
         copy_fixture(vault, "samsung_photo.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         # Verify all
         result = vault.run("verify", capture=True)
@@ -50,7 +50,7 @@ class TestVerifyBasic:
         Expected: Single file verifies successfully.
         """
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         # Get the imported file path from DB
         files = vault.db_files()
@@ -76,7 +76,7 @@ class TestVerifyCorruption:
         """
         # Import a file with SHA-256
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         # Find the imported file
         files = vault.db_files()
@@ -100,9 +100,9 @@ class TestVerifyCorruption:
         Scenario: File was truncated (incomplete copy or disk full).
         Expected: Size mismatch reported.
         """
-        # Import a file with SHA-256
+        # Import a file with default fast hash
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         # Find and truncate the file
         files = vault.db_files()
@@ -126,9 +126,9 @@ class TestVerifyCorruption:
         Scenario: File was deleted but still in database.
         Expected: Missing file reported.
         """
-        # Import a file with SHA-256
+        # Import a file with default fast hash
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         # Delete the file
         files = vault.db_files()
@@ -147,9 +147,9 @@ class TestVerifyCorruption:
         Scenario: File replaced with different content but same name.
         Expected: Hash mismatch reported.
         """
-        # Import first file with SHA-256
+        # Import first file with default fast hash
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         # Find the file
         files = vault.db_files()
@@ -169,10 +169,10 @@ class TestVerifyCorruption:
         Scenario: Multiple files corrupted.
         Expected: All corruptions reported in summary.
         """
-        # Import multiple files with SHA-256
+        # Import multiple files with default fast hash
         copy_fixture(vault, "apple_with_exif.jpg")
         copy_fixture(vault, "samsung_photo.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         files = vault.db_files()
         assert len(files) >= 2
@@ -200,9 +200,9 @@ class TestVerifyHashAlgorithms:
         Expected: Verification works with SHA-256 (cryptographic strength).
         """
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
+        vault.import_dir(vault.source_dir, hash="secure")
         
-        result = vault.run("verify", "-H", "sha256", capture=True)
+        result = vault.run("verify", "-H", "secure", capture=True)
         assert result.returncode == 0
     
     def test_verify_with_xxh3_128(self, vault: VaultEnv) -> None:
@@ -214,7 +214,7 @@ class TestVerifyHashAlgorithms:
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
         
-        result = vault.run("verify", "-H", "xxh3-128", capture=True)
+        result = vault.run("verify", "-H", "fast", capture=True)
         # Should succeed - default import uses xxh3-128
         assert result.returncode == 0
         assert "OK" in result.stdout or "0" in result.stdout
@@ -231,7 +231,7 @@ class TestVerifySummary:
         # Import files with SHA-256
         copy_fixture(vault, "apple_with_exif.jpg")
         copy_fixture(vault, "samsung_photo.jpg")
-        vault.import_dir(vault.source_dir, hash="sha256")
+        vault.import_dir(vault.source_dir)
         
         result = vault.run("verify", capture=True)
         assert result.returncode == 0

@@ -129,6 +129,93 @@ fn find_vault_root(target: Option<PathBuf>, source: &Path) -> anyhow::Result<Pat
     }
 }
 
+use svault_core::verify::VerifyResult;
+
+fn print_verify_results(
+    results: &[(String, VerifyResult)],
+    summary: &svault_core::verify::VerifySummary,
+) -> anyhow::Result<()> {
+    use console::style;
+
+    let mut has_failures = false;
+    for (path, result) in results {
+        match result {
+            VerifyResult::Ok => {}
+            VerifyResult::Missing => {
+                has_failures = true;
+                println!("{} {} - Missing", style("✗").red().bold(), path);
+            }
+            VerifyResult::SizeMismatch { expected, actual } => {
+                has_failures = true;
+                println!("{} {} - Size mismatch (expected {}, got {})",
+                    style("✗").red().bold(), path, expected, actual);
+            }
+            VerifyResult::HashMismatch { algo } => {
+                has_failures = true;
+                println!("{} {} - {} hash mismatch",
+                    style("✗").red().bold(), path, algo);
+            }
+            VerifyResult::IoError(e) => {
+                has_failures = true;
+                println!("{} {} - IO error: {}",
+                    style("✗").red().bold(), path, e);
+            }
+            VerifyResult::HashNotAvailable => {
+                println!("{} {} - Hash not available",
+                    style("!").yellow().bold(), path);
+            }
+        }
+    }
+
+    println!();
+    println!("{}", style("Summary:").bold());
+    println!(
+        "  {} {}",
+        style(format!("OK:               {:>6}", summary.ok)).green(),
+        style("verified successfully").dim()
+    );
+    if summary.missing > 0 {
+        println!(
+            "  {} {}",
+            style(format!("Missing:          {:>6}", summary.missing)).red(),
+            style("file not found on disk").dim()
+        );
+    }
+    if summary.size_mismatch > 0 {
+        println!(
+            "  {} {}",
+            style(format!("Size mismatch:    {:>6}", summary.size_mismatch)).red(),
+            style("file size differs from database").dim()
+        );
+    }
+    if summary.hash_mismatch > 0 {
+        println!(
+            "  {} {}",
+            style(format!("Hash mismatch:    {:>6}", summary.hash_mismatch)).red(),
+            style("hash does not match database").dim()
+        );
+    }
+    if summary.io_error > 0 {
+        println!(
+            "  {} {}",
+            style(format!("IO error:         {:>6}", summary.io_error)).red(),
+            style("unable to read file").dim()
+        );
+    }
+    if summary.hash_not_available > 0 {
+        println!(
+            "  {} {}",
+            style(format!("Hash pending:     {:>6}", summary.hash_not_available)).yellow(),
+            style("hash not yet computed").dim()
+        );
+    }
+
+    if has_failures {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Init => {
@@ -267,9 +354,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             run_recheck(opts, &db)?;
             Ok(())
         }
-        Command::Add { .. } => todo!("add"),
+        Command::Add { path, hash } => {
+            let vault_root = find_vault_root(cli.vault, &path)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+            let config = svault_core::config::Config::load(&vault_root)?;
+            let hash_algo = hash.unwrap_or(config.global.hash.clone());
+            let opts = svault_core::import::add::AddOptions {
+                path,
+                vault_root,
+                hash: hash_algo,
+            };
+            svault_core::import::add::run_add(opts, &db)?;
+            Ok(())
+        }
         Command::Sync { .. } => todo!("sync"),
-        Command::Reconcile { .. } => todo!("reconcile"),
+        Command::Reconcile { root } => {
+            let vault_root = find_vault_root(cli.vault, &root)?;
+            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+            let opts = svault_core::import::reconcile::ReconcileOptions {
+                root,
+                vault_root,
+                dry_run: cli.dry_run,
+                yes: cli.yes,
+            };
+            svault_core::import::reconcile::run_reconcile(opts, &db)?;
+            Ok(())
+        }
         Command::Verify { hash, file, recent } => {
             use svault_core::verify::{verify_all, verify_single, verify_recent, VerifyResult};
             use console::style;
@@ -278,77 +392,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-            let algo = hash;
+            let config = svault_core::config::Config::load(&vault_root)?;
+            let algo = hash.unwrap_or(config.global.hash.clone());
 
             if let Some(seconds) = recent {
-                // Verify recent files
-                println!("Verifying files imported in the last {} seconds...", seconds);
-                let (results, summary) = verify_recent(&vault_root, &db, &algo, seconds, Some(|path: &str| {
-                    eprint!("\r\x1b[KVerifying: {}", path);
-                }))?;
-                eprintln!("\r\x1b[K"); // Clear line
-
-                // Print failures
-                let mut has_failures = false;
-                for (path, result) in &results {
-                    match result {
-                        VerifyResult::Ok => {}
-                        VerifyResult::Missing => {
-                            has_failures = true;
-                            println!("{} {} - Missing", style("✗").red().bold(), path);
-                        }
-                        VerifyResult::SizeMismatch { expected, actual } => {
-                            has_failures = true;
-                            println!("{} {} - Size mismatch (expected {}, got {})", 
-                                style("✗").red().bold(), path, expected, actual);
-                        }
-                        VerifyResult::HashMismatch { algo } => {
-                            has_failures = true;
-                            println!("{} {} - {} hash mismatch", 
-                                style("✗").red().bold(), path, algo);
-                        }
-                        VerifyResult::IoError(e) => {
-                            has_failures = true;
-                            println!("{} {} - IO error: {}", 
-                                style("✗").red().bold(), path, e);
-                        }
-                        VerifyResult::HashNotAvailable => {
-                            println!("{} {} - Hash not available", 
-                                style("!").yellow().bold(), path);
-                        }
-                    }
-                }
-
-                // Print summary
-                println!();
-                println!("Verify Summary (recent files only):");
-                println!("  Total: {}", summary.total);
-                println!("  {} OK", summary.ok);
-                if summary.missing > 0 {
-                    println!("  {} Missing", style(summary.missing).red());
-                }
-                if summary.size_mismatch > 0 {
-                    println!("  {} Size mismatch", style(summary.size_mismatch).red());
-                }
-                if summary.hash_mismatch > 0 {
-                    println!("  {} Hash mismatch", style(summary.hash_mismatch).red());
-                }
-                if summary.io_error > 0 {
-                    println!("  {} IO error", style(summary.io_error).red());
-                }
-                if summary.hash_not_available > 0 {
-                    println!("  {} Hash not available", summary.hash_not_available);
-                }
-
-                if has_failures {
-                    std::process::exit(1);
-                }
-                
+                println!(
+                    "{} Verifying files imported in the last {} seconds",
+                    style("Verify:").bold().cyan(),
+                    style(seconds).cyan()
+                );
+                let (results, summary) = verify_recent(&vault_root, &db, &algo, seconds)?;
+                print_verify_results(&results, &summary)?;
                 return Ok(());
             }
 
             if let Some(file_path) = file {
-                // Verify single file
                 match verify_single(&vault_root, &db, &file_path.to_string_lossy(), &algo)? {
                     Some(result) => {
                         match result {
@@ -360,22 +418,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 std::process::exit(1);
                             }
                             VerifyResult::SizeMismatch { expected, actual } => {
-                                println!("{} {} - Size mismatch (expected {}, got {})", 
+                                println!("{} {} - Size mismatch (expected {}, got {})",
                                     style("✗").red().bold(), file_path.display(), expected, actual);
                                 std::process::exit(1);
                             }
                             VerifyResult::HashMismatch { algo } => {
-                                println!("{} {} - Hash mismatch ({})", 
+                                println!("{} {} - Hash mismatch ({})",
                                     style("✗").red().bold(), file_path.display(), algo);
                                 std::process::exit(1);
                             }
                             VerifyResult::IoError(e) => {
-                                println!("{} {} - IO error: {}", 
+                                println!("{} {} - IO error: {}",
                                     style("✗").red().bold(), file_path.display(), e);
                                 std::process::exit(1);
                             }
                             VerifyResult::HashNotAvailable => {
-                                println!("{} {} - Hash not computed yet", 
+                                println!("{} {} - Hash not computed yet",
                                     style("!").yellow().bold(), file_path.display());
                             }
                         }
@@ -385,67 +443,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
             } else {
-                // Verify all files
-                let (results, summary) = verify_all(&vault_root, &db, &algo, Some(|path: &str| {
-                    eprint!("\r\x1b[KVerifying: {}", path);
-                }))?;
-                eprintln!("\r\x1b[K"); // Clear line
-
-                // Print failures
-                let mut has_failures = false;
-                for (path, result) in &results {
-                    match result {
-                        VerifyResult::Ok => {}
-                        VerifyResult::Missing => {
-                            has_failures = true;
-                            println!("{} {} - Missing", style("✗").red().bold(), path);
-                        }
-                        VerifyResult::SizeMismatch { expected, actual } => {
-                            has_failures = true;
-                            println!("{} {} - Size mismatch (expected {}, got {})", 
-                                style("✗").red().bold(), path, expected, actual);
-                        }
-                        VerifyResult::HashMismatch { algo } => {
-                            has_failures = true;
-                            println!("{} {} - {} hash mismatch", 
-                                style("✗").red().bold(), path, algo);
-                        }
-                        VerifyResult::IoError(e) => {
-                            has_failures = true;
-                            println!("{} {} - IO error: {}", 
-                                style("✗").red().bold(), path, e);
-                        }
-                        VerifyResult::HashNotAvailable => {
-                            println!("{} {} - Hash not available", 
-                                style("!").yellow().bold(), path);
-                        }
-                    }
-                }
-
-                // Print summary
-                println!();
-                println!("Verify Summary:");
-                println!("  Total: {}", summary.total);
-                println!("  {} OK", summary.ok);
-                if summary.missing > 0 {
-                    println!("  {} Missing", style(summary.missing).red());
-                }
-                if summary.size_mismatch > 0 {
-                    println!("  {} Size mismatch", style(summary.size_mismatch).red());
-                }
-                if summary.hash_mismatch > 0 {
-                    println!("  {} Hash mismatch", style(summary.hash_mismatch).red());
-                }
-                if summary.io_error > 0 {
-                    println!("  {} IO error", style(summary.io_error).red());
-                }
-                if summary.hash_not_available > 0 {
-                    println!("  {} Hash not available", summary.hash_not_available);
-                }
-
-                if has_failures {
-                    std::process::exit(1);
-                }
+                println!(
+                    "{} Verifying all files in vault",
+                    style("Verify:").bold().cyan()
+                );
+                let (results, summary) = verify_all(&vault_root, &db, &algo)?;
+                print_verify_results(&results, &summary)?;
             }
 
             Ok(())

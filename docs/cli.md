@@ -58,7 +58,7 @@ svault import <source> [options]
 |------|------|------|
 | `<source>` | | 源目录或挂载点（必填，位置参数） |
 | `--target <path>` | | 目标归档目录（默认使用配置文件中的 vault 路径） |
-| `--hash <algo>` | `-H` | 哈希算法：`xxh3_128`（高吞吐）/ `sha256`（加密强度，默认）。优先级：CLI > `svault.toml [global].hash` > 内置默认值（`xxh3_128`）|
+| `--hash <algo>` | `-H` | 哈希算法：`fast`（XXH3-128，高吞吐，默认）/ `secure`（SHA-256，加密强度）。优先级：CLI > `svault.toml [global].hash` > 内置默认值（`fast`）|
 | `--recheck <mode>` | `-R` | 全部命中缓存时对重复项二次验证：`fast`（默认，信任缓存）/ `exif`（EXIF 二进制比对）/ `hash`（全文件哈希）|
 
 **清单文件：**
