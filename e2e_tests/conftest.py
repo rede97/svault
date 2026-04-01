@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
@@ -33,6 +34,9 @@ from pathlib import Path
 from typing import Any, Generator
 
 import pytest
+
+# Check if running on Windows
+IS_WINDOWS = platform.system() == "Windows"
 
 
 # =============================================================================
@@ -102,22 +106,31 @@ def get_target_dir(release: bool = False) -> Path:
 # =============================================================================
 
 class RamDisk:
-    """Manage a tmpfs RAMDisk for test isolation.
+    """Manage a tmpfs RAMDisk for test isolation (Linux/macOS).
+    On Windows, uses a regular temp directory.
     
     Reuses the setup_ramdisk.sh script from the main test framework
     to ensure consistency between old and new test systems.
     """
     
-    DEFAULT_PATH = Path("/tmp/svault-ramdisk")
+    DEFAULT_PATH = Path("/tmp/svault-ramdisk") if not IS_WINDOWS else Path(tempfile.gettempdir()) / "svault-test"
     
     def __init__(self, path: Path | None = None, size: str = "256m") -> None:
         self.path = path or self.DEFAULT_PATH
         self.size = size
         self._mounted = False
         self._setup_script = PROJECT_ROOT / "tests" / "setup_ramdisk.sh"
+        self._is_windows = IS_WINDOWS
     
     def mount(self) -> None:
-        """Mount the RAMDisk using setup_ramdisk.sh or direct mount."""
+        """Mount the RAMDisk using setup_ramdisk.sh or direct mount.
+        On Windows, creates a temp directory instead."""
+        if self._is_windows:
+            # On Windows, just create a temp directory
+            self.path = Path(tempfile.mkdtemp(prefix="svault-"))
+            self._mounted = True
+            return
+            
         if self._is_mounted():
             self._mounted = True
             return
@@ -142,7 +155,7 @@ class RamDisk:
     
     def umount(self) -> None:
         """Unmount the RAMDisk."""
-        if not self._mounted:
+        if not self._mounted or self._is_windows:
             return
         
         # Don't unmount if using shared RAMDisk - let setup_ramdisk.sh manage it
@@ -151,6 +164,13 @@ class RamDisk:
     
     def cleanup(self) -> None:
         """Force unmount - use only when necessary."""
+        if self._is_windows:
+            # On Windows, remove the temp directory
+            if self.path.exists():
+                shutil.rmtree(self.path, ignore_errors=True)
+            self._mounted = False
+            return
+            
         if self._is_mounted():
             try:
                 subprocess.run(["umount", str(self.path)], check=True, capture_output=True)
@@ -160,6 +180,8 @@ class RamDisk:
     
     def _is_mounted(self) -> bool:
         """Check if the path is a mountpoint."""
+        if self._is_windows:
+            return self._mounted
         result = subprocess.run(
             ["mountpoint", "-q", str(self.path)],
             capture_output=True
@@ -222,6 +244,11 @@ class VaultEnv:
         }
         if capture:
             kwargs["capture_output"] = True
+        
+        # On Windows, set encoding to handle console output properly
+        if IS_WINDOWS:
+            kwargs["encoding"] = "utf-8"
+            kwargs["errors"] = "replace"
         
         return subprocess.run(cmd, **kwargs)
     
@@ -332,7 +359,8 @@ def svault_binary(request: pytest.FixtureRequest) -> Path:
     """
     release = request.config.getoption("--release")
     target_dir = get_target_dir(release)
-    binary = target_dir / "svault"
+    binary_name = "svault.exe" if IS_WINDOWS else "svault"
+    binary = target_dir / binary_name
     
     if not binary.exists():
         # Build the binary
@@ -365,8 +393,18 @@ def ramdisk(
     """Provide a RAMDisk for test isolation.
     
     Uses command-line options --ramdisk-size and --ramdisk-path.
+    On Windows, always uses a regular temp directory.
     Falls back to regular temp directory if mounting fails.
     """
+    # On Windows, always use temp directory (no RAMDisk)
+    if IS_WINDOWS:
+        rd = RamDisk(None, size=ramdisk_size)
+        rd.mount()
+        yield rd
+        if cleanup_after_tests:
+            rd.cleanup()
+        return
+        
     # Use configured path and size
     rd = RamDisk(ramdisk_path, size=ramdisk_size)
     

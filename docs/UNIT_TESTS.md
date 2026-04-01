@@ -10,10 +10,11 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (Unit) | 10 | 10 | 0 | 0 |
+| 单元测试 (Unit) | 35 | 32 | 0 | 3 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 | 73 | 71 | 0 | 2 |
-| **总计** | **83** | **81** | **0** | **2** |
+| Python E2E 测试 (Linux) | 74 | 72 | 0 | 2 |
+| Python E2E 测试 (Windows) | 74 | 72 | 0 | 2 |
+| **总计** | **183** | **176** | **0** | **7** |
 
 ---
 
@@ -213,10 +214,13 @@
 | 2026-04-02 | VFS 重构：引入 `transfer.rs` 解耦传输策略；`--ignore-duplicate` 重命名为 `--force`；导入扫描自动忽略 `.svault` 和 vault root；E2E 新增 `test_import_force.py`、`test_import_ignore.py`（共 64 passed） | Kimi |
 | 2026-04-02 | `recheck` 改为基于 manifest 工作；`verify-source` 合并入 `recheck`；导入时写入 JSON manifest；E2E 更新至 65 passed | Kimi |
 | 2026-04-02 | 实现 `svault add` / `reconcile`；Verify 统一使用全局 hash 配置、统一进度条和输出风格；CLI hash 参数简化为 `fast`/`secure`；E2E 新增 `test_add.py`、`test_reconcile.py`，更新 `test_verify.py`；全部 71 passed | Kimi |
+| 2026-04-02 | 修复 Windows 构建错误（替换 `GetVolumeInformationW`/`CopyFileExW`）；适配 E2E 测试到 Windows（72 passed）；添加 `run.ps1` 脚本；更新测试文档 | Kimi |
 
 ---
 
 ## 运行测试
+
+### Linux / macOS
 
 ```bash
 # 所有单元测试和集成测试
@@ -238,6 +242,31 @@ cd e2e_tests && bash run.sh --verbose test_import_force.py
 # 使用 release 构建跑 E2E
 cd e2e_tests && bash run.sh --release --verbose
 ```
+
+### Windows
+
+```powershell
+# 使用 uv 创建虚拟环境并安装依赖
+cd e2e_tests
+uv venv
+uv pip install pytest pillow hypothesis
+
+# 运行 E2E 测试（Windows 使用临时目录代替 RAMDisk）
+.venv\Scripts\python -m pytest -v
+
+# 或者使用 PowerShell 脚本
+.\run.ps1 -Verbose
+
+# 运行特定测试
+.\run.ps1 -TestName "test_import" -Verbose
+```
+
+**Windows 测试注意事项：**
+1. **不需要 RAMDisk** - Windows 上自动使用临时目录代替
+2. **依赖安装** - 必须使用 `uv` 创建虚拟环境（`uv venv` + `uv pip install`）
+3. **exiftool** - 需要手动安装并添加到 PATH（用于生成带 EXIF 的测试图片）
+4. **编码问题** - 已修复控制台 UTF-8 编码处理
+5. **路径分隔符** - 已适配 Windows 路径格式
 
 ---
 

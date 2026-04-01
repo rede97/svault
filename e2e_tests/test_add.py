@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from conftest import VaultEnv, create_minimal_jpeg
 
 
@@ -20,7 +22,7 @@ class TestAddCommand:
         rows = vault.db_files()
         assert len(rows) == 1
         assert rows[0]["status"] == "imported"
-        assert "manual/photo.jpg" in rows[0]["path"]
+        assert str(Path("manual") / "photo.jpg") in rows[0]["path"]
 
     def test_add_skips_already_tracked(self, vault: VaultEnv) -> None:
         """Re-adding an already tracked file should skip it."""
