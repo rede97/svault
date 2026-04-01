@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::{VfsBackend, VfsError, VfsResult};
+use super::{transfer::transfer_file, TransferStrategy, VfsBackend, VfsError, VfsResult};
 
 /// A URL-style VFS location.
 ///
@@ -211,6 +211,7 @@ impl VfsManager {
         source_url: &str,
         dest_backend: &dyn VfsBackend,
         dest_path: &Path,
+        strategy: TransferStrategy,
     ) -> VfsResult<()> {
         let (src_backend, src_path) = self.open_url(source_url)?;
         
@@ -222,7 +223,7 @@ impl VfsManager {
             let file_name = src_path.file_name()
                 .ok_or_else(|| VfsError::Other("Invalid source path".to_string()))?;
             let dest_file = dest_path.join(file_name);
-            src_backend.copy_to(&src_path, dest_backend, &dest_file)?;
+            transfer_file(&*src_backend, &src_path, dest_backend, &dest_file, strategy)?;
         } else {
             // Directory - copy recursively
             for entry in entries {
@@ -234,7 +235,7 @@ impl VfsManager {
                 if entry.is_dir {
                     dest_backend.create_dir_all(&dest_entry_path)?;
                 } else {
-                    src_backend.copy_to(src_entry_path, dest_backend, &dest_entry_path)?;
+                    transfer_file(&*src_backend, src_entry_path, dest_backend, &dest_entry_path, strategy)?;
                 }
             }
         }

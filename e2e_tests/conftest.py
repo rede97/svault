@@ -238,6 +238,7 @@ class VaultEnv:
         check: bool = True,
         hash: str | None = None,
         strategy: str | None = None,
+        force: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         """Import a directory into the vault.
         
@@ -254,6 +255,8 @@ class VaultEnv:
             args.extend(["-H", hash])
         if strategy:
             args.extend(["--strategy", strategy])
+        if force:
+            args.append("--force")
         # Use absolute path to avoid path duplication bug
         source_path = Path(source).resolve()
         args.append(str(source_path))

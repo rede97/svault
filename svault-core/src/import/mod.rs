@@ -32,6 +32,7 @@ use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::hash::{crc32c_region, xxh3_128_file, sha256_file};
 use crate::vfs::system::SystemFs;
+use crate::vfs::transfer::transfer_file;
 use crate::vfs::VfsBackend;
 
 use exif::read_exif_date_device;
@@ -49,16 +50,16 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let exts: Vec<&str> = opts.import_config.allowed_extensions
         .iter().map(|s| s.as_str()).collect();
 
-    let src_fs = SystemFs::open(&opts.source)
+    let source_canon = std::fs::canonicalize(&opts.source).unwrap_or_else(|_| opts.source.clone());
+    let vault_canon = std::fs::canonicalize(&opts.vault_root).unwrap_or_else(|_| opts.vault_root.clone());
+
+    let src_fs = SystemFs::open(&source_canon)
         .map_err(|e| anyhow::anyhow!("cannot open source: {e}"))?;
-    let src_fs = match opts.strategy {
-        crate::config::SyncStrategy::Auto => src_fs,
-        crate::config::SyncStrategy::Reflink => src_fs.with_strategy(crate::vfs::TransferStrategy::Reflink),
-        crate::config::SyncStrategy::Hardlink => src_fs.with_strategy(crate::vfs::TransferStrategy::Hardlink),
-        crate::config::SyncStrategy::Copy => src_fs.with_strategy(crate::vfs::TransferStrategy::StreamCopy),
-    };
     let dir_entries = src_fs.walk(Path::new(""), &exts)
         .map_err(|e| anyhow::anyhow!("scan failed: {e}"))?;
+    let dir_entries: Vec<_> = dir_entries.into_iter()
+        .filter(|e| !e.path.starts_with(&vault_canon))
+        .collect();
     let total = dir_entries.len();
 
     if total == 0 {
@@ -156,9 +157,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .collect();
 
     let likely_new: Vec<&ScanEntry> = scan_entries.iter()
-        .filter(|e| e.status == FileStatus::LikelyNew).collect();
+        .filter(|e| e.status == FileStatus::LikelyNew || (opts.force && e.status == FileStatus::LikelyCacheDuplicate))
+        .collect();
     let likely_dup = scan_entries.iter()
-        .filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count();
+        .filter(|e| e.status == FileStatus::LikelyCacheDuplicate && !opts.force)
+        .count();
     let failed_b = scan_entries.iter()
         .filter(|e| matches!(e.status, FileStatus::Failed(_))).count();
 
@@ -168,15 +171,17 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     eprintln!("  {}  {}",
         style(format!("Likely new:       {:>6}", likely_new.len())).green(),
         style("will be imported").dim());
-    eprintln!("  {}  {}",
-        style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
-        style("already in vault (cache hit)").dim());
+    if likely_dup > 0 {
+        eprintln!("  {}  {}",
+            style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
+            style("already in vault (cache hit)").dim());
+    }
     if failed_b > 0 {
         eprintln!("  {}",
             style(format!("Errors:           {:>6}", failed_b)).red());
     }
 
-    // Early exit: all cache hits
+    // Early exit: all cache hits (unless force)
     if likely_new.is_empty() {
         eprintln!();
         eprintln!("All {} files matched cache (no new files detected).", total);
@@ -239,6 +244,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let vault_archive = opts.vault_root.clone();
     let dst_fs = SystemFs::open(&vault_archive)
         .map_err(|e| anyhow::anyhow!("cannot open vault: {e}"))?;
+
+    let transfer_strategy = opts.strategy.to_transfer_strategy(
+        src_fs.capabilities(),
+        dst_fs.capabilities(),
+    );
 
     // Pre-resolve destination paths in serial to avoid race conditions
     // when multiple files map to the same destination
@@ -332,7 +342,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 }
             }
 
-            match src_fs.copy_to(rel, &dst_fs, &dest_abs) {
+            match transfer_file(&src_fs, rel, &dst_fs, &dest_abs, transfer_strategy) {
                 Ok(_) => {
                     // Show destination path relative to vault root
                     // Use progress bar's println for thread-safe output ordering
@@ -441,16 +451,18 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             if r.dup_reason.is_some() {
                 return r;
             }
-            let existing = db.lookup_by_hash(&r.hash_bytes, &opts.hash).unwrap_or(None);
-            if let Some(ref row) = existing {
-                let vault_path = opts.vault_root.join(&row.path);
-                // Allow re-importing the same path even if the hash is already in the DB.
-                // This happens when the user deleted a corrupted vault file and wants to
-                // replace it by re-importing from source.
-                if vault_path != r.dest && vault_path.exists() {
-                    r.is_duplicate = true;
-                    r.dup_reason = Some("db".to_string());
-                    return r;
+            if !opts.force {
+                let existing = db.lookup_by_hash(&r.hash_bytes, &opts.hash).unwrap_or(None);
+                if let Some(ref row) = existing {
+                    let vault_path = opts.vault_root.join(&row.path);
+                    // Allow re-importing the same path even if the hash is already in the DB.
+                    // This happens when the user deleted a corrupted vault file and wants to
+                    // replace it by re-importing from source.
+                    if vault_path != r.dest && vault_path.exists() {
+                        r.is_duplicate = true;
+                        r.dup_reason = Some("db".to_string());
+                        return r;
+                    }
                 }
             }
             use dashmap::mapref::entry::Entry;
@@ -573,8 +585,6 @@ fn resolve_unique_dest_path_serial(
     rename_template: &str,
     assigned: &std::collections::HashSet<std::path::PathBuf>,
 ) -> std::path::PathBuf {
-    use std::path::Path;
-    
     // Check filesystem first
     match dst_fs.exists(dest_path) {
         Ok(true) => {
@@ -602,8 +612,6 @@ fn resolve_dest_conflict(
     rename_template: &str,
     assigned: &std::collections::HashSet<std::path::PathBuf>,
 ) -> std::path::PathBuf {
-    use std::path::Path;
-    
     let parent = dest_path.parent().unwrap_or(Path::new(""));
     let filename = dest_path
         .file_name()

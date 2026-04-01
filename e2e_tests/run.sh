@@ -49,6 +49,14 @@ if [ ! -f "$SCRIPT_DIR/../target/release/svault" ]; then
     cargo build --release -p svault-cli -q
 fi
 
+# Check for exiftool (used by some tests)
+echo "Checking exiftool..."
+if ! command -v exiftool &> /dev/null; then
+    echo "Warning: exiftool is not installed. Some tests may fail."
+    echo "Install it with: sudo apt install libimage-exiftool-perl  (Debian/Ubuntu)"
+    echo "              or: brew install exiftool                    (macOS)"
+fi
+
 # Run tests (RAMDisk is managed by Python fixtures)
 echo "Running tests..."
 exec "$PYTEST" "${PYTEST_ARGS[@]}"

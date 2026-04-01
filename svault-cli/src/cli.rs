@@ -55,12 +55,8 @@ pub enum Command {
         #[arg(value_name = "SOURCE")]
         source: std::path::PathBuf,
 
-        /// Sub-directory inside the vault to use as the import destination
-        /// prefix. Must be located under an initialized vault root. svault
-        /// walks up from this path to discover the vault root. If this
-        /// directory (or an ancestor up to the vault root) contains its own
-        /// `svault.toml`, its `import.path_template` overrides the root
-        /// config. Defaults to the current working directory.
+        /// Vault sub-directory to import into. Discovers the vault root by
+        /// walking up from this path. Defaults to the current working directory.
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
 
@@ -76,7 +72,7 @@ pub enum Command {
         /// Force import even when the file is confirmed as a duplicate.
         /// Use this to intentionally re-import an identical file.
         #[arg(long)]
-        ignore_duplicate: bool,
+        force: bool,
 
         /// Print duplicate files during the scan.
         /// By default duplicates are counted but not listed.

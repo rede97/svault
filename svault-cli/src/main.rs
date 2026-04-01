@@ -135,7 +135,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let root = std::env::current_dir().expect("cannot read cwd");
             db::init(&root)
         }
-        Command::Import { source, target, hash, strategy, show_dup, .. } => {
+        Command::Import { source, target, hash, strategy, show_dup, force, .. } => {
             // Check if source is a URL (mtp://) or local path
             let source_str = source.to_string_lossy();
             if source_str.starts_with("mtp://") {
@@ -167,6 +167,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         show_dup,
                         import_config: config.import,
                         source_name: source_str.to_string(),
+                        strategy,
+                        force,
                         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
                     };
                     
@@ -205,6 +207,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     yes: cli.yes,
                     show_dup,
                     import_config: config.import,
+                    force,
                 };
                 let summary = import_run(opts, &db)?;
                 if matches!(cli.output, cli::OutputFormat::Json) {

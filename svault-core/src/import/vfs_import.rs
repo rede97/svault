@@ -47,10 +47,10 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use crate::config::{HashAlgorithm, ImportConfig};
+use crate::config::{HashAlgorithm, ImportConfig, SyncStrategy};
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
-use crate::vfs::{DirEntry, VfsBackend, VfsError};
+use crate::vfs::{transfer::transfer_file, DirEntry, VfsBackend, VfsError};
 
 
 use super::path::resolve_dest_path;
@@ -77,6 +77,10 @@ pub struct VfsImportOptions<'a> {
     pub import_config: ImportConfig,
     /// Source display name (for progress messages)
     pub source_name: String,
+    /// Transfer strategy
+    pub strategy: SyncStrategy,
+    /// Force import even if the file is a confirmed duplicate.
+    pub force: bool,
     /// CRC32 fingerprint buffer size in bytes (default: 64KB)
     /// Larger values = more accurate dedup but slower scan
     pub crc_buffer_size: usize,
@@ -95,6 +99,8 @@ impl<'a> VfsImportOptions<'a> {
             show_dup: false,
             import_config: crate::config::ImportConfig::default(),
             source_name: String::new(),
+            strategy: SyncStrategy::Auto,
+            force: false,
             crc_buffer_size: 64 * 1024, // 64KB default
         }
     }
@@ -132,7 +138,12 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         .map(|s| s.as_str())
         .collect();
 
-    let dir_entries = opts.src_backend.walk(opts.src_path, &exts)?;
+    let mut dir_entries = opts.src_backend.walk(opts.src_path, &exts)?;
+    if opts.src_backend.as_system_fs().is_some() {
+        let vault_canon = std::fs::canonicalize(opts.vault_root)
+            .unwrap_or_else(|_| opts.vault_root.to_path_buf());
+        dir_entries.retain(|e| !e.path.starts_with(&vault_canon));
+    }
     let total = dir_entries.len();
 
     if total == 0 {
@@ -252,11 +263,11 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     // Summary
     let likely_new: Vec<&ScanEntry> = scan_entries
         .iter()
-        .filter(|e| e.status == FileStatus::LikelyNew)
+        .filter(|e| e.status == FileStatus::LikelyNew || (opts.force && e.status == FileStatus::LikelyCacheDuplicate))
         .collect();
     let likely_dup = scan_entries
         .iter()
-        .filter(|e| e.status == FileStatus::LikelyCacheDuplicate)
+        .filter(|e| e.status == FileStatus::LikelyCacheDuplicate && !opts.force)
         .count();
     let failed_b = scan_entries
         .iter()
@@ -420,6 +431,11 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     );
     copy_bar.set_prefix("Copying  ");
 
+    let transfer_strategy = opts.strategy.to_transfer_strategy(
+        opts.src_backend.capabilities(),
+        dst_fs.capabilities(),
+    );
+
     // Copy files: parallel for local FS, sequential for MTP
     let copy_op = |(src_path, dest_path, size, taken_ms, crc): (std::path::PathBuf, std::path::PathBuf, i64, i64, u32)| -> Option<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32)> {
         // Check if already disconnected
@@ -444,8 +460,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
             }
         }
 
-        // Use VFS copy_to
-        match opts.src_backend.copy_to(&src_path, &dst_fs, &dest_path) {
+        // Use VFS transfer engine
+        match transfer_file(opts.src_backend, &src_path, &dst_fs, &dest_path, transfer_strategy) {
             Ok(_) => {
                 copy_bar.inc(1);
                 Some((src_path, dest_path, size, taken_ms, crc))
@@ -488,7 +504,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         
         // Save pending file with remaining items
         let pending_entries: Vec<_> = scan_entries.iter()
-            .filter(|se| se.status == FileStatus::LikelyNew)
+            .filter(|se| se.status == FileStatus::LikelyNew || (opts.force && se.status == FileStatus::LikelyCacheDuplicate))
             .skip(copied.len())
             .map(|e| {
                 let rel = e.src_path.strip_prefix(opts.src_path)

@@ -74,6 +74,22 @@ pub enum SyncStrategy {
     Copy,
 }
 
+impl SyncStrategy {
+    /// Resolve this strategy into a concrete [`TransferStrategy`].
+    pub fn to_transfer_strategy(
+        &self,
+        src_caps: &crate::vfs::FsCapabilities,
+        dst_caps: &crate::vfs::FsCapabilities,
+    ) -> crate::vfs::TransferStrategy {
+        match self {
+            SyncStrategy::Auto => src_caps.best_strategy(dst_caps),
+            SyncStrategy::Reflink => crate::vfs::TransferStrategy::Reflink,
+            SyncStrategy::Hardlink => crate::vfs::TransferStrategy::Hardlink,
+            SyncStrategy::Copy => crate::vfs::TransferStrategy::StreamCopy,
+        }
+    }
+}
+
 /// Settings that control how files are imported.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportConfig {

@@ -34,12 +34,12 @@
 //! // ❌ BAD: Parallel MTP reads (contention, no speedup)
 //! let files = vec!["IMG_001.jpg", "IMG_002.jpg", ...];
 //! files.par_iter().for_each(|f| {
-//!     mtp_backend.copy_to(f, &local_fs, &dest); // Slow due to USB contention
+//!     transfer_file(TransferStrategy::StreamCopy, mtp_backend, f, &local_fs, &dest); // Slow due to USB contention
 //! });
 //!
 //! // ✅ GOOD: Sequential MTP reads with pipelining
 //! for f in files {
-//!     mtp_backend.copy_to(f, &local_fs, &dest); // Optimal: saturates USB pipe
+//!     transfer_file(TransferStrategy::StreamCopy, mtp_backend, f, &local_fs, &dest); // Optimal: saturates USB pipe
 //! }
 //! ```
 //!
@@ -54,12 +54,15 @@
 
 pub mod system;
 pub mod manager;
+pub mod transfer;
 
 #[cfg(feature = "mtp")]
 pub mod mtp;
 
 pub use manager::{VfsManager, VfsUrl, VfsSource, VfsProvider};
+pub use transfer::transfer_file;
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The transfer strategies available between two VFS backends, ordered from
@@ -223,18 +226,40 @@ pub trait VfsBackend: Send + Sync {
     }
 
     /// Opens the file at `path` for reading and returns a boxed reader.
-    fn open_read(&self, path: &Path) -> VfsResult<Box<dyn std::io::Read>>;
+    fn open_read(&self, path: &Path) -> VfsResult<Box<dyn Read>>;
 
-    /// Copies `src` on this backend to `dst` on `dest` backend using the
-    /// best available strategy. Falls back to stream copy if nothing better
-    /// is available.
-    fn copy_to(
-        &self,
-        src: &Path,
-        dest: &dyn VfsBackend,
-        dst: &Path,
-    ) -> VfsResult<TransferStrategy>;
+    /// Opens the file at `path` for writing and returns a boxed writer.
+    ///
+    /// Default implementation returns `Unsupported`.
+    fn open_write(&self, path: &Path) -> VfsResult<Box<dyn Write>> {
+        let _ = path;
+        Err(VfsError::Unsupported("open_write not supported"))
+    }
+
+    /// Attempt to create a reflink clone from `src` on this backend to `dst`
+    /// on `dst_backend`.
+    ///
+    /// Default implementation returns `Unsupported`.
+    fn reflink_to(&self, _src: &Path, _dst_backend: &dyn VfsBackend, _dst: &Path) -> VfsResult<()> {
+        Err(VfsError::Unsupported("reflink not supported"))
+    }
+
+    /// Attempt to create a hard link from `src` on this backend to `dst`
+    /// on `dst_backend`.
+    ///
+    /// Default implementation returns `Unsupported`.
+    fn hard_link_to(&self, _src: &Path, _dst_backend: &dyn VfsBackend, _dst: &Path) -> VfsResult<()> {
+        Err(VfsError::Unsupported("hardlink not supported"))
+    }
 
     /// Creates all missing parent directories for `path`.
     fn create_dir_all(&self, path: &Path) -> VfsResult<()>;
+
+    /// Downcast helper used by the transfer engine to resolve absolute paths
+    /// between two local filesystem backends.
+    ///
+    /// Default implementation returns `None`.
+    fn as_system_fs(&self) -> Option<&system::SystemFs> {
+        None
+    }
 }

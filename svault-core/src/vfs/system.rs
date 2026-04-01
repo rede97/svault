@@ -8,18 +8,17 @@
 
 use std::{
     fs,
-    io::{self, Read},
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
-use super::{vfs_ext_matches, DirEntry, FsCapabilities, TransferStrategy, VfsBackend, VfsError, VfsResult};
+use super::{vfs_ext_matches, DirEntry, FsCapabilities, VfsBackend, VfsError, VfsResult};
 use jwalk;
 
 /// Local filesystem backend. Probes capabilities for `root` at construction.
 pub struct SystemFs {
     root: PathBuf,
     caps: FsCapabilities,
-    forced_strategy: Option<TransferStrategy>,
 }
 
 impl SystemFs {
@@ -32,13 +31,7 @@ impl SystemFs {
             return Err(VfsError::NotFound(root));
         }
         let caps = probe_capabilities(&root)?;
-        Ok(Self { root, caps, forced_strategy: None })
-    }
-
-    /// Force a specific transfer strategy for all `copy_to` calls.
-    pub fn with_strategy(mut self, strategy: TransferStrategy) -> Self {
-        self.forced_strategy = Some(strategy);
-        self
+        Ok(Self { root, caps })
     }
 
     /// Re-probe capabilities for a specific path (e.g. a sub-directory that
@@ -62,6 +55,9 @@ impl VfsBackend for SystemFs {
         let mut entries = Vec::new();
         for entry in fs::read_dir(&full).map_err(VfsError::Io)? {
             let entry = entry.map_err(VfsError::Io)?;
+            if entry.file_name() == ".svault" {
+                continue;
+            }
             let meta = entry.metadata().map_err(VfsError::Io)?;
             let mtime_ms = meta
                 .modified()
@@ -84,7 +80,18 @@ impl VfsBackend for SystemFs {
         let exts: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
         let exts_ref: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
         let mut result = Vec::new();
-        for entry in jwalk::WalkDir::new(&full).skip_hidden(false) {
+        for entry in jwalk::WalkDir::new(&full)
+            .skip_hidden(false)
+            .process_read_dir(|_depth, _path, _state, children| {
+                children.iter_mut().for_each(|child_result| {
+                    if let Ok(child) = child_result {
+                        if child.file_name == std::ffi::OsStr::new(".svault") {
+                            child.read_children_path = None;
+                        }
+                    }
+                });
+            })
+        {
             let entry = entry.map_err(|e| VfsError::Io(std::io::Error::other(e)))?;
             if entry.file_type().is_dir() {
                 continue;
@@ -115,40 +122,44 @@ impl VfsBackend for SystemFs {
         Ok(Box::new(f))
     }
 
-    fn copy_to(
-        &self,
-        src: &Path,
-        dest: &dyn VfsBackend,
-        dst: &Path,
-    ) -> VfsResult<TransferStrategy> {
-        let strategy = self.forced_strategy.unwrap_or_else(|| self.caps.best_strategy(dest.capabilities()));
-        let src_full = self.root.join(src);
-
-        match strategy {
-            TransferStrategy::Reflink => {
-                if try_reflink(&src_full, dst)? {
-                    return Ok(TransferStrategy::Reflink);
-                }
-                // Reflink failed at runtime (e.g. cross-device) — fall through.
-                stream_copy(&src_full, dst)?;
-                Ok(TransferStrategy::StreamCopy)
-            }
-            TransferStrategy::Hardlink => {
-                if fs::hard_link(&src_full, dst).is_ok() {
-                    return Ok(TransferStrategy::Hardlink);
-                }
-                stream_copy(&src_full, dst)?;
-                Ok(TransferStrategy::StreamCopy)
-            }
-            TransferStrategy::StreamCopy => {
-                stream_copy(&src_full, dst)?;
-                Ok(TransferStrategy::StreamCopy)
-            }
+    fn open_write(&self, path: &Path) -> VfsResult<Box<dyn Write>> {
+        let full = self.root.join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(VfsError::Io)?;
         }
+        let f = fs::File::create(&full).map_err(VfsError::Io)?;
+        Ok(Box::new(f))
+    }
+
+    fn reflink_to(&self, src: &Path, dst_backend: &dyn VfsBackend, dst: &Path) -> VfsResult<()> {
+        let src_full = self.root.join(src);
+        let dst_sys = dst_backend.as_system_fs()
+            .ok_or_else(|| VfsError::Unsupported("reflink requires local filesystem"))?;
+        let dst_full = dst_sys.root.join(dst);
+        if try_reflink(&src_full, &dst_full)? {
+            Ok(())
+        } else {
+            Err(VfsError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "reflink not supported by filesystem",
+            )))
+        }
+    }
+
+    fn hard_link_to(&self, src: &Path, dst_backend: &dyn VfsBackend, dst: &Path) -> VfsResult<()> {
+        let src_full = self.root.join(src);
+        let dst_sys = dst_backend.as_system_fs()
+            .ok_or_else(|| VfsError::Unsupported("hardlink requires local filesystem"))?;
+        let dst_full = dst_sys.root.join(dst);
+        fs::hard_link(&src_full, &dst_full).map_err(VfsError::Io)
     }
 
     fn create_dir_all(&self, path: &Path) -> VfsResult<()> {
         fs::create_dir_all(self.root.join(path)).map_err(VfsError::Io)
+    }
+
+    fn as_system_fs(&self) -> Option<&SystemFs> {
+        Some(self)
     }
 }
 
@@ -331,10 +342,4 @@ fn stream_copy(src: &Path, dst: &Path) -> VfsResult<()> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn stream_copy(src: &Path, dst: &Path) -> VfsResult<()> {
-    let mut reader = fs::File::open(src).map_err(VfsError::Io)?;
-    let mut writer = fs::File::create(dst).map_err(VfsError::Io)?;
-    io::copy(&mut reader, &mut writer).map_err(VfsError::Io)?;
-    Ok(())
-}
+

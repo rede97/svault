@@ -23,6 +23,8 @@ pub struct ImportOptions {
     pub show_dup: bool,
     /// Import configuration from `svault.toml`.
     pub import_config: ImportConfig,
+    /// Force import even if the file is a confirmed duplicate.
+    pub force: bool,
 }
 
 /// Per-file status after Stage B.
