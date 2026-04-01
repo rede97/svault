@@ -129,6 +129,22 @@ impl Db {
             file_row_from_row,
         ).optional()
     }
+
+    /// Get files imported since a given timestamp (inclusive).
+    pub fn get_files_imported_since(&self, since_ms: i64) -> Result<Vec<FileRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, size, mtime, crc32c_val, xxh3_128, sha256, status \
+             FROM files WHERE imported_at >= ?1 ORDER BY imported_at"
+        )?;
+        let rows = stmt.query_map(params![since_ms], file_row_from_row)?;
+        rows.collect()
+    }
+
+    /// Get files imported in the last N seconds.
+    pub fn get_recent_files(&self, seconds: u64) -> Result<Vec<FileRow>> {
+        let since_ms = crate::import::utils::unix_now_ms() - (seconds as i64 * 1000);
+        self.get_files_imported_since(since_ms)
+    }
 }
 
 // ---------------------------------------------------------------------------

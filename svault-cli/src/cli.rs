@@ -294,6 +294,11 @@ pub enum Command {
     /// VERIFY LEVELS
     ///   fast   - verify with XXH3-128 (high throughput)
     ///   sha256 - verify with SHA-256 (cryptographic strength, default)
+    ///
+    /// USAGE EXAMPLES
+    ///   svault verify                    # Verify all files
+    ///   svault verify --recent 300       # Verify files imported in last 5 minutes
+    ///   svault verify --file path/to.jpg # Verify single file
     Verify {
         /// Hash algorithm to use for verification.
         #[arg(short = 'H', long, default_value = "sha256", value_enum)]
@@ -302,6 +307,29 @@ pub enum Command {
         /// Verify only this file
         #[arg(long, value_name = "PATH")]
         file: Option<std::path::PathBuf>,
+
+        /// Verify only files imported in the last N seconds
+        #[arg(long, value_name = "SECONDS")]
+        recent: Option<u64>,
+    },
+
+    /// Verify source files against import manifest
+    ///
+    /// Compares source files with the recorded state in the import manifest.
+    /// This detects if source files were modified or deleted after import.
+    ///
+    /// USAGE EXAMPLES
+    ///   svault verify-source                  # Verify latest import
+    ///   svault verify-source --session <id>   # Verify specific session
+    ///   svault verify-source --dir /path      # Verify specific source directory
+    VerifySource {
+        /// Session ID to verify (default: latest)
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
+
+        /// Verify only this source directory
+        #[arg(long, value_name = "PATH")]
+        dir: Option<std::path::PathBuf>,
     },
 
     /// Show vault status overview

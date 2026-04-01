@@ -25,7 +25,6 @@ Thumbs.db
 playground/
 
 # Python
-tests/.venv/
 e2e_tests/.venv/
 __pycache__/
 *.pyc

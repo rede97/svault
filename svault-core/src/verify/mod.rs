@@ -3,6 +3,8 @@
 //! This module provides functionality to verify that files in the vault
 //! match their stored hashes, detecting corruption or tampering.
 
+pub mod manifest;
+
 use std::path::Path;
 
 use crate::config::HashAlgorithm;
@@ -168,4 +170,39 @@ pub fn verify_single(
         Some(file) => Ok(Some(verify_file(vault_root, &file, algo))),
         None => Ok(None),
     }
+}
+
+/// Verify files imported in the last N seconds.
+pub fn verify_recent(
+    vault_root: &Path,
+    db: &Db,
+    algo: &HashAlgorithm,
+    seconds: u64,
+    progress_fn: Option<impl Fn(&str)>,
+) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
+    let files = db.get_recent_files(seconds)?;
+    let mut results = Vec::new();
+    let mut summary = VerifySummary::default();
+
+    for file in files {
+        if let Some(ref callback) = progress_fn {
+            callback(&file.path);
+        }
+
+        let result = verify_file(vault_root, &file, algo);
+        
+        summary.total += 1;
+        match &result {
+            VerifyResult::Ok => summary.ok += 1,
+            VerifyResult::Missing => summary.missing += 1,
+            VerifyResult::SizeMismatch { .. } => summary.size_mismatch += 1,
+            VerifyResult::HashMismatch { .. } => summary.hash_mismatch += 1,
+            VerifyResult::IoError(_) => summary.io_error += 1,
+            VerifyResult::HashNotAvailable => summary.hash_not_available += 1,
+        }
+
+        results.push((file.path, result));
+    }
+
+    Ok((results, summary))
 }

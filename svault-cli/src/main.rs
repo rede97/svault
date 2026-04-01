@@ -121,14 +121,81 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Add { .. } => todo!("add"),
         Command::Sync { .. } => todo!("sync"),
         Command::Reconcile { .. } => todo!("reconcile"),
-        Command::Verify { hash, file } => {
-            use svault_core::verify::{verify_all, verify_single, VerifyResult};
+        Command::Verify { hash, file, recent } => {
+            use svault_core::verify::{verify_all, verify_single, verify_recent, VerifyResult};
             use console::style;
 
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
             let algo = hash;
+
+            if let Some(seconds) = recent {
+                // Verify recent files
+                println!("Verifying files imported in the last {} seconds...", seconds);
+                let (results, summary) = verify_recent(&vault_root, &db, &algo, seconds, Some(|path: &str| {
+                    eprint!("\r\x1b[KVerifying: {}", path);
+                }))?;
+                eprintln!("\r\x1b[K"); // Clear line
+
+                // Print failures
+                let mut has_failures = false;
+                for (path, result) in &results {
+                    match result {
+                        VerifyResult::Ok => {}
+                        VerifyResult::Missing => {
+                            has_failures = true;
+                            println!("{} {} - Missing", style("✗").red().bold(), path);
+                        }
+                        VerifyResult::SizeMismatch { expected, actual } => {
+                            has_failures = true;
+                            println!("{} {} - Size mismatch (expected {}, got {})", 
+                                style("✗").red().bold(), path, expected, actual);
+                        }
+                        VerifyResult::HashMismatch { algo } => {
+                            has_failures = true;
+                            println!("{} {} - {} hash mismatch", 
+                                style("✗").red().bold(), path, algo);
+                        }
+                        VerifyResult::IoError(e) => {
+                            has_failures = true;
+                            println!("{} {} - IO error: {}", 
+                                style("✗").red().bold(), path, e);
+                        }
+                        VerifyResult::HashNotAvailable => {
+                            println!("{} {} - Hash not available", 
+                                style("!").yellow().bold(), path);
+                        }
+                    }
+                }
+
+                // Print summary
+                println!();
+                println!("Verify Summary (recent files only):");
+                println!("  Total: {}", summary.total);
+                println!("  {} OK", summary.ok);
+                if summary.missing > 0 {
+                    println!("  {} Missing", style(summary.missing).red());
+                }
+                if summary.size_mismatch > 0 {
+                    println!("  {} Size mismatch", style(summary.size_mismatch).red());
+                }
+                if summary.hash_mismatch > 0 {
+                    println!("  {} Hash mismatch", style(summary.hash_mismatch).red());
+                }
+                if summary.io_error > 0 {
+                    println!("  {} IO error", style(summary.io_error).red());
+                }
+                if summary.hash_not_available > 0 {
+                    println!("  {} Hash not available", summary.hash_not_available);
+                }
+
+                if has_failures {
+                    std::process::exit(1);
+                }
+                
+                return Ok(());
+            }
 
             if let Some(file_path) = file {
                 // Verify single file
@@ -229,6 +296,112 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 if has_failures {
                     std::process::exit(1);
                 }
+            }
+
+            Ok(())
+        }
+        Command::VerifySource { session, dir } => {
+            use svault_core::verify::manifest::{ManifestManager, verify_source_files};
+            use console::style;
+
+            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let manager = ManifestManager::new(&vault_root);
+
+            // Get manifest to verify
+            let manifest = if let Some(session_id) = session {
+                manager.load(&session_id)?
+            } else {
+                manager.latest()?.ok_or_else(|| anyhow::anyhow!("No import manifests found"))?
+            };
+
+            println!("Verifying source files for session: {}", manifest.session_id);
+            println!("Source: {}", manifest.source_root.display());
+            let imported_secs = manifest.imported_at / 1000;
+            println!("Imported at: {} ({}s ago)", imported_secs, 
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64 - imported_secs);
+            println!("Files to verify: {}", manifest.files.len());
+            println!();
+
+            // Filter by directory if specified
+            let files_to_verify: Vec<_> = if let Some(ref filter_dir) = dir {
+                manifest.files.iter()
+                    .filter(|f| f.src_path.starts_with(filter_dir))
+                    .cloned()
+                    .collect()
+            } else {
+                manifest.files.clone()
+            };
+
+            if files_to_verify.is_empty() {
+                println!("No files to verify (directory filter may be too restrictive)");
+                return Ok(());
+            }
+
+            // Create filtered manifest
+            let mut verify_manifest = manifest.clone();
+            verify_manifest.files = files_to_verify;
+
+            // Verify sources
+            use svault_core::verify::manifest::SourceVerifyResult;
+            let results = verify_source_files(&verify_manifest, Some(|path: &str| {
+                eprint!("\r\x1b[KChecking: {}", path);
+            }))?;
+            eprintln!("\r\x1b[K");
+
+            // Print results
+            let mut unchanged = 0;
+            let mut modified = 0;
+            let mut deleted = 0;
+            let mut errors = 0;
+
+            for (path, result) in &results {
+                match result {
+                    SourceVerifyResult::Unchanged => {
+                        unchanged += 1;
+                    }
+                    SourceVerifyResult::Modified { reason } => {
+                        modified += 1;
+                        println!("{} {} - Modified: {}", 
+                            style("!").yellow().bold(), 
+                            path.display(), 
+                            reason);
+                    }
+                    SourceVerifyResult::Deleted => {
+                        deleted += 1;
+                        println!("{} {} - Deleted", 
+                            style("✗").red().bold(), 
+                            path.display());
+                    }
+                    SourceVerifyResult::IoError(e) => {
+                        errors += 1;
+                        println!("{} {} - Error: {}", 
+                            style("✗").red().bold(), 
+                            path.display(), 
+                            e);
+                    }
+                    _ => {}
+                }
+            }
+
+            println!();
+            println!("Source Verification Summary:");
+            println!("  Total: {}", results.len());
+            println!("  {} Unchanged", style(unchanged).green());
+            if modified > 0 {
+                println!("  {} Modified", style(modified).yellow());
+            }
+            if deleted > 0 {
+                println!("  {} Deleted", style(deleted).red());
+            }
+            if errors > 0 {
+                println!("  {} Errors", style(errors).red());
+            }
+
+            if modified > 0 || deleted > 0 || errors > 0 {
+                std::process::exit(1);
             }
 
             Ok(())
