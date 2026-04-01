@@ -71,6 +71,19 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
         style(&manifest.session_id).dim()
     );
     eprintln!("  Source: {}", style(manifest.source_root.display()).dim());
+    eprintln!();
+    eprintln!("{} {}",
+        style("Caution:").yellow().bold(),
+        style("Recheck assumes the source device has not changed since import.").yellow()
+    );
+    eprintln!("{} {}",
+        style("         "),
+        style("If you took new photos or modified files, filenames may be reused with different content.")
+    );
+    eprintln!("{} {}",
+        style("         "),
+        style("Please review the report carefully before deleting anything.")
+    );
 
     let bar = ProgressBar::new(total as u64);
     bar.set_style(
@@ -282,6 +295,10 @@ fn write_report(
     buf.push_str(&format!("# Session: {session_id}\n"));
     buf.push_str(&format!("# Source: {source_name}\n"));
     buf.push_str(&format!("# Hash: {hash_algo:?}\n"));
+    buf.push_str("#\n");
+    buf.push_str("# CAUTION: Recheck assumes the source device has not changed since import.\n");
+    buf.push_str("# If you took new photos or modified files, filenames may be reused with different content.\n");
+    buf.push_str("# Review this report carefully before deleting any files.\n");
     buf.push('\n');
 
     for r in results {
