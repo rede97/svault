@@ -599,11 +599,47 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     }
 
     let imported = verified.len();
-    let manifest_path = opts
-        .vault_root
-        .join(".svault")
-        .join(format!("import-{session_id}.manifest"));
-    write_manifest_vfs(&manifest_path, &verified)?;
+
+    // Write JSON manifest
+    use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager};
+    let manifest_records: Vec<ImportRecord> = verified
+        .iter()
+        .map(|(src, dest, size, taken_ms, crc, hash)| {
+            let (xxh3, sha256) = match opts.hash {
+                HashAlgorithm::Xxh3_128 => {
+                    let low = u64::from_le_bytes(hash[..8].try_into().unwrap());
+                    let high = u64::from_le_bytes(hash[8..16].try_into().unwrap());
+                    let hex = format!("{:016x}{:016x}", high, low);
+                    (Some(hex), None)
+                }
+                HashAlgorithm::Sha256 => {
+                    let hex = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    (None, Some(hex))
+                }
+            };
+            let dest_rel = dest.strip_prefix(opts.vault_root).unwrap_or(dest).to_path_buf();
+            ImportRecord {
+                src_path: src.clone(),
+                dest_path: dest_rel,
+                size: *size as u64,
+                mtime_ms: *taken_ms,
+                crc32c: *crc,
+                xxh3_128: xxh3,
+                sha256: sha256,
+                imported_at: imported_at,
+            }
+        })
+        .collect();
+
+    let manifest = ImportManifest {
+        session_id: session_id.clone(),
+        source_root: std::path::PathBuf::from(&opts.source_name),
+        imported_at,
+        hash_algorithm: opts.hash.to_string(),
+        files: manifest_records,
+    };
+    let manifest_manager = ManifestManager::new(opts.vault_root);
+    let manifest_path = manifest_manager.save(&manifest)?;
 
     // Delete pending file
     let _ = std::fs::remove_file(&pending_path);
@@ -924,29 +960,6 @@ fn write_pending_vfs(
         if matches!(status, FileStatus::LikelyNew) {
             writeln!(f, "{crc:08x}\t{size}\t{mtime}\t{}", rel)?;
         }
-    }
-    Ok(())
-}
-
-/// Write manifest file (VFS version).
-fn write_manifest_vfs(
-    path: &std::path::Path,
-    entries: &[(std::path::PathBuf, std::path::PathBuf, i64, i64, u32, Vec<u8>)],
-) -> Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::File::create(path)?;
-    writeln!(f, "# Import manifest")?;
-    writeln!(f, "# src_path -> dest_path | size | timestamp | crc32 | hash")?;
-    writeln!(f)?;
-
-    for (src, dest, size, taken_ms, crc, hash) in entries {
-        let hash_hex = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        writeln!(
-            f,
-            "{crc:08x}\t{size}\t{taken_ms}\t{hash_hex}\t{} -> {}",
-            src.display(),
-            dest.display()
-        )?;
     }
     Ok(())
 }

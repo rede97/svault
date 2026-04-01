@@ -34,10 +34,11 @@ use crate::hash::{crc32c_region, xxh3_128_file, sha256_file};
 use crate::vfs::system::SystemFs;
 use crate::vfs::transfer::transfer_file;
 use crate::vfs::VfsBackend;
+use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager};
 
 use exif::read_exif_date_device;
 use path::resolve_dest_path;
-use staging::{write_pending, write_staging, write_manifest};
+use staging::{write_pending, write_staging};
 use utils::{unix_now_ms, session_id_now};
 
 /// Run the full import pipeline (Stages A–E).
@@ -544,11 +545,46 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         }
     }
 
-    // Write manifest
-    let _manifest_path = write_manifest(
-        &opts.vault_root, &session_id, &scan_entries, &hash_results
-            .iter().filter(|r| r.dup_reason.is_none()).map(|r| r.dest.clone()).collect::<Vec<_>>(),
-    )?;
+    // Write JSON manifest
+    let manifest_records: Vec<ImportRecord> = hash_results
+        .iter()
+        .filter(|r| r.dup_reason.is_none())
+        .map(|r| {
+            let (xxh3, sha256) = match &opts.hash {
+                HashAlgorithm::Xxh3_128 => {
+                    let low = u64::from_le_bytes(r.hash_bytes[..8].try_into().unwrap());
+                    let high = u64::from_le_bytes(r.hash_bytes[8..16].try_into().unwrap());
+                    let hex = format!("{:016x}{:016x}", high, low);
+                    (Some(hex), None)
+                }
+                HashAlgorithm::Sha256 => {
+                    let hex = r.hash_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    (None, Some(hex))
+                }
+            };
+            let dest_rel = r.dest.strip_prefix(&opts.vault_root).unwrap_or(&r.dest).to_path_buf();
+            ImportRecord {
+                src_path: r.src.clone(),
+                dest_path: dest_rel,
+                size: r.size,
+                mtime_ms: r.mtime_ms,
+                crc32c: r.crc32c,
+                xxh3_128: xxh3,
+                sha256: sha256,
+                imported_at: now_ms,
+            }
+        })
+        .collect();
+
+    let manifest = ImportManifest {
+        session_id: session_id.clone(),
+        source_root: opts.source.clone(),
+        imported_at: now_ms,
+        hash_algorithm: opts.hash.to_string(),
+        files: manifest_records,
+    };
+    let manifest_manager = ManifestManager::new(&opts.vault_root);
+    let manifest_path = manifest_manager.save(&manifest)?;
 
     // Delete .pending
     let _ = fs::remove_file(&pending_path);
@@ -572,7 +608,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         imported: imported_count,
         duplicate: dup_count,
         failed: fail_count,
-        manifest_path: Some(_manifest_path),
+        manifest_path: Some(manifest_path),
         all_cache_hit: false,
     })
 }

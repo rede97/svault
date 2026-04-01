@@ -223,50 +223,48 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(())
             }
         }
-        Command::Recheck { source, target, hash } => {
-            let source_str = source.to_string_lossy();
-            let vault_root = find_vault_root(target, &source)?;
+        Command::Recheck { source, target, session, hash } => {
+            let vault_root = find_vault_root(target, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
             let config = svault_core::config::Config::load(&vault_root)?;
             let hash_algo = hash.unwrap_or(config.global.hash.clone());
 
-            if source_str.starts_with("mtp://") {
-                #[cfg(feature = "mtp")]
-                {
-                    use svault_core::vfs::manager::VfsManager;
-                    use svault_core::import::recheck::{run_vfs_recheck, VfsRecheckOptions};
-
-                    let manager = VfsManager::new();
-                    let (backend, mtp_path) = manager.open_url(&source_str)
-                        .map_err(|e| anyhow::anyhow!("failed to open MTP device: {e}"))?;
-
-                    let opts = VfsRecheckOptions {
-                        src_backend: &*backend,
-                        src_path: &mtp_path,
-                        vault_root: &vault_root,
-                        hash: hash_algo,
-                        import_config: config.import,
-                        source_name: source_str.to_string(),
-                        crc_buffer_size: 64 * 1024,
-                    };
-                    run_vfs_recheck(opts, &db)?;
-                }
-                #[cfg(not(feature = "mtp"))]
-                {
-                    Err(anyhow::anyhow!("MTP support not enabled. Build with --features mtp"))
-                }
+            use svault_core::verify::manifest::ManifestManager;
+            let manager = ManifestManager::new(&vault_root);
+            let manifest = if let Some(session_id) = session {
+                manager.load(&session_id)?
             } else {
-                use svault_core::import::recheck::{run_recheck, RecheckOptions};
-                let opts = RecheckOptions {
-                    source,
-                    vault_root,
-                    hash: hash_algo,
-                    import_config: config.import,
-                };
-                run_recheck(opts, &db)?;
+                manager.latest()?.ok_or_else(|| anyhow::anyhow!("No import manifests found"))?
+            };
+
+            // Validate source path if explicitly provided
+            if let Some(provided_source) = source {
+                let provided = std::fs::canonicalize(&provided_source)
+                    .unwrap_or(provided_source)
+                    .to_string_lossy()
+                    .to_string();
+                let recorded = std::fs::canonicalize(&manifest.source_root)
+                    .unwrap_or_else(|_| manifest.source_root.clone())
+                    .to_string_lossy()
+                    .to_string();
+                if provided != recorded {
+                    anyhow::bail!(
+                        "Source path mismatch: provided '{}', but manifest records '{}'",
+                        provided,
+                        recorded
+                    );
+                }
             }
+
+            use svault_core::import::recheck::{run_recheck, RecheckOptions};
+            let opts = RecheckOptions {
+                vault_root,
+                manifest,
+                hash: hash_algo,
+            };
+            run_recheck(opts, &db)?;
             Ok(())
         }
         Command::Add { .. } => todo!("add"),
@@ -448,113 +446,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 if has_failures {
                     std::process::exit(1);
                 }
-            }
-
-            Ok(())
-        }
-        Command::VerifySource { session, dir } => {
-            use svault_core::verify::manifest::{ManifestManager, verify_source_files};
-            use console::style;
-
-            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
-            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-            let manager = ManifestManager::new(&vault_root);
-
-            // Get manifest to verify
-            let manifest = if let Some(session_id) = session {
-                manager.load(&session_id)?
-            } else {
-                manager.latest()?.ok_or_else(|| anyhow::anyhow!("No import manifests found"))?
-            };
-
-            println!("Verifying source files for session: {}", manifest.session_id);
-            println!("Source: {}", manifest.source_root.display());
-            let imported_secs = manifest.imported_at / 1000;
-            println!("Imported at: {} ({}s ago)", imported_secs, 
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64 - imported_secs);
-            println!("Files to verify: {}", manifest.files.len());
-            println!();
-
-            // Filter by directory if specified
-            let files_to_verify: Vec<_> = if let Some(ref filter_dir) = dir {
-                manifest.files.iter()
-                    .filter(|f| f.src_path.starts_with(filter_dir))
-                    .cloned()
-                    .collect()
-            } else {
-                manifest.files.clone()
-            };
-
-            if files_to_verify.is_empty() {
-                println!("No files to verify (directory filter may be too restrictive)");
-                return Ok(());
-            }
-
-            // Create filtered manifest
-            let mut verify_manifest = manifest.clone();
-            verify_manifest.files = files_to_verify;
-
-            // Verify sources
-            use svault_core::verify::manifest::SourceVerifyResult;
-            let results = verify_source_files(&verify_manifest, Some(|path: &str| {
-                eprint!("\r\x1b[KChecking: {}", path);
-            }))?;
-            eprintln!("\r\x1b[K");
-
-            // Print results
-            let mut unchanged = 0;
-            let mut modified = 0;
-            let mut deleted = 0;
-            let mut errors = 0;
-
-            for (path, result) in &results {
-                match result {
-                    SourceVerifyResult::Unchanged => {
-                        unchanged += 1;
-                    }
-                    SourceVerifyResult::Modified { reason } => {
-                        modified += 1;
-                        println!("{} {} - Modified: {}", 
-                            style("!").yellow().bold(), 
-                            path.display(), 
-                            reason);
-                    }
-                    SourceVerifyResult::Deleted => {
-                        deleted += 1;
-                        println!("{} {} - Deleted", 
-                            style("✗").red().bold(), 
-                            path.display());
-                    }
-                    SourceVerifyResult::IoError(e) => {
-                        errors += 1;
-                        println!("{} {} - Error: {}", 
-                            style("✗").red().bold(), 
-                            path.display(), 
-                            e);
-                    }
-                    _ => {}
-                }
-            }
-
-            println!();
-            println!("Source Verification Summary:");
-            println!("  Total: {}", results.len());
-            println!("  {} Unchanged", style(unchanged).green());
-            if modified > 0 {
-                println!("  {} Modified", style(modified).yellow());
-            }
-            if deleted > 0 {
-                println!("  {} Deleted", style(deleted).red());
-            }
-            if errors > 0 {
-                println!("  {} Errors", style(errors).red());
-            }
-
-            if modified > 0 || deleted > 0 || errors > 0 {
-                std::process::exit(1);
             }
 
             Ok(())

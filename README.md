@@ -40,7 +40,7 @@ Svault is in active development. Core commands `init`, `import`, and `status` ar
 | `svault status` | ✅ Implemented | Show vault overview and statistics |
 | `svault mtp ls` | ✅ Implemented | List MTP device contents |
 | `svault mtp tree` | ✅ Implemented | Display MTP device structure as tree |
-| `svault recheck` | ✅ Implemented | Re-check source files against the vault |
+| `svault recheck` | ✅ Implemented | Re-check an import session against both source and vault |
 | `svault verify` | ✅ Implemented | Verify file integrity |
 | `svault add` | 📝 Stub | Register files already in vault |
 | `svault sync` | 📝 Stub | Sync with another vault |

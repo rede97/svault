@@ -124,6 +124,8 @@ svault init      # 错误！会污染项目目录
 - **Vault 发现** - 从 CWD 向上查找 `.svault/vault.db`
 - **进程锁保护** - 修改命令自动获取 `<vault>/.svault/lock` 咨询锁
 - **Vault 自保护** - 导入扫描时自动跳过源目录下的 `.svault/` 及 vault root 子树
+- **Manifest 导入清单** - 每次导入写入 JSON 清单，记录源路径、归档路径和哈希
+- **统一 recheck** - `svault recheck` 基于 manifest 同时校验源文件和 vault 副本的一致性
 
 ---
 

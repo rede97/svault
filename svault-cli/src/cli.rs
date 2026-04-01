@@ -82,18 +82,23 @@ pub enum Command {
 
     /// Re-check source files against the vault.
     ///
-    /// Scans SOURCE and compares every file that hits the CRC32C cache with
-    /// the corresponding vault entry using a full-file hash. A report is
-    /// written to `.svault/staging/` so you can decide which side is correct.
+    /// Reads an import manifest and verifies both the source files and the
+    /// vault copies against the recorded hashes. A report is written to
+    /// `.svault/staging/` so you can decide which side is correct.
     /// No files are imported or deleted.
     Recheck {
-        /// Source directory or device to recheck.
+        /// Optional source directory to verify against the manifest.
+        /// Must match the source_root recorded in the manifest.
         #[arg(value_name = "SOURCE")]
-        source: std::path::PathBuf,
+        source: Option<std::path::PathBuf>,
 
         /// Sub-directory inside the vault (same discovery rules as import).
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
+
+        /// Session ID to recheck (default: latest import).
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
 
         /// Hash algorithm for the comparison.
         #[arg(short = 'H', long, value_enum)]
@@ -157,17 +162,6 @@ pub enum Command {
         /// Verify only files imported in the last N seconds
         #[arg(long, value_name = "SECONDS")]
         recent: Option<u64>,
-    },
-
-    /// Check if source files changed after import
-    VerifySource {
-        /// Session ID to verify (default: latest)
-        #[arg(long, value_name = "SESSION_ID")]
-        session: Option<String>,
-
-        /// Verify only this source directory
-        #[arg(long, value_name = "PATH")]
-        dir: Option<std::path::PathBuf>,
     },
 
     /// Show vault statistics

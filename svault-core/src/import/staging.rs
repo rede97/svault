@@ -5,7 +5,6 @@ use std::fs;
 use std::path::Path;
 
 use crate::import::types::{FileStatus, ScanEntry};
-use console::style;
 
 /// Write the .pending file listing all likely_new entries.
 pub fn write_pending(
@@ -50,33 +49,4 @@ pub fn write_staging(
     Ok(())
 }
 
-/// Write the final manifest file and return its path.
-pub fn write_manifest(
-    vault_root: &Path,
-    session_id: &str,
-    scan: &[ScanEntry],
-    imported_dests: &[std::path::PathBuf],
-) -> anyhow::Result<std::path::PathBuf> {
-    let manifests_dir = vault_root.join(".svault").join("manifests");
-    fs::create_dir_all(&manifests_dir)?;
-    let manifest_path = manifests_dir.join(format!("import-{session_id}.txt"));
-    
-    let mut buf = String::new();
-    writeln!(buf, "session={session_id}")?;
-    writeln!(buf, "source=(multiple)")?;
-    writeln!(buf, "total={} imported={} duplicate={}",
-        scan.len(),
-        imported_dests.len(),
-        scan.iter().filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count(),
-    )?;
-    for dest in imported_dests {
-        writeln!(buf, "{}", dest.display())?;
-    }
-    fs::write(&manifest_path, buf)?;
-    
-    eprintln!("{} {}",
-        style("Manifest:").bold(),
-        style(manifest_path.display()).dim());
-    
-    Ok(manifest_path)
-}
+

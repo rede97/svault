@@ -12,8 +12,8 @@
 |------|------|------|------|------|
 | 单元测试 (Unit) | 10 | 10 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 | 66 | 64 | 0 | 2 |
-| **总计** | **76** | **74** | **0** | **2** |
+| Python E2E 测试 | 67 | 65 | 0 | 2 |
+| **总计** | **77** | **75** | **0** | **2** |
 
 ---
 
@@ -115,10 +115,11 @@
 | ID | 场景 | 描述 | 状态 | 备注 |
 |----|------|------|------|------|
 | r1 | `test_recheck_detects_corruption_and_reimport_succeeds` | recheck 检测 vault 文件损坏，删除后重新导入 | ✅ PASS | `test_recheck.py` |
-| r2 | `test_recheck_no_cache_hits` | 对从未导入的源运行 recheck | ✅ PASS | `test_recheck.py` |
-| r3 | `test_recheck_all_ok` | 正常导入后 recheck 全通过 | ✅ PASS | `test_recheck.py` |
-| r4 | `test_strategy_copy_no_hardlink` | `--strategy copy` 必须真正二进制复制 | ✅ PASS | 修复了 copy 被忽略的问题 |
-| r5 | `test_deleted_file_can_be_reimported_after_verify_failure` | verify 异常/文件删除后可重新导入 | ✅ PASS | `test_recheck.py` |
+| r2 | `test_recheck_all_ok` | 正常导入后 recheck 全通过 | ✅ PASS | `test_recheck.py` |
+| r3 | `test_recheck_source_mismatch` | 提供不匹配的 source 路径时 recheck 报错 | ✅ PASS | `test_recheck.py` |
+| r4 | `test_recheck_with_matching_source` | 提供匹配的 source 路径时 recheck 正常 | ✅ PASS | `test_recheck.py` |
+| r5 | `test_strategy_copy_no_hardlink` | `--strategy copy` 必须真正二进制复制 | ✅ PASS | 修复了 copy 被忽略的问题 |
+| r6 | `test_deleted_file_can_be_reimported_after_verify_failure` | verify 异常/文件删除后可重新导入 | ✅ PASS | `test_recheck.py` |
 
 ### Force Import 场景 (Force Import Scenarios)
 
@@ -188,6 +189,7 @@
 | 2026-03-31 | 实现 `svault db dump` 命令，添加 3 个单元测试 | Kimi |
 | 2026-04-02 | 将 `recheck` 从 `import --recheck` 改为独立命令；修复 `--strategy copy` 未生效问题；添加 vault 进程锁；添加 recheck/re-import E2E 测试 | Kimi |
 | 2026-04-02 | VFS 重构：引入 `transfer.rs` 解耦传输策略；`--ignore-duplicate` 重命名为 `--force`；导入扫描自动忽略 `.svault` 和 vault root；E2E 新增 `test_import_force.py`、`test_import_ignore.py`（共 64 passed） | Kimi |
+| 2026-04-02 | `recheck` 改为基于 manifest 工作；`verify-source` 合并入 `recheck`；导入时写入 JSON manifest；E2E 更新至 65 passed | Kimi |
 
 ---
 
