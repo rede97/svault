@@ -9,7 +9,7 @@
 #   ./setup_ramdisk.sh --umount             # unmount only
 #
 # The RAMDisk lives at /tmp/svault-ramdisk.
-# run_tests.py will reuse it if already mounted.
+# run.sh will reuse it if already mounted.
 
 set -euo pipefail
 

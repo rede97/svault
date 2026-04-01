@@ -40,10 +40,11 @@ Svault is in active development. Core commands `init`, `import`, and `status` ar
 | `svault status` | ✅ Implemented | Show vault overview and statistics |
 | `svault mtp ls` | ✅ Implemented | List MTP device contents |
 | `svault mtp tree` | ✅ Implemented | Display MTP device structure as tree |
+| `svault recheck` | ✅ Implemented | Re-check source files against the vault |
+| `svault verify` | ✅ Implemented | Verify file integrity |
 | `svault add` | 📝 Stub | Register files already in vault |
 | `svault sync` | 📝 Stub | Sync with another vault |
 | `svault reconcile` | 📝 Stub | Update paths for moved files |
-| `svault verify` | 📝 Stub | Verify file integrity |
 | `svault history` | 📝 Stub | Query event log |
 | `svault clone` | 📝 Stub | Clone subset of vault |
 | `svault db dump` | ✅ Implemented | Export database contents for debugging |
@@ -118,6 +119,12 @@ DSC0001.2.jpg     (third file)
 
 This prevents overwrites when multiple photographers with the same camera model import on the same day.
 
+### Force Import / 强制导入
+By default, Svault skips exact duplicates. To intentionally re-import an identical file (e.g., after restoring from backup), use `--force`:
+```bash
+svault import --force /path/to/source
+```
+
 ---
 
 ## Configuration / 配置
@@ -174,6 +181,8 @@ allowed_extensions = [
 - **Append-only event log** — All state changes are recorded as events in SQLite. Materialised view tables are derived by replaying those events. This enables full history queries, tamper detection, and database recovery.
 - **Lazy SHA-256** — Full-file SHA-256 is computed only when needed for collision resolution. Fast pre-filters (size, CRC32C tail, XXH3-128) eliminate almost all comparisons before reaching the cryptographic hash.
 - **Svault never deletes your files** — After import, Svault outputs a manifest (archive path ↔ source path). You verify the result and delete source files yourself. A bug in Svault cannot destroy your originals.
+- **Vault process locking** — An advisory lock (`<vault>/.svault/lock`) prevents concurrent `svault` processes from modifying the same vault, avoiding database corruption.
+- **Vault self-protection** — When importing from an ancestor directory, Svault automatically skips its own `.svault/` metadata and any files already inside the vault root.
 - **OS-managed network shares** — SMB/NFS mounts are treated as ordinary local paths. The kernel handles protocol details; Svault stays focused on content addressing.
 
 ---
@@ -210,13 +219,15 @@ Milestones worth watching:
 
 Run the integrated test suite:
 ```bash
-python3 tests/run_tests.py
+cd e2e_tests && bash run.sh
 ```
 
 This performs end-to-end validation including:
 - EXIF date extraction and device detection
 - Deduplication (exact duplicates by content hash)
 - Filename conflict resolution (same name, different content)
+- Force import (`--force`) and vault self-protection
+- Recheck workflow and integrity verification
 - MTP device compatibility (when device connected)
 
 The test framework generates synthetic fixtures, runs imports in a RAM disk, and validates database state against expected outcomes.

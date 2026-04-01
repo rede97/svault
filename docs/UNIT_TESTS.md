@@ -12,8 +12,8 @@
 |------|------|------|------|------|
 | 单元测试 (Unit) | 10 | 10 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 | 11 | 11 | 0 | 0 |
-| **总计** | **21** | **21** | **0** | **0** |
+| Python E2E 测试 | 66 | 64 | 0 | 2 |
+| **总计** | **76** | **74** | **0** | **2** |
 
 ---
 
@@ -63,14 +63,15 @@
 | `test_resolve_dest_path` | `src/import/path.rs` | 路径模板解析 | ✅ PASS | 内联测试 |
 | `test_resolve_dest_path_no_device` | `src/import/path.rs` | 无设备路径解析 | ✅ PASS | 内联测试 |
 | `test_file_status_equality` | `src/import/mod.rs` | FileStatus 相等性 | ✅ PASS | 内联测试 |
+| `test_lock_acquire_and_release` | `src/lock.rs` | Vault 咨询锁获取与释放 | ✅ PASS | 内联测试 |
 
 ### vfs 模块
 
 | 测试名 | 位置 | 描述 | 状态 | 备注 |
 |--------|------|------|------|------|
 | *待添加* | `src/vfs/system.rs` | 文件系统能力探测 | 🔲 TODO | reflink/hardlink |
-| *待添加* | `src/vfs/system.rs` | 目录遍历 | 🔲 TODO | |
-| *待添加* | `src/vfs/system.rs` | 文件复制策略选择 | 🔲 TODO | |
+| *待添加* | `src/vfs/system.rs` | 目录遍历（含 `.svault` 剪枝） | 🔲 TODO | |
+| *待添加* | `src/vfs/transfer.rs` | 传输引擎 fallback 链 | 🔲 TODO | reflink→hardlink→stream |
 
 ### import 模块
 
@@ -86,7 +87,7 @@
 
 ## Python E2E 测试
 
-端到端测试位于 `tests/run_tests.py`，使用 RAMDisk 隔离测试环境。
+端到端测试位于 `e2e_tests/`，使用 `pytest` + RAMDisk 隔离测试环境。
 
 ### 常规场景 (Normal Scenarios)
 
@@ -119,6 +120,20 @@
 | r4 | `test_strategy_copy_no_hardlink` | `--strategy copy` 必须真正二进制复制 | ✅ PASS | 修复了 copy 被忽略的问题 |
 | r5 | `test_deleted_file_can_be_reimported_after_verify_failure` | verify 异常/文件删除后可重新导入 | ✅ PASS | `test_recheck.py` |
 
+### Force Import 场景 (Force Import Scenarios)
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| f1 | `test_force_import_duplicate` | `--force` 强制导入重复文件 | ✅ PASS | `test_import_force.py` |
+| f2 | `test_force_import_same_name_different_content` | 同名不同内容文件强制导入并重命名 | ✅ PASS | `test_import_force.py` |
+| f3 | `test_force_import_recovers_deleted_file` | 删除 vault 文件后 `--force` 恢复 | ✅ PASS | `test_import_force.py` |
+
+### Vault 自我保护场景 (Vault Self-Protection Scenarios)
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| v1 | `test_import_from_ancestor_skips_vault` | 从祖先目录导入时跳过 vault 自身文件 | ✅ PASS | `test_import_ignore.py` |
+
 ---
 
 ## 测试覆盖率目标
@@ -149,7 +164,7 @@
 
 - [ ] `config::load` - 测试配置加载和默认值
 - [ ] `vfs::probe_capabilities` - 测试文件系统能力探测
-- [ ] `vfs::copy_to` - 测试各种复制策略
+- [ ] `vfs::transfer_file` - 测试传输引擎 fallback 链
 - [ ] `db::lookup_by_crc32c` - 测试 CRC32C 查询
 - [ ] `db::lookup_by_hash` - 测试哈希查询
 
@@ -172,6 +187,7 @@
 | 2026-03-31 | 实现 `svault status` 命令，添加 2 个单元测试 | Kimi |
 | 2026-03-31 | 实现 `svault db dump` 命令，添加 3 个单元测试 | Kimi |
 | 2026-04-02 | 将 `recheck` 从 `import --recheck` 改为独立命令；修复 `--strategy copy` 未生效问题；添加 vault 进程锁；添加 recheck/re-import E2E 测试 | Kimi |
+| 2026-04-02 | VFS 重构：引入 `transfer.rs` 解耦传输策略；`--ignore-duplicate` 重命名为 `--force`；导入扫描自动忽略 `.svault` 和 vault root；E2E 新增 `test_import_force.py`、`test_import_ignore.py`（共 64 passed） | Kimi |
 
 ---
 
@@ -188,11 +204,11 @@ cargo test -p svault-cli
 # 特定模块测试
 cargo test -p svault-core hash
 
-# Python E2E 测试（推荐：自动使用 RAMDisk）
-e2e_tests/.venv/bin/python3 e2e_tests/run.sh --verbose
+# E2E 测试（推荐：自动使用 RAMDisk）
+cd e2e_tests && bash run.sh --verbose
 
-# 包含 chaos 场景
-e2e_tests/.venv/bin/python3 e2e_tests/run.sh --verbose --chaos
+# 只跑特定测试文件
+cd e2e_tests && bash run.sh --verbose test_import_force.py
 ```
 
 ---
@@ -205,8 +221,8 @@ e2e_tests/.venv/bin/python3 e2e_tests/run.sh --verbose --chaos
 
 ✅ **正确做法** - 使用 RAMDisk:
 ```bash
-# 方法 1: 使用 Python 测试框架（自动管理 RAMDisk）
-tests/.venv/bin/python3 tests/run_tests.py
+# 方法 1: 使用 E2E 测试框架（自动管理 RAMDisk）
+cd e2e_tests && bash run.sh
 
 # 方法 2: 手动使用 RAMDisk
 cd /tmp/svault-ramdisk/vault    # 或 cd .ramdisk/vault

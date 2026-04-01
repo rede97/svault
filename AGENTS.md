@@ -20,7 +20,7 @@ cargo build --release
 
 # 运行测试
 cargo test                              # Rust 单元/集成测试
-python3 tests/run_tests.py --verbose    # Python E2E 测试
+cd e2e_tests && bash run.sh --verbose   # Python E2E 测试
 
 # 初始化 vault
 cargo run -p svault-cli -- init
@@ -78,8 +78,8 @@ cargo run -p svault-cli -- import <source-dir>
 
 ✅ **正确做法**:
 ```bash
-# 方法 1: Python 测试框架（推荐）
-python3 tests/run_tests.py --verbose
+# 方法 1: E2E 测试框架（推荐）
+cd e2e_tests && bash run.sh --verbose
 
 # 方法 2: 手动进入 RAMDisk
 bash tests/setup_ramdisk.sh
@@ -106,12 +106,24 @@ svault init      # 错误！会污染项目目录
 | `svault-core` | 核心逻辑（lib） | 无 clap（cli feature 可选） |
 | `svault-cli` | CLI 入口（bin） | 依赖 svault-core + clap |
 
+### VFS 架构
+
+| 模块 | 用途 |
+|------|------|
+| `vfs/mod.rs` | `VfsBackend` trait、核心类型 |
+| `vfs/transfer.rs` | `TransferEngine`：跨后端文件传输编排 |
+| `vfs/system.rs` | `SystemFs`：本地文件系统原子操作 |
+| `vfs/mtp.rs` | `MtpFs`：MTP 设备后端（单流） |
+| `vfs/manager.rs` | `VfsManager`：URL 路由与发现 |
+
 ### 关键设计
 
 - **永不删除用户文件** - Svault 没有 delete 命令
 - **事件溯源数据库** - 所有变更记录在 `events` 表
 - **三层哈希** - CRC32C → XXH3-128 → SHA-256
 - **Vault 发现** - 从 CWD 向上查找 `.svault/vault.db`
+- **进程锁保护** - 修改命令自动获取 `<vault>/.svault/lock` 咨询锁
+- **Vault 自保护** - 导入扫描时自动跳过源目录下的 `.svault/` 及 vault root 子树
 
 ---
 
@@ -119,7 +131,7 @@ svault init      # 错误！会污染项目目录
 
 1. **Windows 支持** - 基础功能可用，但 reflink 需要额外实现
 2. **内存使用** - 导入大量文件时进度条可能占用较多内存
-3. **测试覆盖率** - 单元测试较少，主要依赖集成测试（见 UNIT_TESTS.md）
+3. **测试覆盖率** - 单元测试较少，主要依赖 E2E 测试（64 passed）
 
 ---
 
@@ -128,3 +140,4 @@ svault init      # 错误！会污染项目目录
 | 日期 | 更新内容 |
 |------|----------|
 | 2026-03-31 | 添加 AGENTS.md 和 UNIT_TESTS.md |
+| 2026-04-02 | VFS 重构：解耦 transfer strategy；`--force` 替换 `--ignore-duplicate`；导入自保护；E2E 新增至 64 个 |

@@ -75,10 +75,16 @@ uv pip install -e "."
 | 文件 | 内容 | 标记 |
 |------|------|------|
 | `test_import_basic.py` | 基础导入场景 | - |
+| `test_import_force.py` | 强制导入与重复文件 | `force` |
+| `test_import_ignore.py` | Vault 自我保护扫描过滤 | `ignore` |
+| `test_recheck.py` | Recheck 工作流 | `recheck` |
+| `test_verify.py` | 完整性校验 | `verify` |
 | `test_conflict.py` | 文件名冲突处理 | `conflict` |
 | `test_dedup.py` | 三层去重系统 | `dedup` |
 | `test_chaos.py` | 边界/异常场景 | `chaos`, `slow` |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
+| `test_atomic_verification.py` | 原子验证限制 | `atomic` |
+| `test_concurrent_modification.py` | 并发修改与恢复 | `concurrent` |
 
 ## 使用 Fixtures
 
