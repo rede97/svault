@@ -86,7 +86,7 @@ def cleanup_after_tests(request: pytest.FixtureRequest) -> bool:
 E2E_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = E2E_DIR.parent
 TESTS_DIR = PROJECT_ROOT / "tests"
-FIXTURES_DIR = TESTS_DIR / "fixtures"
+FIXTURES_DIR = E2E_DIR / "fixtures"
 TARGET_DIR = PROJECT_ROOT / "target" / "release"
 
 
@@ -515,7 +515,7 @@ def copy_fixture(vault: VaultEnv, fixture_name: str, subdir: str | None = None) 
     
     Args:
         vault: Vault environment
-        fixture_name: Name of fixture in tests/fixtures/source/
+        fixture_name: Name of fixture in e2e_tests/fixtures/source/
         subdir: Optional subdirectory
     
     Returns:
