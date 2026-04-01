@@ -1,0 +1,74 @@
+[project]
+name = "svault-e2e-tests"
+version = "0.1.0"
+description = "End-to-end tests for Svault using pytest"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=8.0.0",
+    "pytest-html>=4.1.0",
+    "pytest-xdist>=3.5.0",
+    "pytest-asyncio>=0.23.0",
+    "hypothesis>=6.100.0",
+    "Pillow>=10.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.8.0",
+    "ruff>=0.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+console_output_style = "count"
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "-ra",
+    "-p no:cacheprovider",
+    "-p no:launch",
+    "-p no:launch_testing",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m not slow')",
+    "chaos: marks tests as chaos scenarios (may be unstable)",
+    "property: marks tests as property-based tests using Hypothesis",
+    "conflict: marks tests for filename conflict scenarios",
+    "dedup: marks tests for deduplication scenarios",
+]
+
+[tool.hypothesis]
+verbosity = "normal"
+print_blob = true
+# Default: 100 examples, but can be overridden per-test
+deadline = 5000  # 5 seconds per test case
+max_examples = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM"]
+ignore = ["D100", "D104"]  # Missing docstrings in public modules/packages
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

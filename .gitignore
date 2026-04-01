@@ -26,8 +26,18 @@ playground/
 
 # Python
 tests/.venv/
+e2e_tests/.venv/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# E2E test outputs
+e2e_tests/.test_outputs/
+e2e_tests/reports/
+e2e_tests/.hypothesis/
 
 # RAMDisk symlink (created by tests/setup_ramdisk.sh)
 .ramdisk
