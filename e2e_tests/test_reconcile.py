@@ -49,8 +49,7 @@ class TestReconcileCommand:
 
         original_path = vault.db_files()[0]["path"]
 
-        # Run without --yes (dry-run by implication, but reconcile doesn't have explicit dry-run flag in CLI)
-        # Actually reconcile uses `cli.dry_run` and `cli.yes` — let's run without --yes
+        # Run without --yes
         result = vault.run("reconcile", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
@@ -70,3 +69,33 @@ class TestReconcileCommand:
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "nothing to reconcile" in combined.lower() or "All tracked files exist" in combined
+
+    def test_reconcile_renamed_directory_then_verify_passes(self, vault: VaultEnv) -> None:
+        """Rename an entire directory inside the vault, reconcile, then verify should pass."""
+        from conftest import copy_fixture
+        copy_fixture(vault, "apple_with_exif.jpg")
+        vault.import_dir(vault.source_dir)
+
+        # Find the imported path (e.g. 2024/05-01/Apple iPhone 15/apple_with_exif.jpg)
+        imported = vault.db_files()
+        assert len(imported) == 1
+        old_db_path = imported[0]["path"]
+        # Determine the top-level directory to rename
+        top_dir = old_db_path.split("/")[0]
+
+        old_dir = vault.vault_dir / top_dir
+        new_dir = vault.vault_dir / (top_dir + "X")
+        old_dir.rename(new_dir)
+
+        # Reconcile from the vault root
+        result = vault.run("reconcile", "--yes", f"--target={vault.vault_dir}")
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "Updated:" in combined
+        assert (top_dir + "X") in combined
+
+        # Verify should now pass (no missing files)
+        result = vault.run("verify", capture=True)
+        assert result.returncode == 0
+        assert "OK" in result.stdout or "verified successfully" in result.stderr
+        assert "Missing" not in result.stdout

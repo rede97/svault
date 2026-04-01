@@ -500,7 +500,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             continue;
         }
 
-        let path_str = r.dest.to_string_lossy().into_owned();
+        let relpath = r.dest.strip_prefix(&opts.vault_root).unwrap_or(&r.dest);
+        let path_str = relpath.to_string_lossy().into_owned();
         let (xxh3, sha256) = match &opts.hash {
             HashAlgorithm::Xxh3_128 => (Some(r.hash_bytes.as_slice()), None),
             HashAlgorithm::Sha256 => (None, Some(r.hash_bytes.as_slice())),
