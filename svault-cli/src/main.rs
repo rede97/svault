@@ -567,7 +567,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     println!("No events found.");
                     return Ok(());
                 }
-                println!("{:>6}  {:<22}  {:<20}  {}", "seq", "time", "event", "payload");
+                println!("{:>6}  {:<22}  {:<20}  payload", "seq", "time", "event");
                 for e in events {
                     let datetime = chrono::DateTime::from_timestamp_millis(e.occurred_at).unwrap_or_default();
                     println!("{:>6}  {:<22}  {:<20}  {}", e.seq, datetime.format("%Y-%m-%d %H:%M:%S"), e.event_type, e.payload);

@@ -14,9 +14,22 @@ pub fn is_hardlinked(path: &Path) -> io::Result<bool> {
 
 #[cfg(windows)]
 pub fn is_hardlinked(path: &Path) -> io::Result<bool> {
-    use std::os::windows::fs::MetadataExt;
-    let meta = fs::metadata(path)?;
-    Ok(meta.number_of_links().unwrap_or(1) > 1)
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let file = fs::File::open(path)?;
+    let handle = file.as_raw_handle();
+
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let ok = GetFileInformationByHandle(handle as isize, &mut info);
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(info.nNumberOfLinks > 1)
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
