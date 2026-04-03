@@ -19,6 +19,7 @@ mtp = ["svault-core/mtp"]
 [dependencies]
 svault-core = { version = "0.1.0", path = "../svault-core", features = ["cli"] }
 anyhow = "1"
+chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"
 console = "0.15"

@@ -169,6 +169,10 @@ pub enum Command {
         /// Verify only files imported in the last N seconds
         #[arg(long, value_name = "SECONDS")]
         recent: Option<u64>,
+
+        /// Upgrade hardlinked files to independent binary copies during verification
+        #[arg(long)]
+        upgrade_links: bool,
     },
 
     /// Show vault statistics

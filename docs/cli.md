@@ -171,9 +171,10 @@ svault verify [options]
 
 | 选项 | 说明 |
 |------|------|
-| `--fast` | 使用 XXH3-128 快速校验（不验证 SHA-256） |
-| `--full` | 使用 SHA-256 全量校验（默认） |
+| `-H <algo>` | 哈希算法：`fast`（XXH3-128）/ `secure`（SHA-256，默认） |
 | `--file <path>` | 仅校验指定文件 |
+| `--recent <seconds>` | 仅校验最近 N 秒内导入的文件 |
+| `--upgrade-links` | 将 hardlink 文件原地升级为独立二进制拷贝 |
 
 **输出示例：**
 ```

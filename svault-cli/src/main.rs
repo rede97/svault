@@ -213,6 +213,19 @@ fn print_verify_results(
     Ok(())
 }
 
+/// Parse a datetime string (RFC 3339 or YYYY-MM-DD) into Unix milliseconds.
+fn parse_datetime_to_ms(s: &str) -> Option<i64> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        let dt_utc: chrono::DateTime<chrono::Utc> = dt.into();
+        return Some(dt_utc.timestamp_millis());
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let dt: chrono::NaiveDateTime = date.and_hms_opt(0, 0, 0)?;
+        return Some(dt.and_utc().timestamp_millis());
+    }
+    None
+}
+
 fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Init => {
@@ -383,7 +396,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             svault_core::import::reconcile::run_reconcile(opts, &db)?;
             Ok(())
         }
-        Command::Verify { hash, file, recent } => {
+        Command::Verify { hash, file, recent, upgrade_links } => {
             use svault_core::verify::{verify_all, verify_single, verify_recent, VerifyResult};
             use console::style;
 
@@ -393,6 +406,41 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
             let config = svault_core::config::Config::load(&vault_root)?;
             let algo = hash.unwrap_or(config.global.hash.clone());
+
+            if upgrade_links {
+                // Upgrade hardlinked files before verification.
+                let files_to_check: Vec<svault_core::db::FileRow> = if let Some(seconds) = recent {
+                    db.get_recent_files(seconds)?
+                } else if let Some(ref file_path) = file {
+                    if let Some(f) = db.get_file_by_path(&file_path.to_string_lossy())? {
+                        vec![f]
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    db.get_all_files()?
+                };
+
+                for file_row in files_to_check {
+                    let full_path = vault_root.join(&file_row.path);
+                    match svault_core::hardlink_upgrade::is_hardlinked(&full_path) {
+                        Ok(true) => {
+                            if let Err(e) = svault_core::hardlink_upgrade::upgrade_to_binary_copy(&full_path) {
+                                eprintln!("  {} Failed to upgrade hardlink {}: {}",
+                                    style("⚠").yellow().bold(), full_path.display(), e);
+                            } else {
+                                eprintln!("  {} Upgraded hardlink {}",
+                                    style("→").cyan(), full_path.display());
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            eprintln!("  {} Failed to check {}: {}",
+                                style("⚠").yellow().bold(), full_path.display(), e);
+                        }
+                    }
+                }
+            }
 
             if let Some(seconds) = recent {
                 println!(
@@ -469,15 +517,68 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::History { .. } => {
+        Command::History { file, from, to, event_type, limit } => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-            todo!("history")
+            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+
+            let from_ms = from.as_ref().and_then(|s| parse_datetime_to_ms(s));
+            let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
+            let file_path = file.as_ref().map(|p| p.to_string_lossy().to_string());
+
+            let events = db.get_events(
+                limit,
+                event_type.as_deref(),
+                from_ms,
+                to_ms,
+                file_path.as_deref(),
+            )?;
+
+            if matches!(cli.output, cli::OutputFormat::Json) {
+                let json = serde_json::json!({
+                    "events": events.iter().map(|e| serde_json::json!({
+                        "seq": e.seq,
+                        "occurred_at": e.occurred_at,
+                        "event_type": e.event_type,
+                        "entity_type": e.entity_type,
+                        "entity_id": e.entity_id,
+                        "payload": e.payload,
+                        "prev_hash": e.prev_hash,
+                        "self_hash": e.self_hash,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                if events.is_empty() {
+                    println!("No events found.");
+                    return Ok(());
+                }
+                println!("{:>6}  {:<22}  {:<20}  {}", "seq", "time", "event", "payload");
+                for e in events {
+                    let datetime = chrono::DateTime::from_timestamp_millis(e.occurred_at).unwrap_or_default();
+                    println!("{:>6}  {:<22}  {:<20}  {}", e.seq, datetime.format("%Y-%m-%d %H:%M:%S"), e.event_type, e.payload);
+                }
+            }
+            Ok(())
         }
-        Command::BackgroundHash { .. } => {
+        Command::BackgroundHash { limit, nice } => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-            todo!("background-hash")
+            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+
+            let opts = svault_core::background_hash::BackgroundHashOptions {
+                vault_root: vault_root.clone(),
+                limit,
+                nice,
+            };
+            let summary = svault_core::background_hash::run_background_hash(opts, &db)?;
+            println!(
+                "Processed {} file(s), {} failed.",
+                summary.processed, summary.failed
+            );
+            Ok(())
         }
         Command::Clone { .. } => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;

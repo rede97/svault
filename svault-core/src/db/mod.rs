@@ -176,22 +176,76 @@ impl Db {
         let opts = DumpOptions { tables, limit };
         dump::dump_database(&self.conn, opts)
     }
+
+    /// Query events with optional filters.
+    pub fn get_events(
+        &self,
+        limit: usize,
+        event_type: Option<&str>,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+        file_path: Option<&str>,
+    ) -> Result<Vec<EventRow>> {
+        let path_like_1 = file_path.map(|p| format!("%\"path\":\"{}\"%", p));
+        let path_like_2 = file_path.map(|p| format!("%\"old_path\":\"{}\"%", p));
+        let path_like_3 = file_path.map(|p| format!("%\"new_path\":\"{}\"%", p));
+
+        let sql = String::from(
+            "SELECT seq, occurred_at, event_type, entity_type, entity_id, payload, prev_hash, self_hash \
+             FROM events \
+             WHERE (?1 IS NULL OR event_type = ?1) \
+               AND (?2 IS NULL OR occurred_at >= ?2) \
+               AND (?3 IS NULL OR occurred_at <= ?3) \
+               AND (?4 IS NULL OR payload LIKE ?5 OR payload LIKE ?6 OR payload LIKE ?7) \
+             ORDER BY seq DESC \
+             LIMIT ?8"
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![
+                event_type,
+                from_ms,
+                to_ms,
+                file_path,
+                path_like_1.as_deref().unwrap_or(""),
+                path_like_2.as_deref().unwrap_or(""),
+                path_like_3.as_deref().unwrap_or(""),
+                limit as i64,
+            ],
+            |row| {
+                Ok(EventRow {
+                    seq: row.get(0)?,
+                    occurred_at: row.get(1)?,
+                    event_type: row.get(2)?,
+                    entity_type: row.get(3)?,
+                    entity_id: row.get(4)?,
+                    payload: row.get(5)?,
+                    prev_hash: row.get(6)?,
+                    self_hash: row.get(7)?,
+                })
+            },
+        )?;
+        rows.collect()
+    }
+}
+
+/// A single event from the event log.
+#[derive(Debug, Clone)]
+pub struct EventRow {
+    pub seq: i64,
+    pub occurred_at: i64,
+    pub event_type: String,
+    pub entity_type: String,
+    pub entity_id: i64,
+    pub payload: String,
+    pub prev_hash: String,
+    pub self_hash: String,
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-struct EventRow {
-    seq: i64,
-    event_type: String,
-    entity_type: String,
-    entity_id: i64,
-    payload: String,
-    occurred_at: i64,
-    prev_hash: String,
-    self_hash: String,
-}
 
 fn unix_now_ms() -> i64 {
     std::time::SystemTime::now()

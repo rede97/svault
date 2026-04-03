@@ -147,6 +147,22 @@ impl Db {
         self.get_files_imported_since(since_ms)
     }
 
+    /// Get files that have xxh3_128 but are missing sha256 (background hash candidates).
+    pub fn get_files_pending_sha256(&self, limit: Option<usize>) -> Result<Vec<FileRow>> {
+        let sql = format!(
+            "SELECT id, path, size, mtime, crc32c_val, xxh3_128, sha256, status \
+             FROM files \
+             WHERE sha256 IS NULL AND xxh3_128 IS NOT NULL \
+             ORDER BY imported_at \
+             LIMIT {} \
+            ",
+            limit.map(|n| n as i64).unwrap_or(i64::MAX)
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], file_row_from_row)?;
+        rows.collect()
+    }
+
     /// Get all imported files whose path no longer exists on disk.
     pub fn get_missing_files(&self, vault_root: &std::path::Path) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(

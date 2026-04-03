@@ -45,7 +45,8 @@ Svault is in active development. Core commands `init`, `import`, and `status` ar
 | `svault add` | ✅ Implemented | Register files already in vault |
 | `svault sync` | 📝 Stub | Sync with another vault |
 | `svault reconcile` | ✅ Implemented | Update paths for moved files |
-| `svault history` | 📝 Stub | Query event log |
+| `svault history` | ✅ Implemented | Query event log |
+| `svault background-hash` | ✅ Implemented | Compute missing SHA-256 hashes |
 | `svault clone` | 📝 Stub | Clone subset of vault |
 | `svault db dump` | ✅ Implemented | Export database contents for debugging |
 | `svault db verify-chain` | 📝 Stub | Verify event hash chain |
@@ -171,7 +172,7 @@ allowed_extensions = [
 | Phase 1 | CLI skeleton · event-sourced DB · local VFS · exact dedup · `svault init` | Completed |
 | Phase 2 | `svault import` · 4-stage fingerprint pipeline · manifest output | Completed |
 | Phase 3 | `svault sync` · multi-target replication · `svault reconcile` | Partial (`reconcile` done) |
-| Phase 4 | `svault verify` · hash chain audit · `svault status` / `history` | Partial (`verify` / `status` done) |
+| Phase 4 | `svault verify` · hash chain audit · `svault status` / `history` / `background-hash` | Completed |
 | Phase 5 | Composite media (Live Photo, RAW+JPEG) · `svault clone` | Planned |
 | Later | Perceptual dedup · TUI · device auto-detection | Planned |
 
