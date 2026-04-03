@@ -2,7 +2,7 @@
 
 > 本文档跟踪所有单元测试和集成测试的状态，随时更新。
 > 
-> 最后更新：2026-04-02
+> 最后更新：2026-04-04
 
 ---
 
@@ -72,7 +72,7 @@
 |--------|------|------|------|------|
 | *待添加* | `src/vfs/system.rs` | 文件系统能力探测 | 🔲 TODO | reflink/hardlink |
 | *待添加* | `src/vfs/system.rs` | 目录遍历（含 `.svault` 剪枝） | 🔲 TODO | |
-| *待添加* | `src/vfs/transfer.rs` | 传输引擎 fallback 链 | 🔲 TODO | reflink→hardlink→stream |
+| *待添加* | `src/vfs/transfer.rs` | 传输引擎 fallback 链 | 🔲 TODO | 按策略列表顺序尝试，`copy` 始终兜底 |
 
 ### import 模块
 
@@ -80,7 +80,6 @@
 |--------|------|------|------|------|
 | *待添加* | `src/import/mod.rs` | EXIF 日期解析 | 🔲 TODO | |
 | *待添加* | `src/import/mod.rs` | 设备名提取 | 🔲 TODO | |
-| *待添加* | `src/import/mod.rs` | 路径模板解析 | 🔲 TODO | `$year/$mon` 等 |
 | *待添加* | `src/import/mod.rs` | 日期格式转换 | 🔲 TODO | YMD ↔ Unix 时间戳 |
 | *待添加* | `src/import/mod.rs` | 去重逻辑 | 🔲 TODO | 三层去重 |
 
@@ -105,9 +104,9 @@
 
 | ID | 场景 | 描述 | 状态 | 备注 |
 |----|------|------|------|------|
-| c1 | 导入前重命名 | 重命名文件后仍检测为重复 | 🔲 TODO | |
-| c2 | 移动到子目录 | 移动到子目录后仍能找到 | 🔲 TODO | |
-| c3 | 中断复制 | 截断的 JPEG 文件处理 | 🔲 TODO | 应记录为失败 |
+| c1 | 导入前重命名 | 重命名文件后仍检测为重复 | ✅ PASS | `test_chaos.py::test_renamed_before_import` |
+| c2 | 移动到子目录 | 移动到子目录后仍能找到 | ✅ PASS | `test_chaos.py::test_moved_subdirectory` |
+| c3 | 中断复制 | 截断的 JPEG 文件处理 | ✅ PASS | `test_chaos.py::test_truncated_jpeg_handling` |
 | c4 | 导入中增删文件 | 导入过程中源目录文件变化 | ✅ PASS | `test_concurrent_modification.py` |
 | c5 | 重复导入 | 同一目录导入两次，第二次全为缓存命中 | ✅ PASS | `test_chaos.py` |
 
@@ -181,7 +180,6 @@
 - [ ] `hash::sha256_file` - 测试完整文件 SHA-256 哈希
 - [ ] `db::append_event` - 测试事件追加和哈希链
 - [ ] `db::verify_chain` - 测试哈希链验证
-- [ ] `import::resolve_dest_path` - 测试路径模板解析
 - [ ] `import::read_exif_date_device` - 测试 EXIF 提取（多种格式）
 
 ### 中优先级
@@ -215,6 +213,7 @@
 | 2026-04-02 | `recheck` 改为基于 manifest 工作；`verify-source` 合并入 `recheck`；导入时写入 JSON manifest；E2E 更新至 65 passed | Kimi |
 | 2026-04-02 | 实现 `svault add` / `reconcile`；Verify 统一使用全局 hash 配置、统一进度条和输出风格；CLI hash 参数简化为 `fast`/`secure`；E2E 新增 `test_add.py`、`test_reconcile.py`，更新 `test_verify.py`；全部 71 passed | Kimi |
 | 2026-04-02 | 修复 Windows 构建错误（替换 `GetVolumeInformationW`/`CopyFileExW`）；适配 E2E 测试到 Windows（72 passed）；添加 `run.ps1` 脚本；更新测试文档 | Kimi |
+| 2026-04-04 | `--strategy` 重构：移除 `auto`，默认 `reflink`，支持逗号组合；同步更新文档和测试覆盖记录；补充 Chaos 场景状态 | Kimi |
 
 ---
 
