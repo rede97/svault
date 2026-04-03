@@ -123,7 +123,7 @@ svault sync --target <path> [options]
 | 选项 | 说明 |
 |------|------|
 | `--target <path>` | 目标路径（本地挂载点，必填） |
-| `--strategy <strategy>` | 传输策略：`auto`（默认）/ `reflink` / `hardlink` / `copy` |
+| `--strategy <strategies>` | 传输策略：`reflink` / `hardlink` / `copy`，可逗号组合（默认 `reflink`）。`copy` 一旦出现在列表中即直接执行二进制拷贝并终止后续 fallback；若未显式写 `copy`，则所有策略失败后会自动以二进制拷贝兜底。 |
 | `--verify` | 同步后校验目标文件完整性 |
 
 ---

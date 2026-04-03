@@ -1,4 +1,4 @@
-use svault_core::config::{HashAlgorithm, SyncStrategy};
+use svault_core::config::{HashAlgorithm, TransferStrategyArg};
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Svault — content-addressed multimedia archive.
@@ -65,9 +65,11 @@ pub enum Command {
         #[arg(short = 'H', long, value_enum)]
         hash: Option<HashAlgorithm>,
 
-        /// File transfer strategy: auto, reflink, hardlink, copy
-        #[arg(long, default_value = "auto", value_enum)]
-        strategy: SyncStrategy,
+        /// File transfer strategy: reflink, hardlink, copy.
+        /// Can be combined with commas (e.g. --strategy reflink,hardlink).
+        /// Defaults to reflink; copy is always the final fallback.
+        #[arg(long, value_delimiter = ',', value_enum, default_value = "reflink")]
+        strategy: Vec<TransferStrategyArg>,
 
         /// Force import even when the file is confirmed as a duplicate.
         /// Use this to intentionally re-import an identical file.
@@ -127,9 +129,11 @@ pub enum Command {
         #[arg(value_name = "SOURCE_VAULT")]
         source: std::path::PathBuf,
 
-        /// Transfer strategy
-        #[arg(long, default_value = "auto", value_enum)]
-        strategy: SyncStrategy,
+        /// Transfer strategy: reflink, hardlink, copy.
+        /// Can be combined with commas (e.g. --strategy reflink,hardlink).
+        /// Defaults to reflink; copy is always the final fallback.
+        #[arg(long, value_delimiter = ',', value_enum, default_value = "reflink")]
+        strategy: Vec<TransferStrategyArg>,
 
         /// Scope of post-sync integrity verification.
         /// norm verifies only files touched in this sync;

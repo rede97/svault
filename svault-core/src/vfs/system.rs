@@ -298,15 +298,3 @@ fn try_reflink(_src: &Path, _dst: &Path) -> VfsResult<bool> {
     Ok(false)
 }
 
-/// Stream copy `src` → `dst` (non-Windows).
-/// On Linux/macOS uses `io::copy` with kernel-managed buffering.
-#[cfg(not(target_os = "windows"))]
-fn stream_copy(src: &Path, dst: &Path) -> VfsResult<()> {
-    use std::io;
-    let mut src_file = fs::File::open(src).map_err(VfsError::Io)?;
-    let mut dst_file = fs::File::create(dst).map_err(VfsError::Io)?;
-    io::copy(&mut src_file, &mut dst_file).map_err(VfsError::Io)?;
-    Ok(())
-}
-
-

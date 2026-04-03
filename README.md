@@ -78,8 +78,9 @@ svault/
 │  │  Hash   XXH3-128 · SHA-256 ·     │   │
 │  │         CRC32C                   │   │
 │  ├──────────────────────────────────┤   │
-│  │  VFS    reflink → hardlink →     │   │
-│  │         stream copy              │   │
+│  │  VFS    reflink → stream copy    │   │
+│  │         (hardlink available      │   │
+│  │          via --strategy)         │   │
 │  ├──────────────────────────────────┤   │
 │  │  DB     Event-sourced SQLite     │   │
 │  │         (append-only event log + │   │
@@ -90,7 +91,7 @@ svault/
 
 **Language:** Rust (edition 2024)
 
-**Storage:** Local filesystem — reflink (btrfs/xfs) → hardlink → stream copy, selected automatically
+**Storage:** Local filesystem — reflink (btrfs/xfs) → stream copy by default; hardlink available explicitly via `--strategy hardlink` or `--strategy reflink,hardlink`
 
 **Database:** Event-sourced SQLite — every state change is appended to an immutable event log with a SHA-256 tamper-evident hash chain
 
@@ -134,7 +135,7 @@ Run `svault init` to create a vault. A `svault.toml` is generated at the vault r
 ```toml
 [global]
 hash = "xxh3_128"
-sync_strategy = "auto"
+sync_strategy = "reflink"
 
 [import]
 store_exif = false

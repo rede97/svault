@@ -102,11 +102,12 @@ pub struct FsCapabilities {
 impl FsCapabilities {
     /// Returns the best transfer strategy this backend can offer as a source
     /// combined with what a destination backend can offer.
+    ///
+    /// Note: hardlink is intentionally excluded from automatic selection
+    /// because it shares the source inode, which is unsafe for an archive.
     pub fn best_strategy(&self, dst: &FsCapabilities) -> TransferStrategy {
         if self.reflink && dst.reflink {
             TransferStrategy::Reflink
-        } else if self.hardlink && dst.hardlink {
-            TransferStrategy::Hardlink
         } else {
             TransferStrategy::StreamCopy
         }

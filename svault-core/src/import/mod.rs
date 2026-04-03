@@ -248,10 +248,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let dst_fs = SystemFs::open(&vault_archive)
         .map_err(|e| anyhow::anyhow!("cannot open vault: {e}"))?;
 
-    let transfer_strategy = opts.strategy.to_transfer_strategy(
-        src_fs.capabilities(),
-        dst_fs.capabilities(),
-    );
+    let transfer_strategies = opts.strategy.to_transfer_strategies();
 
     // Pre-resolve destination paths in serial to avoid race conditions
     // when multiple files map to the same destination
@@ -345,7 +342,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 return None;
             }
 
-            match transfer_file(&src_fs, rel, &dst_fs, &dest_abs, transfer_strategy) {
+            match transfer_file(&src_fs, rel, &dst_fs, &dest_abs, &transfer_strategies) {
                 Ok(_) => {
                     // Show destination path relative to vault root
                     // Use progress bar's println for thread-safe output ordering

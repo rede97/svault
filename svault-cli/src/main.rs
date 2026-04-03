@@ -40,7 +40,7 @@
 //! - **Path template**: `svault.toml` controls the destination path. Default is `$year/$mon-$day/$device`.
 //!   - `$year` / `$mon` / `$day` — from EXIF DateTimeOriginal, or file mtime if missing.
 //!   - `$device` — EXIF camera model, or "Unknown Device".
-//! - **Transfer strategy**: `--strategy auto|reflink|hardlink|copy`.
+//! - **Transfer strategy**: `--strategy reflink,hardlink` (default `reflink`; `copy` always falls back).
 //! - **Hash algorithm**: `-H xxh3_128|sha256` for full-file collision resolution.
 //! - **Manifest**: every import writes a timestamped manifest to `<vault_root>/manifest/`.
 //!
@@ -254,7 +254,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         show_dup,
                         import_config: config.import,
                         source_name: source_str.to_string(),
-                        strategy,
+                        strategy: svault_core::config::SyncStrategy(strategy),
                         force,
                         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
                     };
@@ -289,7 +289,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     source,
                     vault_root,
                     hash: hash_algo,
-                    strategy,
+                    strategy: svault_core::config::SyncStrategy(strategy),
                     dry_run: cli.dry_run,
                     yes: cli.yes,
                     show_dup,

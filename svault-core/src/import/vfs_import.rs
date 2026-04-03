@@ -99,7 +99,7 @@ impl<'a> VfsImportOptions<'a> {
             show_dup: false,
             import_config: crate::config::ImportConfig::default(),
             source_name: String::new(),
-            strategy: SyncStrategy::Auto,
+            strategy: SyncStrategy::default(),
             force: false,
             crc_buffer_size: 64 * 1024, // 64KB default
         }
@@ -431,10 +431,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     );
     copy_bar.set_prefix("Copying  ");
 
-    let transfer_strategy = opts.strategy.to_transfer_strategy(
-        opts.src_backend.capabilities(),
-        dst_fs.capabilities(),
-    );
+    let transfer_strategies = opts.strategy.to_transfer_strategies();
 
     // Copy files: parallel for local FS, sequential for MTP
     let copy_op = |(src_path, dest_path, size, taken_ms, crc): (std::path::PathBuf, std::path::PathBuf, i64, i64, u32)| -> Option<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32)> {
@@ -461,7 +458,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         }
 
         // Use VFS transfer engine
-        match transfer_file(opts.src_backend, &src_path, &dst_fs, &dest_path, transfer_strategy) {
+        match transfer_file(opts.src_backend, &src_path, &dst_fs, &dest_path, &transfer_strategies) {
             Ok(_) => {
                 copy_bar.inc(1);
                 Some((src_path, dest_path, size, taken_ms, crc))

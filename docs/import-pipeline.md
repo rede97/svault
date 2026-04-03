@@ -38,7 +38,7 @@
                        │ channel（仅 likely_new 的文件）
 ┌──────────────────────▼──────────────────────────────────┐
 │  Stage C: 文件复制（P 线程）                             │
-│  执行实际文件传输（reflink / hardlink / stream）         │
+│  执行实际文件传输。默认 reflink → stream copy；显式可启用 hardlink；`--strategy copy` 时仅执行二进制拷贝，不尝试 reflink/hardlink │
 │  复制到归档目录（本地高速存储）                          │
 └──────────────────────┬──────────────────────────────────┘
                        │ channel

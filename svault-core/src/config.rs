@@ -27,10 +27,10 @@ pub struct GlobalConfig {
 
     /// Default file-transfer strategy for sync operations.
     /// Can be overridden per-command with --strategy.
-    ///   auto     - pick the best available strategy automatically
     ///   reflink  - copy-on-write (btrfs/xfs only)
     ///   hardlink - hardlink (same filesystem only)
     ///   copy     - stream copy (always works)
+    /// Multiple strategies can be combined: ["reflink", "hardlink"]
     #[serde(default)]
     pub sync_strategy: SyncStrategy,
 }
@@ -58,37 +58,137 @@ impl std::fmt::Display for HashAlgorithm {
     }
 }
 
-
-
-/// File-transfer strategy used during sync operations.
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+/// A single strategy argument that can appear in a `--strategy` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(ValueEnum))]
-#[serde(rename_all = "snake_case")]
-pub enum SyncStrategy {
-    /// Pick the best available strategy automatically (default).
-    #[default]
-    Auto,
-    /// Use reflink / copy-on-write (btrfs/xfs only).
+#[cfg_attr(feature = "cli", clap(rename_all = "snake_case"))]
+pub enum TransferStrategyArg {
+    /// Copy-on-write clone (btrfs, xfs, APFS, ReFS).
     Reflink,
-    /// Use hardlinks (same filesystem only).
+    /// Hard link (same filesystem only).
     Hardlink,
     /// Plain stream copy (always works).
     Copy,
 }
 
-impl SyncStrategy {
-    /// Resolve this strategy into a concrete [`TransferStrategy`].
-    pub fn to_transfer_strategy(
-        &self,
-        src_caps: &crate::vfs::FsCapabilities,
-        dst_caps: &crate::vfs::FsCapabilities,
-    ) -> crate::vfs::TransferStrategy {
+impl TransferStrategyArg {
+    pub fn to_transfer_strategy(&self) -> crate::vfs::TransferStrategy {
         match self {
-            SyncStrategy::Auto => src_caps.best_strategy(dst_caps),
-            SyncStrategy::Reflink => crate::vfs::TransferStrategy::Reflink,
-            SyncStrategy::Hardlink => crate::vfs::TransferStrategy::Hardlink,
-            SyncStrategy::Copy => crate::vfs::TransferStrategy::StreamCopy,
+            TransferStrategyArg::Reflink => crate::vfs::TransferStrategy::Reflink,
+            TransferStrategyArg::Hardlink => crate::vfs::TransferStrategy::Hardlink,
+            TransferStrategyArg::Copy => crate::vfs::TransferStrategy::StreamCopy,
         }
+    }
+}
+
+impl Serialize for TransferStrategyArg {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = match self {
+            TransferStrategyArg::Reflink => "reflink",
+            TransferStrategyArg::Hardlink => "hardlink",
+            TransferStrategyArg::Copy => "copy",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for TransferStrategyArg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?.to_lowercase();
+        match s.as_str() {
+            "reflink" => Ok(TransferStrategyArg::Reflink),
+            "hardlink" => Ok(TransferStrategyArg::Hardlink),
+            "copy" => Ok(TransferStrategyArg::Copy),
+            _ => Err(serde::de::Error::custom(format!("unknown strategy: {}", s))),
+        }
+    }
+}
+
+/// File-transfer strategy used during sync/import operations.
+///
+/// Defaults to `[Reflink]`. `StreamCopy` is always attempted as the final
+/// fallback so that transfers never fail completely.
+#[derive(Debug, Clone)]
+pub struct SyncStrategy(pub Vec<TransferStrategyArg>);
+
+impl SyncStrategy {
+    /// Resolve this strategy into a list of concrete [`TransferStrategy`]
+    /// values to be attempted in order.
+    pub fn to_transfer_strategies(&self) -> Vec<crate::vfs::TransferStrategy> {
+        self.0.iter().map(|a| a.to_transfer_strategy()).collect()
+    }
+}
+
+impl Default for SyncStrategy {
+    fn default() -> Self {
+        Self(vec![TransferStrategyArg::Reflink])
+    }
+}
+
+impl Serialize for SyncStrategy {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for arg in &self.0 {
+            seq.serialize_element(arg)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncStrategy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+        use std::fmt;
+
+        struct SyncStrategyVisitor;
+
+        impl<'de> Visitor<'de> for SyncStrategyVisitor {
+            type Value = SyncStrategy;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a strategy string or a list of strategy strings")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let strategies: Result<Vec<_>, _> = value
+                    .split(',')
+                    .map(|s| {
+                        TransferStrategyArg::deserialize(serde::de::value::StrDeserializer::<'_, serde::de::value::Error>::new(s.trim()))
+                            .map_err(de::Error::custom)
+                    })
+                    .collect();
+                Ok(SyncStrategy(strategies?))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut strategies = Vec::new();
+                while let Some(arg) = seq.next_element::<TransferStrategyArg>()? {
+                    strategies.push(arg);
+                }
+                Ok(SyncStrategy(strategies))
+            }
+        }
+
+        deserializer.deserialize_any(SyncStrategyVisitor)
     }
 }
 
@@ -153,7 +253,7 @@ impl Default for Config {
         Self {
             global: GlobalConfig {
                 hash: HashAlgorithm::Xxh3_128,
-                sync_strategy: SyncStrategy::Auto,
+                sync_strategy: SyncStrategy::default(),
             },
             import: ImportConfig {
                 store_exif: false,
