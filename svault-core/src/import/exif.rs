@@ -1,9 +1,14 @@
 //! EXIF metadata extraction for import pipeline.
+//!
+//! Supports:
+//! - EXIF-based formats: JPEG, TIFF, HEIF, PNG, WebP, RAW
+//! - Video formats: MP4, MOV (QuickTime creation_time)
 
+use crate::media::video::extract_video_metadata;
 use std::path::Path;
 
-/// Returns `(taken_ms, device)` from EXIF metadata, with fallbacks.
-/// - `taken_ms`: EXIF `DateTimeOriginal` → `DateTime` → `mtime_ms` fallback
+/// Returns `(taken_ms, device)` from media metadata, with fallbacks.
+/// - `taken_ms`: EXIF `DateTimeOriginal` → `DateTime` → Video `creation_time` → `mtime_ms` fallback
 /// - `device`:   `"Make Model"` sanitised for path use → `"Unknown"` fallback
 pub fn read_exif_date_device(path: &Path, mtime_ms: i64) -> (i64, String) {
     use std::fs::File;
@@ -13,14 +18,28 @@ pub fn read_exif_date_device(path: &Path, mtime_ms: i64) -> (i64, String) {
         return (mtime_ms, "Unknown".to_string());
     };
     let mut reader = BufReader::new(file);
-    let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) else {
-        return (mtime_ms, "Unknown".to_string());
-    };
+    
+    // Try EXIF first (for images)
+    if let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) {
+        return extract_from_exif(&exif, mtime_ms);
+    }
+    
+    // Fallback to video metadata extraction
+    if let Ok(video_meta) = extract_video_metadata(path) {
+        return extract_from_video(video_meta, mtime_ms);
+    }
+    
+    (mtime_ms, "Unknown".to_string())
+}
 
+/// Extract metadata from EXIF data.
+fn extract_from_exif(exif: &exif::Exif, mtime_ms: i64) -> (i64, String) {
+    use exif::In;
+    
     // Date: prefer DateTimeOriginal, fallback to DateTime
     let taken_ms = exif
-        .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
-        .or_else(|| exif.get_field(exif::Tag::DateTime, exif::In::PRIMARY))
+        .get_field(exif::Tag::DateTimeOriginal, In::PRIMARY)
+        .or_else(|| exif.get_field(exif::Tag::DateTime, In::PRIMARY))
         .and_then(|f| {
             if let exif::Value::Ascii(ref vec) = f.value {
                 vec.first().and_then(|b| {
@@ -35,36 +54,56 @@ pub fn read_exif_date_device(path: &Path, mtime_ms: i64) -> (i64, String) {
 
     // Device: "Make Model", sanitised for use as a path component
     let make = exif
-        .get_field(exif::Tag::Make, exif::In::PRIMARY)
+        .get_field(exif::Tag::Make, In::PRIMARY)
         .and_then(|f| exif_ascii_first(&f.value))
         .unwrap_or_default();
     let model = exif
-        .get_field(exif::Tag::Model, exif::In::PRIMARY)
+        .get_field(exif::Tag::Model, In::PRIMARY)
         .and_then(|f| exif_ascii_first(&f.value))
         .unwrap_or_default();
-    let device = if make.is_empty() && model.is_empty() {
-        "Unknown".to_string()
-    } else {
-        let raw = if make.is_empty() || model.starts_with(&make) {
-            model // avoid "Apple Apple iPhone"
-        } else {
-            format!("{make} {model}")
-        };
-        // Replace path-unsafe chars with '_'
-        raw.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>()
-            .trim()
-            .to_string()
-    };
+    let device = sanitize_device_name(&make, &model);
 
     (taken_ms, device)
+}
+
+/// Extract metadata from video metadata.
+fn extract_from_video(meta: crate::media::VideoMetadata, mtime_ms: i64) -> (i64, String) {
+    let taken_ms = meta.creation_time_ms.unwrap_or(mtime_ms);
+    
+    let device = match (meta.device_make.as_ref(), meta.device_model.as_ref()) {
+        (Some(make), Some(model)) => sanitize_device_name(make, model),
+        (None, Some(model)) => sanitize_device_name("", model),
+        (Some(make), None) => sanitize_device_name("", make),
+        (None, None) => "Unknown".to_string(),
+    };
+    
+    (taken_ms, device)
+}
+
+/// Sanitize device name from make and model.
+fn sanitize_device_name(make: &str, model: &str) -> String {
+    if make.is_empty() && model.is_empty() {
+        return "Unknown".to_string();
+    }
+    
+    let raw = if make.is_empty() || model.starts_with(make) {
+        model.to_string() // avoid "Apple Apple iPhone"
+    } else {
+        format!("{} {}", make, model)
+    };
+    
+    // Replace path-unsafe chars with '_'
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn exif_ascii_first(v: &exif::Value) -> Option<String> {

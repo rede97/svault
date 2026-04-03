@@ -10,11 +10,11 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (Unit) | 114 | 114 | 0 | 0 |
+| 单元测试 (Unit) | 117 | 117 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
 | Python E2E 测试 (Linux) | 87 | 85 | 0 | 2 |
 | Python E2E 测试 (Windows) | 87 | 85 | 0 | 2 |
-| **总计** | **288** | **284** | **0** | **4** |
+| **总计** | **291** | **287** | **0** | **4** |
 
 ---
 
@@ -752,6 +752,50 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
   ```
 - [ ] **MTP 导入完整实现** — 当前 `svault mtp ls` 和 `svault mtp tree` 已实现并可用，但 `svault import mtp://...` 存在已知缺陷（如 `MtpFs::create_dir_all` 返回 `Unsupported`、单流传输稳定性不足等），**暂定为 browse-only，从 MTP 设备直接导入的功能尚未完成**。
 
+### 媒体绑定测试计划 (Media Binding Tests)
+
+> 测试 Live Photo 和 RAW+JPEG 的绑定检测与导入行为
+
+| ID | 测试场景 | 描述 | 状态 | 测试文件 |
+|----|---------|------|------|----------|
+| F1 | Live Photo 检测 | `.heic` + `.mov` 同基础名检测为 Live Photo | 🔲 TODO | `test_binding.py` |
+| F2 | Live Photo 导入 | 导入时绑定文件使用相同时间/设备路径 | 🔲 TODO | `test_binding.py` |
+| F3 | RAW+JPEG 检测 | `.dng`/`.arw` + `.jpg` 同基础名检测为 RAW+JPEG | 🔲 TODO | `test_binding.py` |
+| F4 | RAW+JPEG 导入 | RAW 和 JPEG 导入到同一路径层次 | 🔲 TODO | `test_binding.py` |
+| F5 | Burst 序列检测 | `IMG_0001.jpg` ~ `IMG_0005.jpg` 检测为连拍 | 🔲 TODO | `test_binding.py` |
+| F6 | 绑定分离场景 | 部分绑定文件缺失时的导入行为 | 🔲 TODO | `test_binding.py` |
+
+**测试固件生成方案：**
+
+```python
+# E2E 测试固件: Live Photo
+# - IMG_1234.HEIC (HEIF 图片，含 EXIF)
+# - IMG_1234.MOV (QuickTime，含 creation_time)
+
+# E2E 测试固件: RAW+JPEG
+# - IMG_1234.DNG (Adobe DNG，含 EXIF)
+# - IMG_1234.JPG (JPEG，含 EXIF)
+
+# 固件生成工具: ffmpeg (视频) + exiftool (元数据)
+def create_live_photo_fixture(base_name: str, timestamp: datetime):
+    # 使用 ffmpeg 生成带 creation_time 的 MOV
+    # 使用 PIL + exiftool 生成带 EXIF 的 HEIC/JPEG
+    pass
+```
+
+### 视频元数据提取测试计划 (Video Metadata Tests)
+
+> 测试视频文件的元数据提取功能（`media/video.rs`）
+
+| ID | 测试场景 | 描述 | 状态 | 测试文件 |
+|----|---------|------|------|----------|
+| V1 | MP4 creation_time (v0) | 32-bit 时间戳解析 | ✅ DONE | `video.rs` 单元测试 |
+| V2 | MP4 creation_time (v1) | 64-bit 时间戳解析 | ✅ DONE | `video.rs` 单元测试 |
+| V3 | MOV creation_time | QuickTime 格式解析 | 🔲 TODO | E2E 测试 |
+| V4 | 视频设备信息 | 从 udta/meta box 提取设备名 | 🔲 TODO | E2E 测试 |
+| V5 | MTS 时间戳 | AVCHD 格式时间戳提取 | 🔲 TODO | E2E 测试 |
+| V6 | 视频导入路径 | 视频按 creation_time 组织到 `$year/$mon/$day` | 🔲 TODO | `test_media_formats.py` |
+
 ---
 
 ## 更新记录
@@ -780,6 +824,8 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 | 2026-04-04 | **多媒体格式 E2E 测试**：添加 `test_media_formats.py`，覆盖 PNG/TIFF/HEIC/DNG/MP4/MOV 格式（19 个测试），支持 ffmpeg 检测 | Kimi |
 | 2026-04-04 | **性能测试和模糊测试计划**：将质量报告中的未完成项添加到测试计划，包括性能基准、cargo-fuzz 模糊测试路线图 | Kimi |
 | 2026-04-04 | **删除 review-report.md**：质量报告中的待办事项已同步到 UNIT_TESTS.md，原文件删除 | Kimi |
+| 2026-04-04 | **视频元数据提取**：实现 MP4/MOV `creation_time` 解析（`media/video.rs`），支持 ISO BMFF 格式；新增 3 个单元测试；E2E 待补充 | Kimi |
+| 2026-04-04 | **Live Photo/RAW+JPEG 测试计划**：添加待办测试项到功能规划章节（F1-F6）| Kimi |
 
 ---
 

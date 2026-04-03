@@ -33,9 +33,11 @@ use thiserror::Error;
 mod binding;
 mod crc;
 mod formats;
+pub mod video;
 
 pub use binding::{BindingDetector, BindingKind, MediaBinding};
 pub use formats::{FormatRegistry, MediaFormat};
+pub use video::{extract_video_metadata, VideoMetadata};
 
 /// Errors that can occur during media operations.
 #[derive(Error, Debug)]
