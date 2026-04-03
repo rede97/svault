@@ -783,6 +783,42 @@ def create_live_photo_fixture(base_name: str, timestamp: datetime):
     pass
 ```
 
+### 空间不足测试计划 (Disk Full Tests)
+
+> 测试磁盘空间不足时的导入行为和错误处理
+> 
+> CLI 退出码定义：`4` = 目标空间不足
+
+| ID | 测试场景 | 描述 | 状态 | 测试方法 |
+|----|---------|------|------|----------|
+| D1 | 小容量 RAMDisk 导入 | 创建 1MB RAMDisk，导入 5MB 文件，验证优雅失败 | 🔲 TODO | 创建小型 tmpfs |
+| D2 | 部分导入后空间不足 | 导入成功几个文件后空间耗尽，验证事务一致性 | 🔲 TODO | 动态填充磁盘 |
+| D3 | 大文件预留检查 | 导入前检查文件大小是否超过可用空间 | 🔲 TODO | 模拟大文件 |
+| D4 | 空间不足后恢复 | 清理空间后再次导入，验证可以正常继续 | 🔲 TODO | 清理后重试 |
+
+**技术方案：**
+
+```python
+# 使用小型 tmpfs 模拟空间不足
+def create_small_ramdisk(size_mb: int = 1):
+    # mount -t tmpfs -o size=1m tmpfs /tmp/small-ramdisk
+    pass
+
+# 或使用 dd 填充现有 RAMDisk
+def fill_disk_until_full(path: Path, reserve_bytes: int = 0):
+    # 创建填充文件直到 ENOSPC
+    pass
+
+# 预期行为验证
+def test_out_of_space_handling():
+    # 1. 创建 1MB RAMDisk
+    # 2. 初始化 vault
+    # 3. 尝试导入 5MB 文件
+    # 4. 验证返回 exit code 4
+    # 5. 验证 vault 状态一致（无残留）
+    pass
+```
+
 ### 视频元数据提取测试计划 (Video Metadata Tests)
 
 > 测试视频文件的元数据提取功能（`media/video.rs`）
@@ -826,6 +862,7 @@ def create_live_photo_fixture(base_name: str, timestamp: datetime):
 | 2026-04-04 | **删除 review-report.md**：质量报告中的待办事项已同步到 UNIT_TESTS.md，原文件删除 | Kimi |
 | 2026-04-04 | **视频元数据提取**：实现 MP4/MOV `creation_time` 解析（`media/video.rs`），支持 ISO BMFF 格式；新增 3 个单元测试；E2E 待补充 | Kimi |
 | 2026-04-04 | **Live Photo/RAW+JPEG 测试计划**：添加待办测试项到功能规划章节（F1-F6）| Kimi |
+| 2026-04-04 | **空间不足测试计划**：添加磁盘满（ENOSPC）场景的测试设计（D1-D4）| Kimi |
 
 ---
 
