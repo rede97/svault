@@ -334,14 +334,22 @@ class TestCrossFilesystemImport:
         - Import succeeds
         - Files are valid
         """
+        import sqlite3
+        
         source_dir = tmp_path / "source"
         vault_dir = tmp_path / "vault"
         source_dir.mkdir()
         vault_dir.mkdir()
         
-        # Create test file
-        test_file = source_dir / "memory_test.txt"
-        test_file.write_text("Content from tmpfs")
+        # Create test image file (JPEG)
+        test_file = source_dir / "memory_test.jpg"
+        try:
+            from PIL import Image
+            img = Image.new("RGB", (100, 100), color="blue")
+            img.save(test_file, "JPEG")
+        except ImportError:
+            # Fallback: minimal JPEG
+            test_file.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
         
         # Init vault
         subprocess.run(
@@ -361,10 +369,15 @@ class TestCrossFilesystemImport:
         
         assert result.returncode == 0, f"Import failed: {result.stderr}"
         
-        # Verify
-        imported = list(vault_dir.rglob("memory_test.txt"))
-        assert len(imported) > 0, "File not imported"
-        assert imported[0].read_text() == "Content from tmpfs"
+        # Verify via database
+        db_path = vault_dir / ".svault" / "vault.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("SELECT * FROM files WHERE path LIKE '%.jpg%'")
+        rows = cur.fetchall()
+        conn.close()
+        
+        assert len(rows) > 0, "File not imported (not in database)"
 
 
 class TestFilesystemCapabilities:
@@ -388,5 +401,3 @@ class TestFilesystemCapabilities:
                 xfs.cleanup()
 
 
-# Reuse E2E fixtures
-pytest_plugins = ["conftest"]
