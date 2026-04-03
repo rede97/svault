@@ -138,7 +138,7 @@ class TestPartialExif:
         if EXIFTOOL_AVAILABLE:
             import subprocess
             subprocess.run([
-                "exiftool", "-overwrite_original",
+                "exiftool", "-overwrite_original", "-P",  # -P preserves modification time
                 "-Make=TestCamera", "-Model=TestModel",
                 str(test_file)
             ], capture_output=True)

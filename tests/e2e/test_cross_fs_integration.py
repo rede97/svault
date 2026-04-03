@@ -359,9 +359,9 @@ class TestCrossFilesystemImport:
             capture_output=True,
         )
         
-        # Import
+        # Import with --yes to skip confirmation
         result = subprocess.run(
-            [str(svault_binary), "import", str(source_dir)],
+            [str(svault_binary), "--yes", "import", str(source_dir)],
             cwd=vault_dir,
             capture_output=True,
             text=True,

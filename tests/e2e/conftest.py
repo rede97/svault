@@ -599,10 +599,71 @@ def create_minimal_jpeg(path: Path, content_marker: str = "") -> None:
     Args:
         path: Output file path
         content_marker: String to embed in image data for uniqueness
+    
+    Note:
+        Uses PIL if available, otherwise falls back to a basic JPEG structure
+        that is compatible with exiftool.
     """
-    header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-    marker_bytes = content_marker.encode() if content_marker else b''
-    path.write_bytes(header + marker_bytes + b'\xff\xd9')
+    try:
+        from PIL import Image
+        # Create a small valid JPEG that exiftool can process
+        img = Image.new('RGB', (16, 16), color=(128, 128, 128))
+        img.save(path, format='JPEG', quality=85)
+        
+        # Append content marker for uniqueness if needed
+        if content_marker:
+            with open(path, 'ab') as f:
+                f.write(b'\n' + content_marker.encode())
+    except ImportError:
+        # Fallback: Create a minimal but valid JPEG structure
+        # This is a 1x1 pixel gray JPEG with proper segment structure
+        # Structure: SOI + APP0 (JFIF) + DQT + SOF0 + DHT + SOS + EOI
+        import io
+        
+        # Build a minimal valid JPEG
+        data = io.BytesIO()
+        
+        # SOI (Start of Image)
+        data.write(b'\xff\xd8')
+        
+        # APP0 (JFIF marker) - properly formatted
+        app0 = b'JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+        data.write(b'\xff\xe0')
+        data.write((len(app0) + 2).to_bytes(2, 'big'))
+        data.write(app0)
+        
+        # DQT (Define Quantization Table) - minimal
+        dqt = bytes([0] + [16] * 64)  # Table 0, all values = 16
+        data.write(b'\xff\xdb')
+        data.write((len(dqt) + 2).to_bytes(2, 'big'))
+        data.write(dqt)
+        
+        # SOF0 (Start of Frame - Baseline DCT)
+        sof = bytes([8, 0, 1, 0, 1, 1, 0x11, 0])  # 8-bit, 1x1 pixel, 1 component
+        data.write(b'\xff\xc0')
+        data.write((len(sof) + 2).to_bytes(2, 'big'))
+        data.write(sof)
+        
+        # DHT (Define Huffman Table) - minimal DC table
+        dht = bytes([0x00] + [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 
+                     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        data.write(b'\xff\xc4')
+        data.write((len(dht) + 2).to_bytes(2, 'big'))
+        data.write(dht)
+        
+        # SOS (Start of Scan)
+        sos = bytes([1, 1, 0, 0, 0x3f, 0])  # 1 component, component 1, table 0
+        data.write(b'\xff\xda')
+        data.write((len(sos) + 2).to_bytes(2, 'big'))
+        data.write(sos)
+        
+        # Minimal scan data (1 MCU)
+        data.write(b'\x00')
+        
+        # EOI (End of Image)
+        data.write(b'\xff\xd9')
+        
+        path.write_bytes(data.getvalue())
 
 
 def create_minimal_png(path: Path, content_marker: str = "") -> None:
