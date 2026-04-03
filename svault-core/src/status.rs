@@ -129,7 +129,7 @@ pub fn render_human(report: &StatusReport) -> String {
     
     if report.stats.pending_sha256_count > 0 {
         // Dim italic gray hint (ANSI: \x1b[3m = italic, \x1b[90m = bright black/gray, \x1b[0m = reset)
-        output.push_str("\n\x1b[3m\x1b[90m💡 Run `svault background-hash` to compute pending hashes\x1b[0m\n\n");
+        output.push_str("\n\x1b[3m\x1b[90m💡 Run `svault verify --background-hash` to compute pending hashes\x1b[0m\n\n");
     } else {
         output.push('\n');
     }

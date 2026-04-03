@@ -59,6 +59,7 @@ svault import <source> [options]
 | `<source>` | | 源目录或挂载点（必填，位置参数） |
 | `--target <path>` | | 目标归档目录（默认使用配置文件中的 vault 路径） |
 | `--hash <algo>` | `-H` | 哈希算法：`fast`（XXH3-128，高吞吐，默认）/ `secure`（SHA-256，加密强度）。优先级：CLI > `svault.toml [global].hash` > 内置默认值（`fast`）|
+| `--files-from <path>` | | （规划中）从文件读取要导入的相对路径列表，跳过完整扫描 |
 
 **清单文件：**
 
@@ -175,6 +176,9 @@ svault verify [options]
 | `--file <path>` | 仅校验指定文件 |
 | `--recent <seconds>` | 仅校验最近 N 秒内导入的文件 |
 | `--upgrade-links` | 将 hardlink 文件原地升级为独立二进制拷贝 |
+| `--background-hash` | 在验证前补齐缺失的 SHA-256 |
+| `--background-hash-limit <N>` | `--background-hash` 时最多处理的文件数 |
+| `--background-hash-nice` | `--background-hash` 时以低 IO 优先级运行 |
 
 **输出示例：**
 ```
@@ -239,20 +243,46 @@ seq  time                  event                  entity
 
 ---
 
-### `svault background-hash`
 
-对 `sha256 = NULL` 的文件执行后台 SHA-256 补全计算。
+
+### `svault scan`（规划中）
+
+仅执行扫描阶段（Stage A/B），输出可能新增的文件列表，供外部工具过滤后再定向导入。
 
 ```
-svault background-hash [options]
+svault scan <source> [options]
 ```
 
 | 选项 | 说明 |
 |------|------|
-| `--limit <n>` | 本次最多处理的文件数 |
-| `--nice` | 以低优先级运行（IO nice），减少对系统的影响 |
+| `<source>` | 源目录（必填） |
+| `--show-dup` | 显示被判定为重复的文件 |
+| `--force` | 将被缓存判定为重复的文件也标记为 likely-new |
 
-通常由系统空闲触发，也可手动执行。完成后写入 `file.sha256_resolved` 事件。
+**典型管道工作流：**
+```bash
+svault scan /mnt/card > candidates.txt
+exiftool -p '$Directory/$FileName' -if '$Model eq "iPhone 15"' /mnt/card > iphone.txt
+svault import /mnt/card --files-from iphone.txt
+```
+
+---
+
+### `svault mtp`
+
+> ⚠️ **实验性 / 未完成**：`mtp ls` 和 `mtp tree` 可用，但 `svault import mtp://...` 存在已知缺陷（如 `create_dir_all` 不支持、单流传输稳定性不足），**暂定为 browse-only，直接导入功能尚未完成**。
+
+浏览已连接的 MTP 设备（如 Android 手机、相机）。
+
+```
+svault mtp ls [mtp://<device>/<path>]
+svault mtp tree mtp://<device>/<path> --depth 3
+```
+
+| 子命令 | 说明 |
+|--------|------|
+| `ls [path]` | 列出设备、存储或目录内容 |
+| `tree <path>` | 以树形结构浏览设备目录 |
 
 ---
 

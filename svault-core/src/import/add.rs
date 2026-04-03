@@ -56,7 +56,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         "{} Scanning {} files in {}",
         style("Adding:").bold().cyan(),
         style(total).cyan(),
-        style(opts.path.display()).dim()
+        style(opts.path.display())
     );
 
     let bar = ProgressBar::new(total as u64);
@@ -128,7 +128,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         let hash_bytes = match hash_result {
             Ok(b) => b,
             Err(msg) => {
-                eprintln!("  {} {} - {}", style("Error").red(), style(rel_path.display()).dim(), msg);
+                eprintln!("  {} {} - {}", style("Error").red(), style(rel_path.display()), msg);
                 summary.failed += 1;
                 continue;
             }
@@ -164,13 +164,13 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
                 Ok(())
             },
         ) {
-            eprintln!("  {} {} - {}", style("Error").red(), style(rel_path.display()).dim(), e);
+            eprintln!("  {} {} - {}", style("Error").red(), style(rel_path.display()), e);
             summary.failed += 1;
             continue;
         }
 
         summary.added += 1;
-        eprintln!("  {} {}", style("Added").green(), style(rel_path.display()).dim());
+        eprintln!("  {} {}", style("Added").green(), style(rel_path.display()));
     }
 
     eprintln!();
@@ -179,7 +179,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         eprintln!("         {} duplicate(s) skipped", style(summary.duplicate).yellow());
     }
     if summary.skipped > 0 {
-        eprintln!("         {} already tracked", style(summary.skipped).dim());
+        eprintln!("         {} already tracked", style(summary.skipped));
     }
     if summary.failed > 0 {
         eprintln!("         {} file(s) failed", style(summary.failed).red());

@@ -12,9 +12,9 @@
 |------|------|------|------|------|
 | 单元测试 (Unit) | 35 | 32 | 0 | 3 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 (Linux) | 74 | 72 | 0 | 2 |
-| Python E2E 测试 (Windows) | 74 | 72 | 0 | 2 |
-| **总计** | **183** | **176** | **0** | **7** |
+| Python E2E 测试 (Linux) | 87 | 85 | 0 | 2 |
+| Python E2E 测试 (Windows) | 87 | 85 | 0 | 2 |
+| **总计** | **209** | **201** | **0** | **7** |
 
 ---
 
@@ -157,6 +157,35 @@
 | vy5 | `test_verify_with_sha256` | 使用 `secure` 算法验证 | ✅ PASS | `test_verify.py` |
 | vy6 | `test_verify_with_xxh3_128` | 使用 `fast` 算法验证 | ✅ PASS | `test_verify.py` |
 
+### History 场景
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| h1 | `test_history_shows_import_events` | `history` 显示 `file.imported` 事件 | ✅ PASS | `test_history.py` |
+| h2 | `test_history_json_output` | `history --output=json` 输出有效 JSON | ✅ PASS | `test_history.py` |
+| h3 | `test_history_filter_by_event_type` | `--event-type` 过滤特定事件 | ✅ PASS | `test_history.py` |
+| h4 | `test_history_filter_by_file_path` | `--file` 过滤特定文件事件 | ✅ PASS | `test_history.py` |
+| h5 | `test_history_limit` | `--limit` 限制返回事件数 | ✅ PASS | `test_history.py` |
+| h6 | `test_history_filter_by_date_range` | `--from`/`--to` 时间范围过滤 | ✅ PASS | `test_history.py` |
+
+### Background Hash 场景
+
+> 注：`background-hash` 已并入 `verify` 命令，通过 `svault verify --background-hash` 调用。
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| bh1 | `test_background_hash_computes_missing_sha256` | `verify --background-hash` 补齐 fast hash 导入后缺失的 SHA-256 | ✅ PASS | `test_background_hash.py` |
+| bh2 | `test_background_hash_no_pending_files` | 无 pending 文件时返回 0 | ✅ PASS | `test_background_hash.py` |
+| bh3 | `test_background_hash_limit` | `--background-hash-limit` 限制处理数量 | ✅ PASS | `test_background_hash.py` |
+| bh4 | `test_background_hash_nice_does_not_fail` | `--background-hash-nice` 低优先级运行不报错 | ✅ PASS | `test_background_hash.py` |
+
+### Hardlink Upgrade 场景
+
+| ID | 场景 | 描述 | 状态 | 备注 |
+|----|------|------|------|------|
+| hl1 | `test_upgrade_hardlink_during_verify` | `verify --upgrade-links` 将 hardlink 升级为独立副本 | ✅ PASS | `test_hardlink_upgrade.py` |
+| hl2 | `test_upgrade_links_no_op_for_regular_files` | 普通文件不触发升级 | ✅ PASS | `test_hardlink_upgrade.py` |
+
 ---
 
 ## 测试覆盖率目标
@@ -197,6 +226,20 @@
 - [ ] 各种文件系统（btrfs/xfs/ext4）行为测试
 - [ ] 网络文件系统（NFS/SMB）行为测试
 
+### 功能/命令规划待办（暂不实现）
+
+> 以下功能已纳入设计，但暂时不修改代码，仅作为后续开发路线图记录。
+
+- [ ] **`svault scan <source>`** — 仅执行 Stage A/B 扫描（目录遍历 + CRC32C 缓存查询），输出 `likely-new` 文件列表（每行一个相对路径）。支持的扫描/判断参数与 `import` 对齐，包括 `--hash`、`--strategy`、`--show-dup`、`--force`、`--target` 等。不执行复制、不写数据库、不写 manifest。
+- [ ] **`svault import --files-from <path>`** — 从文本文件（或 `-` 表示标准输入）读取相对路径列表，跳过完整目录扫描，仅对列表中指定的文件执行后续导入流程（Stage C/E）。路径格式为相对于 `<source>` 的相对路径。
+- [ ] **管道工作流（Pipeline workflow）** — 结合 `scan` 与 `--files-from` 支持 Unix 管道式筛选：
+  ```bash
+  svault scan /mnt/card > candidates.txt
+  exiftool -p '$Directory/$FileName' -if '$Model eq "iPhone 15"' /mnt/card > iphone.txt
+  svault import /mnt/card --files-from iphone.txt
+  ```
+- [ ] **MTP 导入完整实现** — 当前 `svault mtp ls` 和 `svault mtp tree` 已实现并可用，但 `svault import mtp://...` 存在已知缺陷（如 `MtpFs::create_dir_all` 返回 `Unsupported`、单流传输稳定性不足等），**暂定为 browse-only，从 MTP 设备直接导入的功能尚未完成**。
+
 ---
 
 ## 更新记录
@@ -214,6 +257,7 @@
 | 2026-04-02 | 实现 `svault add` / `reconcile`；Verify 统一使用全局 hash 配置、统一进度条和输出风格；CLI hash 参数简化为 `fast`/`secure`；E2E 新增 `test_add.py`、`test_reconcile.py`，更新 `test_verify.py`；全部 71 passed | Kimi |
 | 2026-04-02 | 修复 Windows 构建错误（替换 `GetVolumeInformationW`/`CopyFileExW`）；适配 E2E 测试到 Windows（72 passed）；添加 `run.ps1` 脚本；更新测试文档 | Kimi |
 | 2026-04-04 | `--strategy` 重构：移除 `auto`，默认 `reflink`，支持逗号组合；同步更新文档和测试覆盖记录；补充 Chaos 场景状态 | Kimi |
+| 2026-04-04 | 新增 `history`、`background-hash`、`verify --upgrade-links` E2E 测试；修复 `conftest.py` 中 `db_query` 缺少 `commit()` 的问题；E2E 更新至 85 passed | Kimi |
 
 ---
 

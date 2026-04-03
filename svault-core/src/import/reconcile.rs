@@ -156,13 +156,13 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
         eprintln!(
             "  {}  {} -> {}",
             style("→").green(),
-            style(&m.old_path).dim(),
+            style(&m.old_path),
             style(&m.new_path).green()
         );
     }
 
     if matches.is_empty() {
-        eprintln!("  {} No relocated files detected.", style("-").dim());
+        eprintln!("  {} No relocated files detected.", style("-"));
     }
 
     // 4. Dry-run or confirm
@@ -213,7 +213,7 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
     eprintln!("  Scanned:    {}", style(scanned).cyan());
     eprintln!("  Missing:    {}", style(missing_count).yellow());
     eprintln!("  Matched:    {}", style(matched).green());
-    eprintln!("  Unmatched:  {}", style(unmatched).dim());
+    eprintln!("  Unmatched:  {}", style(unmatched));
     if !opts.dry_run {
         eprintln!("  Updated:    {}", style(updated).green());
     }

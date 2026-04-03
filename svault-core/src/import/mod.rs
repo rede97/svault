@@ -99,7 +99,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     eprintln!("{} {} files in {}", 
         style("Scanning").bold().cyan(),
         style(total).cyan(),
-        style(opts.source.display()).dim());
+        style(opts.source.display()));
     
     let scan_entries: Vec<ScanEntry> = crcs
         .into_iter()
@@ -114,7 +114,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 Err(err) => {
                     eprintln!("  {} {}", 
                         style("Error").red(), 
-                        style(&rel_path).dim());
+                        style(&rel_path));
                     return ScanEntry {
                         src_path: abs, size: e.size, mtime_ms: e.mtime_ms,
                         crc32c: 0,
@@ -142,12 +142,12 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 FileStatus::LikelyNew => {
                     eprintln!("  {} {}", 
                         style("Found").green(), 
-                        style(&rel_path).dim());
+                        style(&rel_path));
                 }
                 FileStatus::LikelyCacheDuplicate if opts.show_dup => {
                     eprintln!("  {} {}", 
                         style("Duplicate").yellow(), 
-                        style(&rel_path).dim());
+                        style(&rel_path));
                 }
                 _ => {}
             }
@@ -173,11 +173,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     eprintln!("{}", style("Pre-flight:").bold());
     eprintln!("  {}  {}",
         style(format!("Likely new:       {:>6}", likely_new.len())).green(),
-        style("will be imported").dim());
+        style("will be imported"));
     if likely_dup > 0 {
         eprintln!("  {}  {}",
             style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
-            style("already in vault (cache hit)").dim());
+            style("already in vault (cache hit)"));
     }
     if failed_b > 0 {
         eprintln!("  {}",
@@ -206,7 +206,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     eprintln!();
     eprintln!("{} {}",
         style("Staging list:").bold(),
-        style(staging_path.display()).dim());
+        style(staging_path.display()));
 
     if !opts.yes && !opts.dry_run {
         eprint!("{}", style("Proceed with import? [y/N] ").bold());
@@ -307,7 +307,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                     .insert(src_path.clone(), "File deleted during import".to_string());
                 copy_bar.println(format!("  {} {} - {}",
                     style("Error").red(),
-                    style(&filename).dim(),
+                    style(&filename),
                     "File deleted during import"));
                 copy_bar.inc(1);
                 return None;
@@ -325,7 +325,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 if current_size != size || current_mtime != mtime_ms {
                     copy_bar.println(format!("  {} {} - {}",
                         style("Warning").yellow(),
-                        style(&filename).dim(),
+                        style(&filename),
                         "File modified during import, using current version"));
                     // Continue with copy, but note that hash may differ
                 }
@@ -352,7 +352,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         .to_string();
                     copy_bar.println(format!("  {} {}",
                         style("Added").green(),
-                        style(vault_rel).dim()));
+                        style(vault_rel)));
                     copy_bar.set_message(filename);
                     copy_bar.inc(1);
                     Some((src_path, dest_abs, size, mtime_ms, crc32c))

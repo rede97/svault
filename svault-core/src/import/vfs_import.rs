@@ -198,7 +198,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         "{} {} files from {}",
         style("Scanning").bold().cyan(),
         style(total).cyan(),
-        style(&opts.source_name).dim()
+        style(&opts.source_name)
     );
 
     let scan_entries: Vec<ScanEntry> = crcs
@@ -213,7 +213,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
 
             let crc = match crc_result {
                 Err(err) => {
-                    eprintln!("  {} {}", style("Error").red(), style(&rel_path).dim());
+                    eprintln!("  {} {}", style("Error").red(), style(&rel_path));
                     return ScanEntry {
                         src_path: e.path,
                         size: e.size,
@@ -239,7 +239,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
 
             match status {
                 FileStatus::LikelyNew => {
-                    eprintln!("  {} {}", style("Found").green(), style(&rel_path).dim());
+                    eprintln!("  {} {}", style("Found").green(), style(&rel_path));
                 }
                 FileStatus::LikelyCacheDuplicate if opts.show_dup => {
                     eprintln!(
@@ -279,12 +279,12 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     eprintln!(
         "  {}  {}",
         style(format!("Likely new:       {:>6}", likely_new.len())).green(),
-        style("will be imported").dim()
+        style("will be imported")
     );
     eprintln!(
         "  {}  {}",
         style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
-        style("already in vault (cache hit)").dim()
+        style("already in vault (cache hit)")
     );
     if failed_b > 0 {
         eprintln!(
@@ -335,7 +335,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     eprintln!(
         "{} {}",
         style("Staging list:").bold(),
-        style(staging_path.display()).dim()
+        style(staging_path.display())
     );
 
     if !opts.yes && !opts.dry_run {
@@ -516,7 +516,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 .join(".svault")
                 .join(format!("import-{session_id}-interrupted.pending"));
             if write_pending_vfs(&pending_path, &opts.source_name, &session_id, &pending_entries).is_ok() {
-                eprintln!("{}", style(format!("Unimported files saved to: {}", pending_path.display())).dim());
+                eprintln!("{}", style(format!("Unimported files saved to: {}", pending_path.display())));
             }
         }
         
@@ -650,17 +650,17 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     eprintln!(
         "  {} {}",
         style(imported).green().bold(),
-        style("files imported").dim()
+        style("files imported")
     );
     eprintln!(
         "  {} {}",
         style(likely_dup).yellow(),
-        style("duplicates skipped").dim()
+        style("duplicates skipped")
     );
     eprintln!(
         "  {} {}",
         style(failed_b + copy_errors.lock().unwrap().len()).red(),
-        style("failed").dim()
+        style("failed")
     );
     eprintln!();
     eprintln!("{} {}", style("Manifest:").bold(), manifest_path.display());

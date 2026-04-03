@@ -7,6 +7,7 @@ pub mod manifest;
 
 use std::path::Path;
 
+use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
@@ -137,7 +138,7 @@ pub fn verify_all(
 
     let bar = ProgressBar::new(total as u64);
     bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
             .unwrap()
             .progress_chars("=> "),
     );
@@ -156,6 +157,13 @@ pub fn verify_all(
             bar.set_message(filename);
 
             let result = verify_file(&vault_root, &file, &algo);
+            if result.is_ok() {
+                bar.println(format!(
+                    "  {} {}",
+                    style("Verified").green(),
+                    style(&file.path)
+                ));
+            }
             bar.inc(1);
             (file.path, result)
         })
@@ -208,7 +216,7 @@ pub fn verify_recent(
 
     let bar = ProgressBar::new(total as u64);
     bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
             .unwrap()
             .progress_chars("=> "),
     );
@@ -227,6 +235,13 @@ pub fn verify_recent(
             bar.set_message(filename);
 
             let result = verify_file(&vault_root, &file, &algo);
+            if result.is_ok() {
+                bar.println(format!(
+                    "  {} {}",
+                    style("Verified").green(),
+                    style(&file.path)
+                ));
+            }
             bar.inc(1);
             (file.path, result)
         })

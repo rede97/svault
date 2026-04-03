@@ -68,9 +68,9 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
         "{} Rechecking {} files from session {}",
         style("Recheck:").bold().cyan(),
         style(total).cyan(),
-        style(&manifest.session_id).dim()
+        style(&manifest.session_id)
     );
-    eprintln!("  Source: {}", style(manifest.source_root.display()).dim());
+    eprintln!("  Source: {}", style(manifest.source_root.display()));
     eprintln!();
     eprintln!("{} {}",
         style("Caution:").yellow().bold(),
@@ -202,41 +202,41 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
     eprintln!(
         "  {} {}",
         style(format!("OK:               {:>6}", ok)).green(),
-        style("source and vault match manifest").dim()
+        style("source and vault match manifest")
     );
     if source_modified > 0 {
         eprintln!(
             "  {} {}",
             style(format!("Source modified:  {:>6}", source_modified)).yellow(),
-            style("vault is intact").dim()
+            style("vault is intact")
         );
     }
     if vault_corrupted > 0 {
         eprintln!(
             "  {} {}",
             style(format!("Vault corrupted:  {:>6}", vault_corrupted)).red(),
-            style("source is intact").dim()
+            style("source is intact")
         );
     }
     if both_diverged > 0 {
         eprintln!(
             "  {} {}",
             style(format!("Both diverged:    {:>6}", both_diverged)).red().bold(),
-            style("neither matches manifest").dim()
+            style("neither matches manifest")
         );
     }
     if source_deleted > 0 {
         eprintln!(
             "  {} {}",
             style(format!("Source deleted:   {:>6}", source_deleted)).yellow(),
-            style("source file missing").dim()
+            style("source file missing")
         );
     }
     if vault_deleted > 0 {
         eprintln!(
             "  {} {}",
             style(format!("Vault deleted:    {:>6}", vault_deleted)).red(),
-            style("vault file missing").dim()
+            style("vault file missing")
         );
     }
     if errors > 0 {
@@ -323,7 +323,7 @@ fn write_report(
     eprintln!(
         "{} {}",
         style("Report:").bold(),
-        style(report_path.display()).dim()
+        style(report_path.display())
     );
     Ok(())
 }

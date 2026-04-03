@@ -318,6 +318,7 @@ class VaultEnv:
         conn.row_factory = sqlite3.Row
         try:
             cur = conn.execute(query)
+            conn.commit()
             rows = [dict(row) for row in cur.fetchall()]
             return rows
         finally:

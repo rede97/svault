@@ -173,6 +173,18 @@ pub enum Command {
         /// Upgrade hardlinked files to independent binary copies during verification
         #[arg(long)]
         upgrade_links: bool,
+
+        /// Compute missing SHA-256 hashes before verifying
+        #[arg(long)]
+        background_hash: bool,
+
+        /// Maximum number of files to process when --background-hash is used
+        #[arg(long, value_name = "N")]
+        background_hash_limit: Option<usize>,
+
+        /// Run at low IO priority when --background-hash is used
+        #[arg(long)]
+        background_hash_nice: bool,
     },
 
     /// Show vault statistics
@@ -199,17 +211,6 @@ pub enum Command {
         /// Maximum number of events to show
         #[arg(long, default_value = "50", value_name = "N")]
         limit: usize,
-    },
-
-    /// Compute missing SHA-256 hashes
-    BackgroundHash {
-        /// Maximum number of files to process in this run
-        #[arg(long, value_name = "N")]
-        limit: Option<usize>,
-
-        /// Run at low IO priority to minimise system impact
-        #[arg(long)]
-        nice: bool,
     },
 
     /// Clone a subset to a working directory

@@ -169,41 +169,41 @@ fn print_verify_results(
     println!(
         "  {} {}",
         style(format!("OK:               {:>6}", summary.ok)).green(),
-        style("verified successfully").dim()
+        style("verified successfully")
     );
     if summary.missing > 0 {
         println!(
             "  {} {}",
             style(format!("Missing:          {:>6}", summary.missing)).red(),
-            style("file not found on disk").dim()
+            style("file not found on disk")
         );
     }
     if summary.size_mismatch > 0 {
         println!(
             "  {} {}",
             style(format!("Size mismatch:    {:>6}", summary.size_mismatch)).red(),
-            style("file size differs from database").dim()
+            style("file size differs from database")
         );
     }
     if summary.hash_mismatch > 0 {
         println!(
             "  {} {}",
             style(format!("Hash mismatch:    {:>6}", summary.hash_mismatch)).red(),
-            style("hash does not match database").dim()
+            style("hash does not match database")
         );
     }
     if summary.io_error > 0 {
         println!(
             "  {} {}",
             style(format!("IO error:         {:>6}", summary.io_error)).red(),
-            style("unable to read file").dim()
+            style("unable to read file")
         );
     }
     if summary.hash_not_available > 0 {
         println!(
             "  {} {}",
             style(format!("Hash pending:     {:>6}", summary.hash_not_available)).yellow(),
-            style("hash not yet computed").dim()
+            style("hash not yet computed")
         );
     }
 
@@ -396,7 +396,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             svault_core::import::reconcile::run_reconcile(opts, &db)?;
             Ok(())
         }
-        Command::Verify { hash, file, recent, upgrade_links } => {
+        Command::Verify { hash, file, recent, upgrade_links, background_hash, background_hash_limit, background_hash_nice } => {
             use svault_core::verify::{verify_all, verify_single, verify_recent, VerifyResult};
             use console::style;
 
@@ -406,6 +406,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
             let config = svault_core::config::Config::load(&vault_root)?;
             let algo = hash.unwrap_or(config.global.hash.clone());
+
+            if background_hash {
+                let opts = svault_core::background_hash::BackgroundHashOptions {
+                    vault_root: vault_root.clone(),
+                    limit: background_hash_limit,
+                    nice: background_hash_nice,
+                };
+                let summary = svault_core::background_hash::run_background_hash(opts, &db)?;
+                println!(
+                    "Processed {} file(s), {} failed.",
+                    summary.processed, summary.failed
+                );
+            }
 
             if upgrade_links {
                 // Upgrade hardlinked files before verification.
@@ -562,24 +575,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::BackgroundHash { limit, nice } => {
-            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
-            let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
 
-            let opts = svault_core::background_hash::BackgroundHashOptions {
-                vault_root: vault_root.clone(),
-                limit,
-                nice,
-            };
-            let summary = svault_core::background_hash::run_background_hash(opts, &db)?;
-            println!(
-                "Processed {} file(s), {} failed.",
-                summary.processed, summary.failed
-            );
-            Ok(())
-        }
         Command::Clone { .. } => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
