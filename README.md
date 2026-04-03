@@ -42,9 +42,9 @@ Svault is in active development. Core commands `init`, `import`, and `status` ar
 | `svault mtp tree` | ✅ Implemented | Display MTP device structure as tree |
 | `svault recheck` | ✅ Implemented | Re-check an import session against both source and vault |
 | `svault verify` | ✅ Implemented | Verify file integrity |
-| `svault add` | 📝 Stub | Register files already in vault |
+| `svault add` | ✅ Implemented | Register files already in vault |
 | `svault sync` | 📝 Stub | Sync with another vault |
-| `svault reconcile` | 📝 Stub | Update paths for moved files |
+| `svault reconcile` | ✅ Implemented | Update paths for moved files |
 | `svault history` | 📝 Stub | Query event log |
 | `svault clone` | 📝 Stub | Clone subset of vault |
 | `svault db dump` | ✅ Implemented | Export database contents for debugging |
@@ -168,10 +168,10 @@ allowed_extensions = [
 
 | Phase | Deliverables | Status |
 |-------|--------------|--------|
-| Phase 1 | CLI skeleton · event-sourced DB · local VFS · exact dedup · `svault init` | In progress |
-| Phase 2 | `svault import` · 4-stage fingerprint pipeline · manifest output | Planned |
-| Phase 3 | `svault sync` · multi-target replication · `svault reconcile` | Planned |
-| Phase 4 | `svault verify` · hash chain audit · `svault status` / `history` | Planned |
+| Phase 1 | CLI skeleton · event-sourced DB · local VFS · exact dedup · `svault init` | Completed |
+| Phase 2 | `svault import` · 4-stage fingerprint pipeline · manifest output | Completed |
+| Phase 3 | `svault sync` · multi-target replication · `svault reconcile` | Partial (`reconcile` done) |
+| Phase 4 | `svault verify` · hash chain audit · `svault status` / `history` | Partial (`verify` / `status` done) |
 | Phase 5 | Composite media (Live Photo, RAW+JPEG) · `svault clone` | Planned |
 | Later | Perceptual dedup · TUI · device auto-detection | Planned |
 

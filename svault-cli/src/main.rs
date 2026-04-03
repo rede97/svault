@@ -74,9 +74,6 @@
 //! | `--file <PATH>` | Verify a single file |
 //! | `--recent <SECONDS>` | Verify files imported in the last N seconds |
 //!
-//! ### `verify-source`
-//! Compare source files with the import manifest to detect post-import changes or deletions.
-//!
 //! ### `status`
 //! Show a summary of the vault: imported files, duplicates, pending hashes, events, and DB size.
 //!

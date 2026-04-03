@@ -59,7 +59,6 @@ svault import <source> [options]
 | `<source>` | | 源目录或挂载点（必填，位置参数） |
 | `--target <path>` | | 目标归档目录（默认使用配置文件中的 vault 路径） |
 | `--hash <algo>` | `-H` | 哈希算法：`fast`（XXH3-128，高吞吐，默认）/ `secure`（SHA-256，加密强度）。优先级：CLI > `svault.toml [global].hash` > 内置默认值（`fast`）|
-| `--recheck <mode>` | `-R` | 全部命中缓存时对重复项二次验证：`fast`（默认，信任缓存）/ `exif`（EXIF 二进制比对）/ `hash`（全文件哈希）|
 
 **清单文件：**
 
@@ -70,9 +69,8 @@ svault import <source> [options]
 Stage B 完成后若 `likely_new = 0`，默认输出提示并退出：
 ```
 All 245 files matched cache (no new files detected).
-To verify duplicates, re-run with:
-  -R exif   EXIF binary comparison (recommended)
-  -R hash   full-file hash comparison
+To verify duplicates, run:
+  svault recheck   # 基于 manifest 校验源文件与 vault 副本
 ```
 
 **输出（human）：**
@@ -112,17 +110,32 @@ Manifest: ./manifests/import-20240315T143000.txt
 
 ---
 
-### `svault sync`
+### `svault add`
 
-将本地归档同步到远程备份目标（增量，基于哈希）。
+注册已经物理存在于 vault 目录内的文件，不移动数据。
 
 ```
-svault sync --target <path> [options]
+svault add <path> [options]
 ```
 
 | 选项 | 说明 |
 |------|------|
-| `--target <path>` | 目标路径（本地挂载点，必填） |
+| `<path>` | vault 内的目录路径（必填） |
+| `-H <algo>` | 哈希算法：`fast` / `secure` |
+
+---
+
+### `svault sync`
+
+从另一个 vault 同步文件和数据库记录到本地（增量，基于事件日志）。
+
+```
+svault sync --source <source_vault> [options]
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--source <path>` | 源 vault 根目录（必须包含 `.svault/vault.db`，必填） |
 | `--strategy <strategies>` | 传输策略：`reflink` / `hardlink` / `copy`，可逗号组合（默认 `reflink`）。`copy` 一旦出现在列表中即直接执行二进制拷贝并终止后续 fallback；若未显式写 `copy`，则所有策略失败后会自动以二进制拷贝兜底。 |
 | `--verify` | 同步后校验目标文件完整性 |
 
