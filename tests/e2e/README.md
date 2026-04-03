@@ -15,7 +15,7 @@
 ### 1. 环境设置（使用 uv）
 
 ```bash
-cd e2e_tests
+cd tests/e2e
 
 # 创建虚拟环境
 uv venv --python=python3.12

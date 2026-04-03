@@ -32,10 +32,10 @@ if (-not (Test-Path $PYTHON)) {
 # Determine binary path and build args
 if ($Release) {
     $BINARY = "$SCRIPT_DIR\..\target\release\svault.exe"
-    $BUILD_ARGS = @("--release", "-p", "svault-cli", "-q")
+    $BUILD_ARGS = @("--release", "-p", "svault", "-q")
 } else {
     $BINARY = "$SCRIPT_DIR\..\target\debug\svault.exe"
-    $BUILD_ARGS = @("-p", "svault-cli", "-q")
+    $BUILD_ARGS = @("-p", "svault", "-q")
 }
 
 Write-Host "Checking svault binary ($(& { if ($Release) { "release" } else { "debug" } }))..."

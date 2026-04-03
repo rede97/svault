@@ -20,7 +20,7 @@ cargo build --release
 
 # 运行测试
 cargo test                              # Rust 单元/集成测试
-cd e2e_tests && bash run.sh --verbose   # Python E2E 测试
+cd tests/e2e && bash run.sh --verbose   # Python E2E 测试
 
 # 初始化 vault
 cargo run -p svault-cli -- init
@@ -79,7 +79,7 @@ cargo run -p svault-cli -- import <source-dir>
 ✅ **正确做法**:
 ```bash
 # 方法 1: E2E 测试框架（推荐）
-cd e2e_tests && bash run.sh --verbose
+cd tests/e2e && bash run.sh --verbose
 
 # 方法 2: 手动进入 RAMDisk
 bash tests/setup_ramdisk.sh

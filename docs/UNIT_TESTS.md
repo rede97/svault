@@ -149,7 +149,7 @@
 
 ## Python E2E 测试
 
-端到端测试位于 `e2e_tests/`，使用 `pytest` + RAMDisk 隔离测试环境。
+端到端测试位于 `tests/e2e/`，使用 `pytest` + RAMDisk 隔离测试环境。
 
 ### 常规场景 (Normal Scenarios)
 
@@ -298,37 +298,114 @@ fn test_hardlink_fallback_on_ext4() {
 }
 ```
 
-#### 环境准备脚本
+#### 环境准备脚本 (img + loopback 方案)
+
+**方案优势：**
+- 无需额外磁盘分区
+- 可在 CI/CD 环境中运行（需要 privileged 模式）
+- 精确控制文件系统大小和特性
+- 测试完成后自动清理
 
 ```bash
 #!/bin/bash
 # tests/setup_fs_integration.sh
 
-# 创建 btrfs 测试环境（需要 btrfs-progs）
-setup_btrfs() {
-    # 使用文件作为 loopback 设备
-    dd if=/dev/zero of=/tmp/btrfs-test.img bs=1M count=256
-    mkfs.btrfs /tmp/btrfs-test.img
-    mkdir -p /mnt/btrfs-test
-    sudo mount -o loop /tmp/btrfs-test.img /mnt/btrfs-test
-    sudo chown $(id -u):$(id -g) /mnt/btrfs-test
+set -e
+
+# 配置
+TEST_BASE="/tmp/svault-fs-test"
+IMG_SIZE_MB=512
+
+cleanup() {
+    echo "Cleaning up..."
+    for fs in ext4 xfs btrfs; do
+        mountpoint -q "$TEST_BASE/$fs" && sudo umount "$TEST_BASE/$fs" || true
+        rm -f "$TEST_BASE/$fs.img"
+    done
+    rm -rf "$TEST_BASE"
 }
 
-# 创建 xfs 测试环境
+setup_ext4() {
+    echo "=== Setting up ext4 (no reflink) ==="
+    mkdir -p "$TEST_BASE/ext4"
+    dd if=/dev/zero of="$TEST_BASE/ext4.img" bs=1M count=$IMG_SIZE_MB status=progress
+    mkfs.ext4 "$TEST_BASE/ext4.img"
+    sudo mount -o loop "$TEST_BASE/ext4.img" "$TEST_BASE/ext4"
+    sudo chown $(id -u):$(id -g) "$TEST_BASE/ext4"
+    echo "ext4 ready at $TEST_BASE/ext4"
+}
+
 setup_xfs() {
-    dd if=/dev/zero of=/tmp/xfs-test.img bs=1M count=256
-    mkfs.xfs /tmp/xfs-test.img
-    mkdir -p /mnt/xfs-test
-    sudo mount -o loop /tmp/xfs-test.img /mnt/xfs-test
-    sudo chown $(id -u):$(id -g) /mnt/xfs-test
+    echo "=== Setting up XFS (with reflink) ==="
+    mkdir -p "$TEST_BASE/xfs"
+    dd if=/dev/zero of="$TEST_BASE/xfs.img" bs=1M count=$IMG_SIZE_MB status=progress
+    # XFS v5 supports reflink (since Linux 4.9)
+    mkfs.xfs -m reflink=1 "$TEST_BASE/xfs.img"
+    sudo mount -o loop "$TEST_BASE/xfs.img" "$TEST_BASE/xfs"
+    sudo chown $(id -u):$(id -g) "$TEST_BASE/xfs"
+    echo "XFS ready at $TEST_BASE/xfs"
 }
 
-# 清理
-teardown() {
-    sudo umount /mnt/btrfs-test 2>/dev/null || true
-    sudo umount /mnt/xfs-test 2>/dev/null || true
-    rm -f /tmp/btrfs-test.img /tmp/xfs-test.img
+setup_btrfs() {
+    echo "=== Setting up btrfs (with reflink) ==="
+    mkdir -p "$TEST_BASE/btrfs"
+    dd if=/dev/zero of="$TEST_BASE/btrfs.img" bs=1M count=$IMG_SIZE_MB status=progress
+    mkfs.btrfs "$TEST_BASE/btrfs.img"
+    sudo mount -o loop "$TEST_BASE/btrfs.img" "$TEST_BASE/btrfs"
+    sudo chown $(id -u):$(id -g) "$TEST_BASE/btrfs"
+    echo "btrfs ready at $TEST_BASE/btrfs"
 }
+
+# 跨文件系统导入测试：不同文件系统作为 source 和 vault
+setup_cross_fs() {
+    echo "=== Setting up cross-filesystem test ==="
+    # Source on ext4, vault on xfs
+    setup_ext4
+    mv "$TEST_BASE/ext4" "$TEST_BASE/source"
+    mv "$TEST_BASE/ext4.img" "$TEST_BASE/source.img"
+    setup_xfs
+    mv "$TEST_BASE/xfs" "$TEST_BASE/vault"
+    mv "$TEST_BASE/xfs.img" "$TEST_BASE/vault.img"
+    echo "Cross-fs ready: source (ext4) -> vault (xfs)"
+}
+
+# 主入口
+case "${1:-all}" in
+    ext4) setup_ext4 ;;
+    xfs) setup_xfs ;;
+    btrfs) setup_btrfs ;;
+    cross) setup_cross_fs ;;
+    cleanup) cleanup ;;
+    all)
+        cleanup 2>/dev/null || true
+        mkdir -p "$TEST_BASE"
+        setup_ext4
+        setup_xfs
+        setup_btrfs
+        echo ""
+        echo "All filesystems ready:"
+        df -h "$TEST_BASE"/* 2>/dev/null || true
+        ;;
+    *)
+        echo "Usage: $0 [ext4|xfs|btrfs|cross|cleanup|all]"
+        exit 1
+        ;;
+esac
+```
+
+**Docker CI 支持：**
+
+```dockerfile
+# Dockerfile.fs-test
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    btrfs-progs xfsprogs e2fsprogs \
+    util-linux mount \
+    && rm -rf /var/lib/apt/lists/*
+
+# 需要 privileged 模式运行
+# docker run --privileged -v $(pwd):/workspace svault-fs-test
 ```
 
 ### 2. 多 Vault 同步测试
@@ -871,20 +948,20 @@ cargo test -p svault-cli
 cargo test -p svault-core hash
 
 # E2E 测试（推荐：自动使用 RAMDisk，默认 debug 构建）
-cd e2e_tests && bash run.sh --verbose
+cd tests/e2e && bash run.sh --verbose
 
 # 只跑特定测试文件
-cd e2e_tests && bash run.sh --verbose test_import_force.py
+cd tests/e2e && bash run.sh --verbose test_import_force.py
 
 # 使用 release 构建跑 E2E
-cd e2e_tests && bash run.sh --release --verbose
+cd tests/e2e && bash run.sh --release --verbose
 ```
 
 ### Windows
 
 ```powershell
 # 使用 uv 创建虚拟环境并安装依赖
-cd e2e_tests
+cd tests/e2e
 uv venv
 uv pip install pytest pillow hypothesis
 
@@ -916,7 +993,7 @@ uv pip install pytest pillow hypothesis
 ✅ **正确做法** - 使用 RAMDisk:
 ```bash
 # 方法 1: 使用 E2E 测试框架（自动管理 RAMDisk）
-cd e2e_tests && bash run.sh
+cd tests/e2e && bash run.sh
 
 # 方法 2: 手动使用 RAMDisk
 cd /tmp/svault-ramdisk/vault    # 或 cd .ramdisk/vault

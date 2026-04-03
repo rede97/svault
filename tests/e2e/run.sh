@@ -12,6 +12,7 @@ set -e
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
 
 # Clean environment to avoid ROS conflicts
@@ -19,8 +20,17 @@ unset PYTHONPATH
 unset PYTEST_PLUGINS
 
 # Use venv python directly
-PYTHON="$SCRIPT_DIR/.venv/bin/python"
-PYTEST="$SCRIPT_DIR/.venv/bin/pytest"
+# Note: Use uv run or python -m pytest to avoid shebang path issues after migration
+if command -v uv &> /dev/null; then
+    PYTHON="uv run python"
+    PYTEST="uv run python -m pytest"
+elif [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python"
+    PYTEST="$SCRIPT_DIR/.venv/bin/python -m pytest"
+else
+    echo "Error: No Python environment found. Run 'uv sync' first."
+    exit 1
+fi
 
 # Parse options - pytest handles --ramdisk-* and --cleanup via conftest.py
 PYTEST_ARGS=()
@@ -50,17 +60,17 @@ done
 
 # Ensure binary is built
 if [ "$RELEASE" = true ]; then
-    BINARY="$SCRIPT_DIR/../target/release/svault"
-    BUILD_ARGS="--release -p svault-cli -q"
+    BINARY="$PROJECT_ROOT/target/release/svault"
+    BUILD_ARGS="--release -p svault -q"
 else
-    BINARY="$SCRIPT_DIR/../target/debug/svault"
-    BUILD_ARGS="-p svault-cli -q"
+    BINARY="$PROJECT_ROOT/target/debug/svault"
+    BUILD_ARGS="-p svault -q"
 fi
 
 echo "Checking svault binary ($([ "$RELEASE" = true ] && echo release || echo debug))..."
 if [ ! -f "$BINARY" ]; then
     echo "Building svault..."
-    cd "$SCRIPT_DIR/.."
+    cd "$PROJECT_ROOT"
     cargo build $BUILD_ARGS
 fi
 
@@ -74,4 +84,8 @@ fi
 
 # Run tests (RAMDisk is managed by Python fixtures)
 echo "Running tests..."
-exec "$PYTEST" "${PYTEST_ARGS[@]}"
+if command -v uv &> /dev/null; then
+    uv run python -m pytest "${PYTEST_ARGS[@]}"
+else
+    "$PYTHON" -m pytest "${PYTEST_ARGS[@]}"
+fi

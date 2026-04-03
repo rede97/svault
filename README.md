@@ -223,7 +223,7 @@ Milestones worth watching:
 
 Run the integrated test suite:
 ```bash
-cd e2e_tests && bash run.sh
+cd tests/e2e && bash run.sh
 ```
 
 This performs end-to-end validation including:

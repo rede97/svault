@@ -25,7 +25,7 @@ Thumbs.db
 playground/
 
 # Python
-e2e_tests/.venv/
+tests/e2e/.venv/
 __pycache__/
 *.pyc
 *.egg-info/
@@ -34,9 +34,9 @@ __pycache__/
 .ruff_cache/
 
 # E2E test outputs
-e2e_tests/.test_outputs/
-e2e_tests/reports/
-e2e_tests/.hypothesis/
+tests/e2e/.test_outputs/
+tests/e2e/reports/
+tests/e2e/.hypothesis/
 
 # RAMDisk symlink (created by tests/setup_ramdisk.sh)
 .ramdisk

@@ -114,7 +114,7 @@ def cleanup_after_tests(request: pytest.FixtureRequest) -> bool:
 # =============================================================================
 
 E2E_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = E2E_DIR.parent
+PROJECT_ROOT = E2E_DIR.parent.parent  # tests/e2e/ -> tests/ -> project root
 TESTS_DIR = PROJECT_ROOT / "tests"
 FIXTURES_DIR = E2E_DIR / "fixtures"
 def get_target_dir(release: bool = False) -> Path:
@@ -397,7 +397,7 @@ def svault_binary(request: pytest.FixtureRequest) -> Path:
         cmd = ["cargo", "build"]
         if release:
             cmd.append("--release")
-        cmd.extend(["-p", "svault-cli", "-q"])
+        cmd.extend(["-p", "svault", "-q"])
         result = subprocess.run(
             cmd,
             cwd=PROJECT_ROOT,
@@ -812,7 +812,7 @@ def copy_fixture(vault: VaultEnv, fixture_name: str, subdir: str | None = None) 
     
     Args:
         vault: Vault environment
-        fixture_name: Name of fixture in e2e_tests/fixtures/source/
+        fixture_name: Name of fixture in tests/e2e/fixtures/source/
         subdir: Optional subdirectory
     
     Returns:
