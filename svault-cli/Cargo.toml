@@ -1,7 +1,12 @@
 [package]
-name = "svault-cli"
+name = "svault"
 version = "0.1.0"
 edition = "2024"
+description = "Svault — a content-addressed multimedia archive tool"
+license = "MIT"
+repository = "https://github.com/rede97/svault"
+keywords = ["archive", "multimedia", "photos", "vault", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "svault"
@@ -12,7 +17,7 @@ default = ["mtp"]
 mtp = ["svault-core/mtp"]
 
 [dependencies]
-svault-core = { path = "../svault-core", features = ["cli"] }
+svault-core = { version = "0.1.0", path = "../svault-core", features = ["cli"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"

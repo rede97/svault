@@ -2,6 +2,11 @@
 name = "svault-core"
 version = "0.1.0"
 edition = "2024"
+description = "Core library for Svault — a content-addressed multimedia archive tool"
+license = "MIT"
+repository = "https://github.com/rede97/svault"
+keywords = ["archive", "multimedia", "photos", "vault", "content-addressed"]
+categories = ["filesystem"]
 
 [features]
 default = ["mtp"]
