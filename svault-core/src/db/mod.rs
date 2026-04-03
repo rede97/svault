@@ -341,3 +341,200 @@ CREATE TABLE IF NOT EXISTS derivatives (
     created_at      INTEGER NOT NULL
 );
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // Database lifecycle tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn db_open_in_memory_creates_valid_db() {
+        let db = Db::open_in_memory().unwrap();
+        // Verify tables exist by querying
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(count > 0, "Database should have tables");
+    }
+
+    #[test]
+    fn db_open_in_memory_is_isolated() {
+        let db1 = Db::open_in_memory().unwrap();
+        let db2 = Db::open_in_memory().unwrap();
+        
+        // Add event to db1
+        db1.append_event("test", "file", 1, r#"{"path":"test.txt"}"#, |_conn| Ok(())).unwrap();
+        
+        // db2 should not see it
+        let count1: i64 = db1.conn.query_row(
+            "SELECT COUNT(*) FROM events",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let count2: i64 = db2.conn.query_row(
+            "SELECT COUNT(*) FROM events",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        
+        assert_eq!(count1, 1);
+        assert_eq!(count2, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Event hash chain tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn last_event_hash_returns_genesis_for_empty_db() {
+        let db = Db::open_in_memory().unwrap();
+        let hash = db.last_event_hash().unwrap();
+        assert_eq!(hash, GENESIS_HASH);
+    }
+
+    #[test]
+    fn append_event_creates_valid_chain() {
+        let db = Db::open_in_memory().unwrap();
+        
+        // Append first event
+        db.append_event("import", "file", 1, r#"{"path":"a.jpg"}"#, |_conn| {
+            // Could update materialized view here
+            Ok(())
+        }).unwrap();
+        
+        let hash1 = db.last_event_hash().unwrap();
+        assert_ne!(hash1, GENESIS_HASH);
+        assert_eq!(hash1.len(), 64); // SHA-256 hex
+        
+        // Append second event
+        db.append_event("import", "file", 2, r#"{"path":"b.jpg"}"#, |_conn| Ok(())).unwrap();
+        
+        let hash2 = db.last_event_hash().unwrap();
+        assert_ne!(hash2, hash1);
+        assert_ne!(hash2, GENESIS_HASH);
+    }
+
+    #[test]
+    fn verify_chain_passes_for_valid_chain() {
+        let db = Db::open_in_memory().unwrap();
+        
+        // Add several events
+        for i in 1..=3 {
+            db.append_event("import", "file", i, &format!(r#"{{"path":"file{}.jpg"}}"#, i), |_conn| Ok(())).unwrap();
+        }
+        
+        // Should verify without error
+        db.verify_chain().unwrap();
+    }
+
+    #[test]
+    fn verify_chain_detects_tampering() {
+        let db = Db::open_in_memory().unwrap();
+        
+        // Add an event
+        db.append_event("import", "file", 1, r#"{"path":"a.jpg"}"#, |_conn| Ok(())).unwrap();
+        
+        // Tamper with the event (direct SQL update)
+        db.conn.execute(
+            "UPDATE events SET payload = ? WHERE seq = 1",
+            [r#"{"path":"tampered.jpg"}"#],
+        ).unwrap();
+        
+        // Verification should fail
+        let result = db.verify_chain();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("chain broken") || err_msg.contains("mismatch"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Event query tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn get_events_returns_events_in_descending_order() {
+        let db = Db::open_in_memory().unwrap();
+        
+        // Add events with small delay for ordering
+        db.append_event("import", "file", 1, "{}", |_conn| Ok(())).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.append_event("import", "file", 2, "{}", |_conn| Ok(())).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.append_event("update", "file", 1, "{}", |_conn| Ok(())).unwrap();
+        
+        let events = db.get_events(10, None, None, None, None).unwrap();
+        assert_eq!(events.len(), 3);
+        
+        // Should be in descending seq order
+        assert!(events[0].seq > events[1].seq);
+        assert!(events[1].seq > events[2].seq);
+    }
+
+    #[test]
+    fn get_events_filters_by_event_type() {
+        let db = Db::open_in_memory().unwrap();
+        
+        db.append_event("import", "file", 1, "{}", |_conn| Ok(())).unwrap();
+        db.append_event("update", "file", 1, "{}", |_conn| Ok(())).unwrap();
+        db.append_event("import", "file", 2, "{}", |_conn| Ok(())).unwrap();
+        
+        let import_events = db.get_events(10, Some("import"), None, None, None).unwrap();
+        assert_eq!(import_events.len(), 2);
+        for ev in &import_events {
+            assert_eq!(ev.event_type, "import");
+        }
+        
+        let update_events = db.get_events(10, Some("update"), None, None, None).unwrap();
+        assert_eq!(update_events.len(), 1);
+    }
+
+    #[test]
+    fn get_events_respects_limit() {
+        let db = Db::open_in_memory().unwrap();
+        
+        for i in 1..=5 {
+            db.append_event("import", "file", i, "{}", |_conn| Ok(())).unwrap();
+        }
+        
+        let events = db.get_events(3, None, None, None, None).unwrap();
+        assert_eq!(events.len(), 3);
+    }
+
+    // -------------------------------------------------------------------------
+    // Event hash computation tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn compute_event_hash_is_deterministic() {
+        let hash1 = compute_event_hash("import", "file", 1, r#"{"path":"a.jpg"}"#, 12345, GENESIS_HASH);
+        let hash2 = compute_event_hash("import", "file", 1, r#"{"path":"a.jpg"}"#, 12345, GENESIS_HASH);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64);
+    }
+
+    #[test]
+    fn compute_event_hash_changes_with_input() {
+        let base = compute_event_hash("import", "file", 1, r#"{"path":"a.jpg"}"#, 12345, GENESIS_HASH);
+        
+        // Different event type
+        let h2 = compute_event_hash("update", "file", 1, r#"{"path":"a.jpg"}"#, 12345, GENESIS_HASH);
+        assert_ne!(base, h2);
+        
+        // Different payload
+        let h3 = compute_event_hash("import", "file", 1, r#"{"path":"b.jpg"}"#, 12345, GENESIS_HASH);
+        assert_ne!(base, h3);
+        
+        // Different timestamp
+        let h4 = compute_event_hash("import", "file", 1, r#"{"path":"a.jpg"}"#, 12346, GENESIS_HASH);
+        assert_ne!(base, h4);
+        
+        // Different prev_hash
+        let h5 = compute_event_hash("import", "file", 1, r#"{"path":"a.jpg"}"#, 12345, &"a".repeat(64));
+        assert_ne!(base, h5);
+    }
+}

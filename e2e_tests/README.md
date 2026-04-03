@@ -168,7 +168,10 @@ sudo umount /tmp/svault-ramdisk 2>/dev/null || true
 ```bash
 # 检查上次测试的 vault
 cd /tmp/svault-ramdisk/vault
-../../target/release/svault status
+# 使用 debug 构建（默认）或 release 构建（加 --release）
+../../target/debug/svault status
+# 或: ../../target/release/svault status
+
 python3 -c "import sqlite3; conn = sqlite3.connect('.svault/vault.db'); print(conn.execute('SELECT path, status FROM files').fetchall())"
 
 # 完成后手动清理

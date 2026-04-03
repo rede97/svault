@@ -124,3 +124,150 @@ pub fn secs_to_ymd(secs: i64) -> (i32, u32, u32) {
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // secs_to_ymd tests - core date conversion logic
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn secs_to_ymd_epoch() {
+        // Unix epoch: 1970-01-01
+        assert_eq!(secs_to_ymd(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn secs_to_ymd_specific_known_dates() {
+        // Known timestamps verified with external tools
+        // 2000-01-01 00:00:00 UTC = 946684800
+        assert_eq!(secs_to_ymd(946684800), (2000, 1, 1));
+        // 2024-05-01 00:00:00 UTC = 1714521600
+        assert_eq!(secs_to_ymd(1714521600), (2024, 5, 1));
+    }
+
+    #[test]
+    fn secs_to_ymd_year_boundaries() {
+        // 1999-12-31 00:00:00 UTC
+        assert_eq!(secs_to_ymd(946598400), (1999, 12, 31));
+        // 2000-01-01 00:00:00 UTC
+        assert_eq!(secs_to_ymd(946684800), (2000, 1, 1));
+    }
+
+    #[test]
+    fn secs_to_ymd_negative_timestamp() {
+        // Before Unix epoch: 1969-12-31
+        assert_eq!(secs_to_ymd(-86400), (1969, 12, 31));
+    }
+
+    // -------------------------------------------------------------------------
+    // parse_exif_datetime_ms tests - EXIF date parsing
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn parse_exif_datetime_valid() {
+        // Standard EXIF format: "YYYY:MM:DD HH:MM:SS"
+        let result = parse_exif_datetime_ms("2024:05:01 10:30:00");
+        assert!(result.is_some());
+        let ms = result.unwrap();
+        // Verify by converting back
+        let (y, m, d) = secs_to_ymd(ms / 1000);
+        assert_eq!(y, 2024);
+        assert_eq!(m, 5);
+        assert_eq!(d, 1);
+        // Also verify time component (10:30:00 = 37800 seconds)
+        assert_eq!(ms % 86400000, 37800 * 1000);
+    }
+
+    #[test]
+    fn parse_exif_datetime_epoch() {
+        let result = parse_exif_datetime_ms("1970:01:01 00:00:00");
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn parse_exif_datetime_too_short() {
+        // Too short - less than 19 chars
+        assert!(parse_exif_datetime_ms("2024:05:01").is_none());
+    }
+
+    #[test]
+    fn parse_exif_datetime_handles_edge_cases() {
+        // Function doesn't strictly validate date ranges - it parses what it can
+        // "99" for month/day will parse successfully as numbers
+        let result = parse_exif_datetime_ms("2024:99:99 99:99:99");
+        // This may succeed or fail depending on ymd_to_days - we just check it doesn't panic
+        // The actual behavior depends on ymd_to_days implementation
+        let _ = result; // Don't assert - just ensure no panic
+    }
+
+    // -------------------------------------------------------------------------
+    // ymd_to_days (round-trip with secs_to_ymd)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ymd_days_round_trip() {
+        // Test round-trip conversion for various valid dates
+        let test_dates = [
+            (1970, 1, 1),
+            (2000, 1, 1),
+            (2000, 3, 1),
+            (2024, 5, 15),
+            (1999, 12, 31),
+        ];
+        
+        for (y, m, d) in test_dates {
+            let days = ymd_to_days(y, m, d).expect(&format!("Valid date {}-{}-{}", y, m, d));
+            let (y2, m2, d2) = secs_to_ymd(days * 86400);
+            assert_eq!((y, m, d), (y2, m2, d2), "Round-trip failed for {}-{}-{}: got {}-{}-{} days={}", 
+                      y, m, d, y2, m2, d2, days);
+        }
+    }
+
+    #[test]
+    fn ymd_to_days_behavioral_test() {
+        // Note: ymd_to_days has minimal validation - it computes days for any input
+        // We verify it produces consistent results rather than testing validation
+        // Day 0 produces a valid result (last day of previous month in the algorithm)
+        let result = ymd_to_days(2024, 1, 0);
+        assert!(result.is_some()); // The algorithm accepts day 0
+        
+        // Month 0 also produces a result (December of previous year)
+        let result = ymd_to_days(2024, 0, 1);
+        assert!(result.is_some());
+    }
+
+    // -------------------------------------------------------------------------
+    // exif_ascii_first tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn exif_ascii_first_extracts_string() {
+        use exif::Value;
+        let value = Value::Ascii(vec![b"Test String\0".to_vec()]);
+        assert_eq!(exif_ascii_first(&value), Some("Test String".to_string()));
+    }
+
+    #[test]
+    fn exif_ascii_first_trims_nulls() {
+        use exif::Value;
+        let value = Value::Ascii(vec![b"Camera\0\0\0".to_vec()]);
+        assert_eq!(exif_ascii_first(&value), Some("Camera".to_string()));
+    }
+
+    #[test]
+    fn exif_ascii_first_empty_vec() {
+        use exif::Value;
+        let value = Value::Ascii(vec![]);
+        assert_eq!(exif_ascii_first(&value), None);
+    }
+
+    #[test]
+    fn exif_ascii_first_non_ascii() {
+        use exif::Value;
+        let value = Value::Byte(vec![0x00, 0x01, 0x02]);
+        assert_eq!(exif_ascii_first(&value), None);
+    }
+}

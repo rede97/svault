@@ -47,6 +47,9 @@ markers = [
     "property: marks tests as property-based tests using Hypothesis",
     "conflict: marks tests for filename conflict scenarios",
     "dedup: marks tests for deduplication scenarios",
+    "config: marks tests for configuration handling",
+    "transfer: marks tests for transfer strategy scenarios",
+    "media: marks tests for media format support",
 ]
 
 [tool.hypothesis]

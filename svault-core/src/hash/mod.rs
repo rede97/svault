@@ -140,3 +140,212 @@ pub fn sha256_file(path: &Path) -> io::Result<Sha256Digest> {
     digest.copy_from_slice(&result);
     Ok(Sha256Digest(digest))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_file_with(content: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(content).unwrap();
+        drop(file);
+        (dir, path)
+    }
+
+    // -------------------------------------------------------------------------
+    // CRC32C: Focus on our wrapper logic, not the library
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn crc32c_region_reads_from_offset() {
+        let content = b"0123456789abcdef";
+        let (_dir, path) = temp_file_with(content);
+        
+        // Offset 10 should read "abcdef"
+        let hash = crc32c_region(&path, 10, 1024).unwrap();
+        assert_eq!(hash, crc32c(b"abcdef"));
+    }
+
+    #[test]
+    fn crc32c_region_handles_larger_buf_than_file() {
+        let (_dir, path) = temp_file_with(b"short");
+        // Request more than file size
+        let hash = crc32c_region(&path, 0, 1024).unwrap();
+        assert_eq!(hash, crc32c(b"short"));
+    }
+
+    #[test]
+    fn crc32c_region_zero_offset_reads_full() {
+        let (_dir, path) = temp_file_with(b"hello");
+        let hash = crc32c_region(&path, 0, 1024).unwrap();
+        assert_eq!(hash, crc32c(b"hello"));
+    }
+
+    #[test]
+    fn crc32c_tail_reads_last_bytes() {
+        let content = b"0123456789abcdef";
+        let (_dir, path) = temp_file_with(content);
+        
+        // Last 6 bytes: "abcdef"
+        let hash = crc32c_tail(&path, 6).unwrap();
+        assert_eq!(hash, crc32c(b"abcdef"));
+    }
+
+    #[test]
+    fn crc32c_tail_handles_larger_buf_than_file() {
+        let (_dir, path) = temp_file_with(b"tiny");
+        let hash = crc32c_tail(&path, 1024).unwrap();
+        assert_eq!(hash, crc32c(b"tiny"));
+    }
+
+    #[test]
+    fn crc32c_region_returns_io_error_for_missing_file() {
+        let result = crc32c_region(Path::new("/nonexistent/file"), 0, 1024);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn crc32c_tail_returns_io_error_for_missing_file() {
+        let result = crc32c_tail(Path::new("/nonexistent/file"), 1024);
+        assert!(result.is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // XXH3-128: Focus on file I/O, chunking, and our type wrapper
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn xxh3_128_file_is_deterministic() {
+        let (_dir, path) = temp_file_with(b"test content");
+        let d1 = xxh3_128_file(&path).unwrap();
+        let d2 = xxh3_128_file(&path).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn xxh3_128_file_produces_different_hashes_for_different_content() {
+        let (_dir1, p1) = temp_file_with(b"content A");
+        let (_dir2, p2) = temp_file_with(b"content B");
+        let d1 = xxh3_128_file(&p1).unwrap();
+        let d2 = xxh3_128_file(&p2).unwrap();
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn xxh3_128_file_handles_empty_file() {
+        let (_dir, path) = temp_file_with(b"");
+        let _ = xxh3_128_file(&path).unwrap(); // Should not panic
+    }
+
+    #[test]
+    fn xxh3_128_file_handles_large_file() {
+        // 10MB file to test chunking
+        let data = vec![0xABu8; 10 * 1024 * 1024];
+        let (_dir, path) = temp_file_with(&data);
+        let d1 = xxh3_128_file(&path).unwrap();
+        let d2 = xxh3_128_file(&path).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn xxh3_128_file_returns_io_error_for_missing_file() {
+        let result = xxh3_128_file(Path::new("/nonexistent/file"));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn xxh3_digest_to_bytes_little_endian() {
+        let digest = Xxh3Digest { 
+            low: 0x1234_5678_9ABC_DEF0, 
+            high: 0xFEDC_BA98_7654_3210 
+        };
+        let bytes = digest.to_bytes();
+        // Verify little-endian encoding
+        assert_eq!(u64::from_le_bytes(bytes[..8].try_into().unwrap()), digest.low);
+        assert_eq!(u64::from_le_bytes(bytes[8..].try_into().unwrap()), digest.high);
+    }
+
+    #[test]
+    fn xxh3_digest_hex_formatting() {
+        let digest = Xxh3Digest { low: 1, high: 2 };
+        let hex_str = format!("{:x}", digest);
+        assert_eq!(hex_str.len(), 32); // 128 bits = 32 hex chars
+        // Verify format: high first, then low
+        assert!(hex_str.starts_with("0000000000000002"));
+        assert!(hex_str.ends_with("0000000000000001"));
+    }
+
+    // -------------------------------------------------------------------------
+    // SHA-256: Focus on file I/O, chunking, and our type wrapper  
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn sha256_file_is_deterministic() {
+        let (_dir, path) = temp_file_with(b"test content");
+        let d1 = sha256_file(&path).unwrap();
+        let d2 = sha256_file(&path).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn sha256_file_produces_different_hashes_for_different_content() {
+        let (_dir1, p1) = temp_file_with(b"content A");
+        let (_dir2, p2) = temp_file_with(b"content B");
+        let d1 = sha256_file(&p1).unwrap();
+        let d2 = sha256_file(&p2).unwrap();
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn sha256_file_handles_empty_file() {
+        let (_dir, path) = temp_file_with(b"");
+        let _ = sha256_file(&path).unwrap(); // Should not panic
+    }
+
+    #[test]
+    fn sha256_file_handles_large_file() {
+        // 10MB file to test chunking
+        let data = vec![0xCDu8; 10 * 1024 * 1024];
+        let (_dir, path) = temp_file_with(&data);
+        let d1 = sha256_file(&path).unwrap();
+        let d2 = sha256_file(&path).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn sha256_file_returns_io_error_for_missing_file() {
+        let result = sha256_file(Path::new("/nonexistent/file"));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn sha256_digest_to_hex_format() {
+        let digest = Sha256Digest([0xAB; 32]);
+        let hex_str = digest.to_hex();
+        assert_eq!(hex_str.len(), 64);
+        assert_eq!(hex_str, "ab".repeat(32));
+    }
+
+    #[test]
+    fn sha256_digest_display_trait() {
+        let (_dir, path) = temp_file_with(b"x");
+        let digest = sha256_file(&path).unwrap();
+        let display = format!("{}", digest);
+        assert_eq!(display, digest.to_hex());
+        assert_eq!(display.len(), 64);
+    }
+
+    #[test]
+    fn sha256_digest_to_bytes_returns_inner_array() {
+        let (_dir, path) = temp_file_with(b"test");
+        let digest = sha256_file(&path).unwrap();
+        let bytes = digest.to_bytes();
+        assert_eq!(bytes.len(), 32);
+    }
+}

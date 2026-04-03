@@ -8,6 +8,8 @@
 
 [![CI](https://github.com/rede97/svault/actions/workflows/ci.yml/badge.svg)](https://github.com/rede97/svault/actions/workflows/ci.yml)
 [![Release](https://github.com/rede97/svault/actions/workflows/release.yml/badge.svg)](https://github.com/rede97/svault/actions/workflows/release.yml)
+[![Crates.io](https://img.shields.io/crates/v/svault)](https://crates.io/crates/svault)
+[![Crates.io](https://img.shields.io/crates/v/svault-core)](https://crates.io/crates/svault-core)
 
 ---
 

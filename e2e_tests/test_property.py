@@ -20,7 +20,7 @@ Note: Property tests are slower and may be skipped in CI with -m "not property"
 
 from __future__ import annotations
 
-import shutil
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,29 +29,6 @@ import pytest
 from hypothesis import given, settings, strategies as st
 
 from conftest import create_minimal_jpeg
-
-
-def _create_vault_env(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Create minimal vault environment for property tests.
-    
-    Returns (vault_dir, source_dir, binary_path)
-    """
-    binary = Path(__file__).parent.parent / "target" / "release" / "svault"
-    vault_dir = tmp_path / "vault"
-    source_dir = tmp_path / "source"
-    
-    vault_dir.mkdir()
-    source_dir.mkdir()
-    
-    # Init vault
-    subprocess.run(
-        [str(binary), "init"],
-        cwd=str(vault_dir),
-        check=True,
-        capture_output=True,
-    )
-    
-    return vault_dir, source_dir, binary
 
 
 def _import_dir(vault_dir: Path, source_dir: Path, binary: Path) -> None:
@@ -66,7 +43,6 @@ def _import_dir(vault_dir: Path, source_dir: Path, binary: Path) -> None:
 
 def _db_files(vault_dir: Path) -> list[dict]:
     """Query files from database."""
-    import sqlite3
     db_path = vault_dir / ".svault" / "vault.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -86,13 +62,26 @@ def _db_files(vault_dir: Path) -> list[dict]:
 class TestHashProperties:
     """Properties about hash computation and deduplication."""
     
-    @given(st.binary(min_size=1, max_size=10000))
+    @given(data=st.data())
     @settings(max_examples=20, deadline=30000)
-    def test_same_content_same_hash(self, content: bytes) -> None:
+    def test_same_content_same_hash(self, data: st.DataObject, svault_binary: Path) -> None:
         """Same content should always produce same database state."""
+        content = data.draw(st.binary(min_size=1, max_size=10000))
+        
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            vault_dir = tmp_path / "vault"
+            source_dir = tmp_path / "source"
+            vault_dir.mkdir()
+            source_dir.mkdir()
+            
+            # Init vault
+            subprocess.run(
+                [str(svault_binary), "init"],
+                cwd=str(vault_dir),
+                check=True,
+                capture_output=True,
+            )
             
             # Create two files with identical content
             header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
@@ -103,23 +92,37 @@ class TestHashProperties:
             f1.write_bytes(full_content)
             f2.write_bytes(full_content)
             
-            _import_dir(vault_dir, source_dir, binary)
+            _import_dir(vault_dir, source_dir, svault_binary)
             
             files = _db_files(vault_dir)
             # Only one should be in DB (the other is duplicate)
             assert len(files) == 1
             assert files[0]["status"] == "imported"
     
-    @given(st.binary(min_size=10, max_size=1000), st.binary(min_size=10, max_size=1000))
+    @given(data=st.data())
     @settings(max_examples=20, deadline=30000)
-    def test_different_content_different_entry(self, content1: bytes, content2: bytes) -> None:
+    def test_different_content_different_entry(self, data: st.DataObject, svault_binary: Path) -> None:
         """Different content should result in different DB entries."""
+        content1 = data.draw(st.binary(min_size=10, max_size=1000))
+        content2 = data.draw(st.binary(min_size=10, max_size=1000))
+        
         if content1 == content2:
             return  # Skip if same
         
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            vault_dir = tmp_path / "vault"
+            source_dir = tmp_path / "source"
+            vault_dir.mkdir()
+            source_dir.mkdir()
+            
+            # Init vault
+            subprocess.run(
+                [str(svault_binary), "init"],
+                cwd=str(vault_dir),
+                check=True,
+                capture_output=True,
+            )
             
             header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
             
@@ -128,7 +131,7 @@ class TestHashProperties:
             f1.write_bytes(header + content1)
             f2.write_bytes(header + content2)
             
-            _import_dir(vault_dir, source_dir, binary)
+            _import_dir(vault_dir, source_dir, svault_binary)
             
             files = _db_files(vault_dir)
             # Should have 2 entries (collision rename, not duplicate)
@@ -139,13 +142,26 @@ class TestHashProperties:
 class TestFileCountProperties:
     """Properties about file counts."""
     
-    @given(st.integers(min_value=1, max_value=20))
+    @given(data=st.data())
     @settings(max_examples=10, deadline=60000)
-    def test_n_unique_files_n_db_rows(self, n: int) -> None:
+    def test_n_unique_files_n_db_rows(self, data: st.DataObject, svault_binary: Path) -> None:
         """N unique files should result in N DB rows."""
+        n = data.draw(st.integers(min_value=1, max_value=20))
+        
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            vault_dir = tmp_path / "vault"
+            source_dir = tmp_path / "source"
+            vault_dir.mkdir()
+            source_dir.mkdir()
+            
+            # Init vault
+            subprocess.run(
+                [str(svault_binary), "init"],
+                cwd=str(vault_dir),
+                check=True,
+                capture_output=True,
+            )
             
             header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
             
@@ -153,7 +169,7 @@ class TestFileCountProperties:
                 f = source_dir / f"file_{i}.jpg"
                 f.write_bytes(header + f"unique_{i}".encode())
             
-            _import_dir(vault_dir, source_dir, binary)
+            _import_dir(vault_dir, source_dir, svault_binary)
             
             files = _db_files(vault_dir)
             assert len(files) == n
@@ -163,13 +179,26 @@ class TestFileCountProperties:
 class TestFilenameProperties:
     """Properties about filename handling."""
     
-    @given(st.text(min_size=1, max_size=50, alphabet="abcdefghijklmnopqrstuvwxyz0123456789_-"))
+    @given(data=st.data())
     @settings(max_examples=30, deadline=10000)
-    def test_any_valid_filename_can_be_imported(self, filename: str) -> None:
+    def test_any_valid_filename_can_be_imported(self, data: st.DataObject, svault_binary: Path) -> None:
         """Any valid filename should be importable without crashing."""
+        filename = data.draw(st.text(min_size=1, max_size=50, alphabet="abcdefghijklmnopqrstuvwxyz0123456789_-"))
+        
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            vault_dir, source_dir, binary = _create_vault_env(tmp_path)
+            vault_dir = tmp_path / "vault"
+            source_dir = tmp_path / "source"
+            vault_dir.mkdir()
+            source_dir.mkdir()
+            
+            # Init vault
+            subprocess.run(
+                [str(svault_binary), "init"],
+                cwd=str(vault_dir),
+                check=True,
+                capture_output=True,
+            )
             
             # Ensure .jpg extension
             if not filename.endswith('.jpg'):
@@ -180,7 +209,7 @@ class TestFilenameProperties:
             
             # Should not crash
             result = subprocess.run(
-                [str(binary), "import", "--yes", str(source_dir.resolve())],
+                [str(svault_binary), "import", "--yes", str(source_dir.resolve())],
                 cwd=str(vault_dir),
                 capture_output=True,
             )

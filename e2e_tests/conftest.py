@@ -38,6 +38,26 @@ import pytest
 # Check if running on Windows
 IS_WINDOWS = platform.system() == "Windows"
 
+# Check optional tool availability
+def _check_tool(tool: str) -> bool:
+    """Check if a command-line tool is available."""
+    return shutil.which(tool) is not None
+
+# Optional tool availability
+FFMPEG_AVAILABLE = _check_tool("ffmpeg")
+EXIFTOOL_AVAILABLE = _check_tool("exiftool")
+
+# pytest fixtures for optional tools
+@pytest.fixture(scope="session")
+def ffmpeg_available() -> bool:
+    """Check if ffmpeg is installed and available."""
+    return FFMPEG_AVAILABLE
+
+@pytest.fixture(scope="session")
+def exiftool_available() -> bool:
+    """Check if exiftool is installed and available."""
+    return EXIFTOOL_AVAILABLE
+
 
 # =============================================================================
 # Pytest Configuration
@@ -353,6 +373,15 @@ class VaultEnv:
 # =============================================================================
 
 @pytest.fixture(scope="session")
+def exiftool_available() -> bool:
+    """Check if exiftool is installed and available in PATH.
+    
+    Tests that require EXIF manipulation can use this to skip if not available.
+    """
+    return shutil.which("exiftool") is not None
+
+
+@pytest.fixture(scope="session")
 def svault_binary(request: pytest.FixtureRequest) -> Path:
     """Path to the compiled svault binary.
     
@@ -473,19 +502,16 @@ def vault(ramdisk: RamDisk, svault_binary: Path) -> Generator[VaultEnv, None, No
 def source_factory(vault: VaultEnv) -> callable:
     """Factory fixture for creating test source files.
     
-    Returns a function that creates JPEG files with specified EXIF data.
+    Returns a function that creates media files with specified properties.
+    Supports JPEG, PNG, TIFF, MP4, MOV, HEIC, and RAW formats.
     
     Example:
         def test_something(source_factory, vault):
             source_factory("test.jpg", exif_date="2024:05:01 10:30:00")
+            source_factory("test.png")
+            source_factory("test.mp4")
             vault.import_dir(vault.source_dir)
     """
-    try:
-        from PIL import Image
-        PIL_AVAILABLE = True
-    except ImportError:
-        PIL_AVAILABLE = False
-    
     def _create(
         filename: str,
         content: bytes | None = None,
@@ -498,16 +524,21 @@ def source_factory(vault: VaultEnv) -> callable:
         """Create a test file in the source directory.
         
         Args:
-            filename: Name of the file to create
-            content: Raw file content (if None, creates minimal JPEG)
-            exif_date: EXIF DateTimeOriginal (format: "2024:05:01 10:30:00")
-            exif_make: Camera make
-            exif_model: Camera model
+            filename: Name of the file to create (extension determines format)
+            content: Raw file content (if None, creates appropriate format)
+            exif_date: EXIF DateTimeOriginal for image files (format: "2024:05:01 10:30:00")
+            exif_make: Camera make for EXIF
+            exif_model: Camera model for EXIF
             mtime: Modification time (Unix timestamp)
             subdir: Optional subdirectory under source_dir
         
         Returns:
             Path to created file
+        
+        Note:
+            - Format is auto-detected from file extension
+            - If exiftool is not installed, EXIF data will be silently skipped
+            - Tests requiring EXIF should check for exiftool availability
         """
         target_dir = vault.source_dir
         if subdir:
@@ -517,31 +548,37 @@ def source_factory(vault: VaultEnv) -> callable:
         filepath = target_dir / filename
         
         if content is not None:
+            # Use provided raw content
             filepath.write_bytes(content)
-        elif PIL_AVAILABLE:
-            # Create minimal JPEG
-            img = Image.new("RGB", (4, 4), color=(128, 64, 32))
-            img.save(filepath, format="JPEG", quality=85)
-            
-            # Add EXIF if requested using exiftool
-            if exif_date or exif_make or exif_model:
-                cmd = ["exiftool", "-overwrite_original", "-ignoreMinorErrors"]
-                if exif_date:
-                    cmd.extend([
-                        f"-DateTimeOriginal={exif_date}",
-                        f"-DateTime={exif_date}",
-                    ])
-                if exif_make:
-                    cmd.append(f"-Make={exif_make}")
-                if exif_model:
-                    cmd.append(f"-Model={exif_model}")
-                cmd.append(str(filepath))
-                
-                subprocess.run(cmd, check=False, capture_output=True)
         else:
-            # Minimal JPEG header without EXIF
-            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-            filepath.write_bytes(header + b'\x00' * 100)
+            # Auto-detect format from extension
+            ext = filepath.suffix.lower().lstrip('.')
+            
+            # Use content marker for uniqueness
+            content_marker = f"test_{filename}"
+            
+            # Create media file based on extension
+            try:
+                create_media_file(filepath, ext, content_marker)
+                
+                # Add EXIF for supported image formats
+                if exif_date or exif_make or exif_model:
+                    if ext in ('jpg', 'jpeg', 'tiff', 'tif') and shutil.which("exiftool"):
+                        cmd = ["exiftool", "-overwrite_original", "-ignoreMinorErrors"]
+                        if exif_date:
+                            cmd.extend([
+                                f"-DateTimeOriginal={exif_date}",
+                                f"-DateTime={exif_date}",
+                            ])
+                        if exif_make:
+                            cmd.append(f"-Make={exif_make}")
+                        if exif_model:
+                            cmd.append(f"-Model={exif_model}")
+                        cmd.append(str(filepath))
+                        subprocess.run(cmd, check=False, capture_output=True)
+            except ValueError:
+                # Unknown extension, create as generic file
+                filepath.write_bytes(b"test content")
         
         # Set mtime if requested
         if mtime is not None:
@@ -553,7 +590,7 @@ def source_factory(vault: VaultEnv) -> callable:
 
 
 # =============================================================================
-# Helper Functions
+# Helper Functions - Media File Creation
 # =============================================================================
 
 def create_minimal_jpeg(path: Path, content_marker: str = "") -> None:
@@ -566,6 +603,208 @@ def create_minimal_jpeg(path: Path, content_marker: str = "") -> None:
     header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
     marker_bytes = content_marker.encode() if content_marker else b''
     path.write_bytes(header + marker_bytes + b'\xff\xd9')
+
+
+def create_minimal_png(path: Path, content_marker: str = "") -> None:
+    """Create a minimal valid PNG file.
+    
+    Args:
+        path: Output file path
+        content_marker: String to embed in image data for uniqueness
+    """
+    try:
+        from PIL import Image
+        # Create a 1x1 RGB image
+        img = Image.new('RGB', (1, 1), color=(128, 64, 32))
+        img.save(path, format='PNG')
+        
+        # If content marker provided, append it to make file unique
+        if content_marker:
+            with open(path, 'ab') as f:
+                f.write(content_marker.encode())
+    except ImportError:
+        # Fallback: Create minimal PNG signature + IHDR chunk
+        # PNG signature
+        png_sig = b'\x89PNG\r\n\x1a\n'
+        # Minimal IHDR chunk (1x1, 8-bit RGB)
+        ihdr_data = b'\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde'
+        ihdr_chunk = b'\x00\x00\x00\x0dIHDR' + ihdr_data
+        # IDAT chunk (minimal compressed data)
+        idat_data = b'\x78\x9c\x62\xf8\x0f\x00\x00\x01\x01\x00\x05'
+        idat_chunk = b'\x00\x00\x00\x0bIDAT' + idat_data + b'\x18\xd7N\xfc'
+        # IEND chunk
+        iend_chunk = b'\x00\x00\x00\x00IEND\xaeB`\x82'
+        
+        marker_bytes = content_marker.encode() if content_marker else b''
+        path.write_bytes(png_sig + ihdr_chunk + idat_chunk + iend_chunk + marker_bytes)
+
+
+def create_minimal_tiff(path: Path, content_marker: str = "") -> None:
+    """Create a minimal valid TIFF file.
+    
+    Args:
+        path: Output file path
+        content_marker: String to embed in image data for uniqueness
+    """
+    try:
+        from PIL import Image
+        img = Image.new('RGB', (1, 1), color=(64, 128, 192))
+        img.save(path, format='TIFF')
+        
+        if content_marker:
+            with open(path, 'ab') as f:
+                f.write(content_marker.encode())
+    except ImportError:
+        # Fallback: Create minimal TIFF header
+        # TIFF little-endian magic + minimal IFD
+        tiff_header = b'II\x2a\x00\x08\x00\x00\x00'  # Magic + IFD offset
+        # Minimal IFD with 0 entries + next IFD pointer (0)
+        ifd = b'\x00\x00\x00\x00\x00\x00\x00\x00'
+        marker_bytes = content_marker.encode() if content_marker else b''
+        path.write_bytes(tiff_header + ifd + marker_bytes)
+
+
+def create_minimal_mp4(path: Path, content_marker: str = "") -> None:
+    """Create a minimal valid MP4/MOV file.
+    
+    Creates a minimal MP4 file structure that can be parsed by media tools.
+    
+    Args:
+        path: Output file path
+        content_marker: String to embed in file for uniqueness
+    """
+    try:
+        # Try to use ffmpeg if available for proper MP4 creation
+        import shutil
+        if shutil.which("ffmpeg"):
+            # Create a 1-second black video using ffmpeg
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi",
+                "-i", "color=c=black:s=2x2:d=1",
+                "-pix_fmt", "yuv420p",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "51",  # Lowest quality = smallest size
+                str(path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, check=False)
+            if result.returncode == 0 and path.exists():
+                if content_marker:
+                    with open(path, 'ab') as f:
+                        f.write(content_marker.encode())
+                return
+    except Exception:
+        pass
+    
+    # Fallback: Create minimal MP4 structure (may not be playable but recognizable)
+    # ftyp box
+    ftyp = b'\x00\x00\x00\x20ftypisom\x00\x00\x00\x00isommp41\x00\x00\x00\x00'
+    # moov box (minimal movie header)
+    moov = b'\x00\x00\x00\x08moov'
+    # mdat box (empty media data)
+    mdat = b'\x00\x00\x00\x08mdat'
+    
+    marker_bytes = content_marker.encode() if content_marker else b''
+    path.write_bytes(ftyp + moov + mdat + marker_bytes)
+
+
+def create_minimal_mov(path: Path, content_marker: str = "") -> None:
+    """Create a minimal MOV (QuickTime) file.
+    
+    Args:
+        path: Output file path
+        content_marker: String to embed in file for uniqueness
+    """
+    # MOV uses similar structure to MP4 but with different brand
+    # ftyp box with qt brand
+    ftyp = b'\x00\x00\x00\x14ftypqt\x20\x20\x00\x00\x00\x00qt\x20\x20'
+    # moov box
+    moov = b'\x00\x00\x00\x08moov'
+    # mdat box
+    mdat = b'\x00\x00\x00\x08mdat'
+    
+    marker_bytes = content_marker.encode() if content_marker else b''
+    path.write_bytes(ftyp + moov + mdat + marker_bytes)
+
+
+def create_minimal_heic(path: Path, content_marker: str = "") -> None:
+    """Create a minimal HEIC/HEIF file.
+    
+    Args:
+        path: Output file path
+        content_marker: String to embed in file for uniqueness
+    """
+    # HEIC uses ISO Base Media File Format (similar to MP4)
+    # ftyp box with heic brand
+    ftyp = b'\x00\x00\x00\x18ftypheic\x00\x00\x00\x00heicmif1\x00\x00\x00\x00'
+    # meta box (minimal)
+    meta = b'\x00\x00\x00\x08meta'
+    
+    marker_bytes = content_marker.encode() if content_marker else b''
+    path.write_bytes(ftyp + meta + marker_bytes)
+
+
+def create_minimal_raw(path: Path, content_marker: str = "") -> None:
+    """Create a minimal RAW image file (DNG format).
+    
+    Args:
+        path: Output file path
+        content_marker: String to embed in file for uniqueness
+    """
+    # DNG is a TIFF variant
+    # TIFF header (little-endian) + DNG magic
+    tiff_header = b'II\x2a\x00\x08\x00\x00\x00'
+    # Minimal IFD
+    ifd = b'\x00\x00\x00\x00\x00\x00\x00\x00'
+    # DNG version tag data
+    dng_magic = b'DNG\x00'
+    
+    marker_bytes = content_marker.encode() if content_marker else b''
+    path.write_bytes(tiff_header + ifd + dng_magic + marker_bytes)
+
+
+def create_media_file(
+    path: Path,
+    format: str,
+    content_marker: str = "",
+    **kwargs
+) -> None:
+    """Create a media file of specified format.
+    
+    Unified interface for creating test media files in various formats.
+    
+    Args:
+        path: Output file path
+        format: File format - 'jpeg', 'jpg', 'png', 'tiff', 'tif', 'mp4', 'mov', 
+                'heic', 'heif', 'dng', 'raw'
+        content_marker: String to embed for uniqueness
+        **kwargs: Additional format-specific options
+        
+    Raises:
+        ValueError: If format is not supported
+    """
+    format_lower = format.lower()
+    
+    creators = {
+        'jpeg': create_minimal_jpeg,
+        'jpg': create_minimal_jpeg,
+        'png': create_minimal_png,
+        'tiff': create_minimal_tiff,
+        'tif': create_minimal_tiff,
+        'mp4': create_minimal_mp4,
+        'mov': create_minimal_mov,
+        'heic': create_minimal_heic,
+        'heif': create_minimal_heic,
+        'dng': create_minimal_raw,
+        'raw': create_minimal_raw,
+    }
+    
+    if format_lower not in creators:
+        raise ValueError(f"Unsupported format: {format}. "
+                        f"Supported: {list(creators.keys())}")
+    
+    creators[format_lower](path, content_marker)
 
 
 def copy_fixture(vault: VaultEnv, fixture_name: str, subdir: str | None = None) -> Path:
