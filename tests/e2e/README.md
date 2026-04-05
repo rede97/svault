@@ -44,12 +44,19 @@ uv pip install -e "."
 
 # 使用 1GB RAMDisk 并在测试后清理
 ./run.sh --ramdisk-size 1g --cleanup
+
+# 包含 FUSE 深度故障注入测试（慢速，需要 FUSE 支持）
+./run.sh --fuse
+
+# Release 构建 + FUSE 测试
+./run.sh --release --fuse
 ```
 
 ## 命令行选项
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
+| `--fuse` | 包含 FUSE 深度故障注入测试 | False (默认排除) |
 | `--release` | 使用 release 构建（默认使用 debug） | False |
 | `--ramdisk-size` | RAMDisk 大小 (e.g., 128m, 512m, 1g) | 256m |
 | `--ramdisk-path` | RAMDisk 挂载路径 | /tmp/svault-ramdisk |
@@ -81,14 +88,15 @@ uv pip install -e "."
 | `test_import_basic.py` | 基础导入场景 | - |
 | `test_import_force.py` | 强制导入与重复文件 | `force` |
 | `test_import_ignore.py` | Vault 自我保护扫描过滤 | `ignore` |
-| `test_recheck.py` | Recheck 工作流 | `recheck` |
-| `test_verify.py` | 完整性校验 | `verify` |
+| `test_recheck.py` | 一致性校验工作流 | `recheck` |
 | `test_conflict.py` | 文件名冲突处理 | `conflict` |
 | `test_dedup.py` | 三层去重系统 | `dedup` |
 | `test_chaos.py` | 边界/异常场景 | `chaos`, `slow` |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
-| `test_atomic_verification.py` | 原子验证限制 | `atomic` |
+| `test_verify.py` | 完整性验证（哈希匹配、损坏检测） | `verify` |
+| `fuse_tests/test_corruption_fuse.py` | 硬件损坏/静默损坏 FUSE 测试 | `fuse`, `corruption` |
 | `test_concurrent_modification.py` | 并发修改与恢复 | `concurrent` |
+| `fuse_tests/` | **FUSE 深度故障注入测试** | `fuse`, `slow` |
 
 ## 使用 Fixtures
 
@@ -139,6 +147,59 @@ bash tests/setup_ramdisk.sh --umount # 手动卸载
 ```
 
 **注意**：`setup_ramdisk.sh` 仅用于手动调试。测试框架使用 `conftest.py` 中的 `RamDisk` 类自动管理挂载。
+
+## FUSE 深度故障注入测试
+
+对于需要**精确 IO 控制**的场景（如传输中途中断、字节级错误注入），使用 FUSE 测试框架。
+
+### 运行方式
+
+**方式 1：与主测试一起运行（推荐）**
+```bash
+# 默认排除 FUSE 测试
+./run.sh
+
+# 包含 FUSE 测试（需要 FUSE 支持）
+./run.sh --fuse
+
+# 只运行 FUSE 测试
+./run.sh --fuse -k fuse
+```
+
+**方式 2：单独运行 FUSE 测试（调试专用）**
+```bash
+cd fuse_tests
+
+# 安装依赖（fusepy）
+pip install -r requirements.txt
+
+# 运行所有 FUSE 测试
+./run_fuse.sh
+
+# 只运行特定测试
+./run_fuse.sh -v -k test_import_pause
+
+# 调试模式（保留挂载点）
+./run_fuse.sh --debug --keep-mount
+```
+
+### FUSE 测试 vs 常规测试
+
+| 特性 | 常规测试 | FUSE 测试 |
+|-----|---------|----------|
+| 运行速度 | 快 | 慢（有 overhead） |
+| IO 控制精度 | 时间估算 | 字节级精确 |
+| 依赖 | 仅 Python | FUSE 内核模块 |
+| 使用场景 | 回归测试 | 深度故障注入 |
+
+### FUSE 测试覆盖场景
+
+- **传输中断**：在文件读取到 25%/50%/75% 时精确暂停
+- **错误注入**：特定偏移量返回 EIO/ENOSPC/EAGAIN
+- **延迟模拟**：慢速存储、网络抖动
+- **数据损坏**：传输中篡改数据，验证校验和检测
+
+详见 [fuse_tests/README.md](./fuse_tests/README.md) 和 [fuse_tests/VALIDATION_PLAN.md](./fuse_tests/VALIDATION_PLAN.md)
 
 ## Troubleshooting
 

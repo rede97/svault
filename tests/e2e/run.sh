@@ -2,7 +2,8 @@
 # Run E2E tests with proper environment isolation
 #
 # Usage:
-#   ./run.sh                           # Run all tests (debug build)
+#   ./run.sh                           # Run all tests (debug build), exclude FUSE
+#   ./run.sh --fuse                    # Include FUSE tests
 #   ./run.sh --release                 # Run with release build
 #   ./run.sh --ramdisk-size 512m       # Use 512MB RAMDisk
 #   ./run.sh --ramdisk-size 1g --cleanup  # Use 1GB RAMDisk and cleanup after
@@ -20,7 +21,6 @@ unset PYTHONPATH
 unset PYTEST_PLUGINS
 
 # Use venv python directly
-# Note: Use uv run or python -m pytest to avoid shebang path issues after migration
 if command -v uv &> /dev/null; then
     PYTHON="uv run python"
     PYTEST="uv run python -m pytest"
@@ -32,12 +32,17 @@ else
     exit 1
 fi
 
-# Parse options - pytest handles --ramdisk-* and --cleanup via conftest.py
+# Parse options
 PYTEST_ARGS=()
 RELEASE=false
+RUN_FUSE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --fuse)
+            RUN_FUSE=true
+            shift
+            ;;
         --release)
             RELEASE=true
             PYTEST_ARGS+=("$1")
@@ -50,6 +55,26 @@ while [[ $# -gt 0 ]]; do
         --cleanup)
             PYTEST_ARGS+=("$1")
             shift
+            ;;
+        -h|--help)
+            echo "Usage: ./run.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --fuse               Include FUSE tests (default: excluded)"
+            echo "  --release            Use release build of svault"
+            echo "  --ramdisk-size SIZE  Set RAMDisk size (e.g., 512m, 1g)"
+            echo "  --ramdisk-path PATH  Set RAMDisk mount path"
+            echo "  --cleanup            Cleanup RAMDisk after tests"
+            echo "  -v                   Verbose output"
+            echo "  -k EXPRESSION        Only run tests matching expression"
+            echo "  -h, --help           Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  ./run.sh                           # Run all tests (excluding FUSE)"
+            echo "  ./run.sh --fuse                    # Run all tests including FUSE"
+            echo "  ./run.sh -v -k test_import         # Verbose, only import tests"
+            echo "  ./run.sh --release --fuse          # Release build with FUSE tests"
+            exit 0
             ;;
         *)
             PYTEST_ARGS+=("$1")
@@ -82,8 +107,15 @@ if ! command -v exiftool &> /dev/null; then
     echo "              or: brew install exiftool                    (macOS)"
 fi
 
-# Run tests (RAMDisk is managed by Python fixtures)
-echo "Running tests..."
+# Default: exclude FUSE tests unless --fuse specified
+if [ "$RUN_FUSE" = false ]; then
+    PYTEST_ARGS+=("--ignore=fuse_tests/")
+    echo "Running tests (excluding FUSE tests, use --fuse to include)..."
+else
+    echo "Running tests (including FUSE tests)..."
+fi
+
+# Run tests
 if command -v uv &> /dev/null; then
     uv run python -m pytest "${PYTEST_ARGS[@]}"
 else

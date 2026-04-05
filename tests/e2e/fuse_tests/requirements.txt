@@ -1,0 +1,14 @@
+# FUSE 故障注入测试依赖
+# 
+# 安装: pip install -r requirements.txt
+
+# FUSE 绑定（二选一）
+fusepy>=3.0.1; sys_platform == "linux" or sys_platform == "darwin"
+# pyfuse3>=3.2.0; sys_platform == "linux"  # 性能更好，但需编译
+
+# 测试框架
+pytest>=7.0.0
+pytest-asyncio>=0.21.0; sys_platform == "linux"
+
+# 工具库
+psutil>=5.9.0  # 进程管理
