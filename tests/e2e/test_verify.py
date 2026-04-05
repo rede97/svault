@@ -1,7 +1,13 @@
-"""Verify command and verification logic tests.
+"""Verify and recheck command tests.
+
+Merged from:
+- test_verify.py: Hash verification and corruption detection
+- test_recheck.py: Manifest-based recheck workflow
+- test_atomic_verification.py: Atomic verification concepts
 
 测试完整性验证功能，包括：
 - verify 命令功能（哈希匹配、损坏检测、摘要输出）
+- recheck 命令功能（基于清单的双向验证）
 - 底层验证逻辑（数据库哈希一致性、源文件验证）
 - write-then-verify 模式
 - 边界情况（空文件、大文件）
@@ -31,7 +37,7 @@ def compute_file_hash(path: Path) -> str:
 
 
 # =============================================================================
-# 基础 Verify 命令测试
+# Verify 命令测试
 # =============================================================================
 
 class TestVerifyBasic:
@@ -60,15 +66,11 @@ class TestVerifyBasic:
         assert result.returncode == 0
 
 
-# =============================================================================
-# 损坏检测测试
-# =============================================================================
-
 class TestVerifyCorruption:
-    """损坏检测测试 - 通过直接修改文件模拟"""
+    """损坏检测测试"""
     
     def test_verify_detects_bit_flip(self, vault: VaultEnv) -> None:
-        """Verify 应能检测到单比特损坏（模拟磁盘错误）"""
+        """Verify 应能检测到单比特损坏"""
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
         
@@ -76,7 +78,6 @@ class TestVerifyCorruption:
         file_path = files[0]["path"]
         full_path = vault.vault_dir / file_path
         
-        # 损坏单个字节（翻转所有比特）
         original_data = full_path.read_bytes()
         corrupted = bytearray(original_data)
         corrupted[100] ^= 0xFF
@@ -94,7 +95,6 @@ class TestVerifyCorruption:
         files = vault.db_files()
         full_path = vault.vault_dir / files[0]["path"]
         
-        # 截断文件
         data = full_path.read_bytes()
         full_path.write_bytes(data[:len(data)//2])
         
@@ -116,21 +116,20 @@ class TestVerifyCorruption:
         assert "missing" in result.stdout.lower()
     
     def test_verify_detects_content_replacement(self, vault: VaultEnv) -> None:
-        """Verify 应能检测到内容被替换（不同内容，相同文件名）"""
+        """Verify 应能检测到内容被替换"""
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
         
         files = vault.db_files()
         full_path = vault.vault_dir / files[0]["path"]
         
-        # 替换为完全不同的内容
         create_minimal_jpeg(full_path, "COMPLETELY_DIFFERENT_CONTENT")
         
         result = vault.run("verify", capture=True, check=False)
         assert result.returncode != 0
     
     def test_verify_multiple_corruptions(self, vault: VaultEnv) -> None:
-        """Verify 应报告所有损坏文件，而不仅是第一个"""
+        """Verify 应报告所有损坏文件"""
         copy_fixture(vault, "apple_with_exif.jpg")
         copy_fixture(vault, "samsung_photo.jpg")
         vault.import_dir(vault.source_dir)
@@ -138,7 +137,6 @@ class TestVerifyCorruption:
         files = vault.db_files()
         assert len(files) >= 2
         
-        # 损坏所有文件
         for file_info in files:
             file_path = vault.vault_dir / file_info["path"]
             data = bytearray(file_path.read_bytes())
@@ -149,10 +147,6 @@ class TestVerifyCorruption:
         assert result.returncode != 0
         assert result.stdout.count("mismatch") >= 2 or result.stdout.count("hash") >= 2
 
-
-# =============================================================================
-# 哈希算法测试
-# =============================================================================
 
 class TestVerifyHashAlgorithms:
     """不同哈希算法的验证测试"""
@@ -190,15 +184,123 @@ class TestVerifyHashAlgorithms:
         if isinstance(db_hash, bytes):
             db_hash = db_hash.hex()
         
-        assert actual_hash == db_hash.lower(), "数据库哈希应与实际文件匹配"
+        assert actual_hash == db_hash.lower()
+
+
+class TestVerifySummary:
+    """Verify 输出格式测试"""
+    
+    def test_verify_summary_counts(self, vault: VaultEnv) -> None:
+        """Verify 摘要应显示正确的计数"""
+        copy_fixture(vault, "apple_with_exif.jpg")
+        copy_fixture(vault, "samsung_photo.jpg")
+        vault.import_dir(vault.source_dir)
+        
+        result = vault.run("verify", capture=True)
+        assert result.returncode == 0
+        
+        assert "Summary" in result.stdout or "Total" in result.stdout
+        assert "OK" in result.stdout or "2" in result.stdout
 
 
 # =============================================================================
-# 源文件验证测试
+# Recheck 命令测试 (merged from test_recheck.py)
+# =============================================================================
+
+class TestRecheckWorkflow:
+    """Recheck 端到端工作流测试"""
+
+    def test_recheck_detects_corruption_and_reimport_succeeds(self, vault: VaultEnv) -> None:
+        """Detect vault file corruption and recover by re-importing."""
+        f1 = vault.source_dir / "keep.jpg"
+        f2 = vault.source_dir / "corrupt.jpg"
+        create_minimal_jpeg(f1, "KEEP_KEEP_KEEP_" * 1000)
+        create_minimal_jpeg(f2, "CORRUPT_CORRUPT_" * 1000)
+
+        result = vault.import_dir(vault.source_dir, strategy="copy")
+        assert result.returncode == 0
+        files = vault.db_files()
+        assert len(files) == 2
+
+        vault_files = vault.get_vault_files("*.jpg")
+        assert len(vault_files) == 2
+
+        corrupt_target = None
+        for vf in vault_files:
+            if "corrupt" in vf.name.lower():
+                corrupt_target = vf
+                break
+        assert corrupt_target is not None
+
+        data = corrupt_target.read_bytes()
+        corrupt_target.write_bytes(data[:65536] + b"TAMPERED_TAIL_DATA")
+
+        result = vault.run("recheck")
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "Vault corrupted:" in combined
+
+        corrupt_target.unlink()
+
+        result = vault.import_dir(vault.source_dir, strategy="copy")
+        assert result.returncode == 0
+
+        vault_files_after = vault.get_vault_files("*.jpg")
+        assert len(vault_files_after) == 2
+
+        result = vault.run("recheck")
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "VAULT_CORRUPTED" not in combined
+
+    def test_recheck_all_ok(self, vault: VaultEnv) -> None:
+        """Recheck after successful import should report all OK."""
+        f1 = vault.source_dir / "a.jpg"
+        f2 = vault.source_dir / "b.jpg"
+        create_minimal_jpeg(f1, "FILE_A" * 500)
+        create_minimal_jpeg(f2, "FILE_B" * 500)
+
+        vault.import_dir(vault.source_dir, strategy="copy")
+
+        result = vault.run("recheck")
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "OK:" in combined
+        assert "VAULT_CORRUPTED" not in combined
+
+    def test_recheck_source_mismatch(self, vault: VaultEnv) -> None:
+        """Providing a source path that doesn't match the manifest should error."""
+        f1 = vault.source_dir / "a.jpg"
+        create_minimal_jpeg(f1, "FILE_A" * 500)
+
+        vault.import_dir(vault.source_dir, strategy="copy")
+
+        wrong_source = vault.root / "wrong_source"
+        wrong_source.mkdir(parents=True, exist_ok=True)
+        result = vault.run("recheck", str(wrong_source.resolve()), check=False)
+        assert result.returncode != 0
+        combined = result.stderr + result.stdout
+        assert "Source path mismatch" in combined
+
+    def test_recheck_with_matching_source(self, vault: VaultEnv) -> None:
+        """Providing the correct source path should work."""
+        f1 = vault.source_dir / "a.jpg"
+        create_minimal_jpeg(f1, "FILE_A" * 500)
+
+        vault.import_dir(vault.source_dir, strategy="copy")
+
+        result = vault.run("recheck", str(vault.source_dir.resolve()))
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "OK:" in combined
+
+
+# =============================================================================
+# Source 验证测试
 # =============================================================================
 
 class TestSourceVerification:
-    """源文件验证测试 - 验证源文件与 vault 的一致性"""
+    """源文件验证测试"""
     
     def test_source_changed_after_import(self, vault: VaultEnv) -> None:
         """导入后源文件被修改应能被检测到"""
@@ -212,20 +314,17 @@ class TestSourceVerification:
         vault_file = vault.vault_dir / files[0]["path"]
         vault_hash = compute_file_hash(vault_file)
         
-        # 初始一致
         assert source_hash_v1 == vault_hash
         
-        # 修改源文件
         time.sleep(0.1)
         create_minimal_jpeg(f, "SOURCE_V2_DIFFERENT")
         source_hash_v2 = compute_file_hash(f)
         
-        # 验证哈希不同
         assert source_hash_v1 != source_hash_v2
         assert source_hash_v2 != compute_file_hash(vault_file)
     
     def test_cross_session_consistency(self, vault: VaultEnv) -> None:
-        """跨会话一致性 - 多次读取应返回相同数据"""
+        """跨会话一致性"""
         f = vault.source_dir / "test.jpg"
         create_minimal_jpeg(f, "STABLE_DATA")
         
@@ -235,7 +334,7 @@ class TestSourceVerification:
             hashes.append(h)
             time.sleep(0.01)
         
-        assert len(set(hashes)) == 1, "多次读取应返回相同哈希"
+        assert len(set(hashes)) == 1
 
 
 # =============================================================================
@@ -261,13 +360,12 @@ class TestWriteThenVerify:
         assert vault_file.exists()
         
         vault_hash = compute_file_hash(vault_file)
-        assert source_hash == vault_hash, "源文件和 vault 文件应完全一致"
+        assert source_hash == vault_hash
     
     def test_no_partial_files_committed(self, vault: VaultEnv) -> None:
-        """无部分写入文件提交 - 验证事务完整性"""
+        """无部分写入文件提交"""
         f = vault.source_dir / "test.jpg"
         create_minimal_jpeg(f, "COMPLETE_FILE_DATA")
-        original_size = f.stat().st_size
         
         vault.import_dir(vault.source_dir)
         
@@ -279,27 +377,7 @@ class TestWriteThenVerify:
             if "size" in file_info and file_info["size"] is not None:
                 actual_size = vault_path.stat().st_size
                 recorded_size = file_info["size"]
-                assert actual_size == recorded_size, f"文件大小不匹配: {file_info['path']}"
-
-
-# =============================================================================
-# 输出格式测试
-# =============================================================================
-
-class TestVerifySummary:
-    """Verify 输出格式测试"""
-    
-    def test_verify_summary_counts(self, vault: VaultEnv) -> None:
-        """Verify 摘要应显示正确的计数"""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        copy_fixture(vault, "samsung_photo.jpg")
-        vault.import_dir(vault.source_dir)
-        
-        result = vault.run("verify", capture=True)
-        assert result.returncode == 0
-        
-        assert "Summary" in result.stdout or "Total" in result.stdout
-        assert "OK" in result.stdout or "2" in result.stdout
+                assert actual_size == recorded_size
 
 
 # =============================================================================
@@ -310,27 +388,23 @@ class TestVerificationEdgeCases:
     """验证边界情况"""
     
     def test_empty_file_verification(self, vault: VaultEnv) -> None:
-        """空文件验证 - 使用 create_minimal_jpeg 创建空的 JPEG 结构"""
-        # 创建一个最小的有效 JPEG（非空但很小）
+        """空文件验证"""
         f = vault.source_dir / "small.jpg"
         create_minimal_jpeg(f, "small_test")
         
         vault.import_dir(vault.source_dir)
         
         files = vault.db_files()
-        assert len(files) == 1, f"Expected 1 file, got {len(files)}. DB contents: {files}"
+        assert len(files) == 1
         
         vault_file = vault.vault_dir / files[0]["path"]
         assert vault_file.exists()
-        # 验证文件大小大于 0（minimal_jpeg 创建的是有效文件）
         assert vault_file.stat().st_size > 0
     
     def test_large_file_hash_verification(self, vault: VaultEnv) -> None:
-        """大文件哈希验证 - 使用 JPEG 格式确保被导入"""
+        """大文件哈希验证"""
         f = vault.source_dir / "large.jpg"
-        # 创建大的 JPEG 文件：minimal JPEG + 填充数据
         create_minimal_jpeg(f, "large_file_test")
-        # 追加数据使文件变大（1MB）
         with open(f, 'ab') as fp:
             fp.write(b"X" * (1024 * 1024 - f.stat().st_size))
         
@@ -338,7 +412,7 @@ class TestVerificationEdgeCases:
         vault.import_dir(vault.source_dir, hash="secure")
         
         files = vault.db_files()
-        assert len(files) == 1, f"Expected 1 file, got {len(files)}"
+        assert len(files) == 1
         vault_file = vault.vault_dir / files[0]["path"]
         vault_hash = compute_file_hash(vault_file)
         
@@ -346,7 +420,45 @@ class TestVerificationEdgeCases:
 
 
 # =============================================================================
-# Fundamental Problem 说明（参考 FUSE 测试）
+# Recovery 测试
+# =============================================================================
+
+class TestVerifyRecovery:
+    """验证失败后的恢复测试"""
+
+    def test_deleted_file_can_be_reimported_after_verify_failure(self, vault: VaultEnv) -> None:
+        """If verify detects corruption, deleting and re-importing works."""
+        f1 = vault.source_dir / "photo.jpg"
+        create_minimal_jpeg(f1, "PHOTO_DATA" * 500)
+
+        vault.import_dir(vault.source_dir, strategy="copy")
+
+        result = vault.run("verify")
+        assert result.returncode == 0
+
+        vault_files = vault.get_vault_files("*.jpg")
+        assert len(vault_files) == 1
+        vf = vault_files[0]
+        data = vf.read_bytes()
+        vf.write_bytes(data[:65536] + b"CORRUPT")
+
+        result = vault.run("verify", check=False)
+        assert result.returncode != 0
+
+        vf.unlink()
+
+        result = vault.import_dir(vault.source_dir, strategy="copy")
+        assert result.returncode == 0
+
+        vault_files_after = vault.get_vault_files("*.jpg")
+        assert len(vault_files_after) == 1
+
+        result = vault.run("verify")
+        assert result.returncode == 0
+
+
+# =============================================================================
+# 说明
 # =============================================================================
 
 """
@@ -363,7 +475,6 @@ class TestVerificationEdgeCases:
 4. 存储 H_bad 到数据库
 5. 复制损坏数据到 vault
 6. verify 比较：vault_hash == db_hash → PASS！
-   （两者都基于损坏数据，匹配！）
 
 解决方案：
 1. 导入后重新检查源文件（recheck --source）

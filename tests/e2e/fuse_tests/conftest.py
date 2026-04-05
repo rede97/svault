@@ -63,9 +63,9 @@ def fuse_backend() -> str | None:
 
 
 @pytest.fixture(scope="function")
-def fuse_mount_point(tmp_path: Path) -> Path:
-    """提供 FUSE 挂载点"""
-    mount_point = tmp_path / "fuse_mount"
+def fuse_mount_point(test_dir: Path) -> Path:
+    """提供 FUSE 挂载点（在测试目录中）"""
+    mount_point = test_dir / "fuse_mount"
     mount_point.mkdir(parents=True, exist_ok=True)
     return mount_point
 

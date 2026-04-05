@@ -89,6 +89,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Cleanup RAMDisk after tests (default: keep for inspection)",
     )
+    parser.addoption(
+        "--test-dir",
+        action="store",
+        default=None,
+        help="Custom test directory (instead of RAMDisk). Use this to test on specific filesystems. "
+             "When specified, tests will use this directory instead of mounting a RAMDisk.",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -107,6 +114,13 @@ def ramdisk_path(request: pytest.FixtureRequest) -> Path:
 def cleanup_after_tests(request: pytest.FixtureRequest) -> bool:
     """Get cleanup flag from command line option."""
     return request.config.getoption("--cleanup")
+
+
+@pytest.fixture(scope="session")
+def custom_test_dir(request: pytest.FixtureRequest) -> Path | None:
+    """Get custom test directory from command line option."""
+    test_dir = request.config.getoption("--test-dir")
+    return Path(test_dir) if test_dir else None
 
 
 # =============================================================================
@@ -419,13 +433,27 @@ def ramdisk(
     ramdisk_size: str,
     ramdisk_path: Path,
     cleanup_after_tests: bool,
+    custom_test_dir: Path | None,
 ) -> Generator[RamDisk, None, None]:
-    """Provide a RAMDisk for test isolation.
+    """Provide a test directory for test isolation.
     
-    Uses command-line options --ramdisk-size and --ramdisk-path.
-    On Windows, always uses a regular temp directory.
-    Falls back to regular temp directory if mounting fails.
+    Priority:
+    1. If --test-dir is specified, use that directory directly (no RAMDisk mount)
+    2. Otherwise, use RAMDisk (mount tmpfs)
+    3. On Windows, always use a regular temp directory
+    4. Falls back to regular temp directory if RAMDisk mounting fails
+    
+    This allows testing on specific filesystems by using --test-dir=/path/to/ext4
     """
+    # If custom test directory is specified, use it directly
+    if custom_test_dir:
+        custom_test_dir.mkdir(parents=True, exist_ok=True)
+        rd = RamDisk(custom_test_dir, size=ramdisk_size)
+        rd._mounted = True  # Mark as mounted (it's a real directory)
+        yield rd
+        # Note: We never cleanup custom test directories
+        return
+    
     # On Windows, always use temp directory (no RAMDisk)
     if IS_WINDOWS:
         rd = RamDisk(None, size=ramdisk_size)
@@ -435,7 +463,7 @@ def ramdisk(
             rd.cleanup()
         return
         
-    # Use configured path and size
+    # Use configured path and size (RAMDisk)
     rd = RamDisk(ramdisk_path, size=ramdisk_size)
     
     try:
@@ -454,10 +482,24 @@ def ramdisk(
 
 
 @pytest.fixture(scope="function")
+def test_dir(ramdisk: RamDisk) -> Path:
+    """Provide the test base directory.
+    
+    This is a simple wrapper around ramdisk.path to hide the RamDisk
+    implementation detail from test code. Tests should use this when
+    they just need a directory path, not RamDisk-specific features.
+    
+    Returns:
+        Path to the test directory (either RAMDisk or user-specified via --test-dir)
+    """
+    return ramdisk.path
+
+
+@pytest.fixture(scope="function")
 def vault(ramdisk: RamDisk, svault_binary: Path) -> Generator[VaultEnv, None, None]:
     """Provide an initialized vault environment.
     
-    The vault is created in the RAMDisk, ensuring isolation.
+    The vault is created in the test directory, ensuring isolation.
     Automatically cleaned up after test.
     """
     import uuid

@@ -1,6 +1,9 @@
-"""Basic import functionality tests.
+"""Import functionality tests.
 
-This module tests svault's core import functionality for normal use cases.
+Merged from:
+- test_import_basic.py: Normal import scenarios, duplicate detection
+- test_import_force.py: --force flag behavior
+- test_import_ignore.py: Vault self-protection
 
 中文场景说明：
 - 标准 EXIF 导入：用户从 iPhone/相机导入带完整元数据的照片（90%场景）
@@ -8,18 +11,15 @@ This module tests svault's core import functionality for normal use cases.
 - 无 EXIF：截图、扫描件等没有拍摄元数据的文件
 - Samsung 设备：测试 Android 设备的特殊处理
 - 重复检测：用户多次导入同一批照片，避免存储浪费
-
-Coverage of old test_rules.json scenarios:
-- s1_normal_apple: test_import_with_exif_date_and_device
-- s2_no_device: test_import_no_device
-- s3_no_exif: test_import_no_exif_uses_mtime
-- s4_duplicate*: test_exact_duplicate_not_imported, test_multiple_duplicates
-- s5_samsung: test_import_samsung_device
-- s6_make_in_model: test_import_avoids_redundant_make
+- 强制导入：覆盖已有文件或恢复被删除的文件
+- Vault 自保护：导入时不扫描 vault 自身目录
 """
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import tempfile
 import time
 from pathlib import Path
 
@@ -83,7 +83,6 @@ class TestNormalImport:
         
         Expected: Path derived from file modification time
         """
-        # Set mtime to 2024-03-15
         target_ts = time.mktime(time.strptime("2024:03:15 08:00:00", "%Y:%m:%d %H:%M:%S"))
         source_factory("no_exif.jpg", mtime=target_ts)
         
@@ -108,7 +107,6 @@ class TestNormalImport:
         
         row = assert_file_imported(vault, "samsung.jpg")
         assert_path_contains(row["path"], "Samsung")
-        # Should not have "Samsung Samsung"
         assert "Samsung Samsung" not in row["path"]
     
     def test_import_avoids_redundant_make(self, vault: VaultEnv, source_factory: callable) -> None:
@@ -134,14 +132,7 @@ class TestDuplicateDetection:
     """Test duplicate file detection based on content hash."""
     
     def test_exact_duplicate_not_imported(self, vault: VaultEnv, source_factory: callable) -> None:
-        """Exact byte-for-byte duplicate should not be imported twice.
-        
-        Scenario:
-        1. Import original file
-        2. Import duplicate (same content, different name)
-        3. Duplicate should be detected and skipped
-        """
-        # Create original
+        """Exact byte-for-byte duplicate should not be imported twice."""
         source_factory(
             "original.jpg",
             exif_date="2024:05:01 10:00:00",
@@ -149,7 +140,6 @@ class TestDuplicateDetection:
             exif_model="Camera",
         )
         
-        # First import
         vault.import_dir(vault.source_dir)
         assert_file_imported(vault, "original.jpg")
         
@@ -159,16 +149,12 @@ class TestDuplicateDetection:
         import shutil
         shutil.copy2(original, duplicate)
         
-        # Second import
-        result = vault.import_dir(vault.source_dir)
-        
-        # Duplicate should not be in DB
+        vault.import_dir(vault.source_dir)
         assert_file_duplicate(vault, "duplicate.jpg")
     
     @pytest.mark.parametrize("dup_count", [1, 3, 6])
     def test_multiple_duplicates(self, vault: VaultEnv, source_factory: callable, dup_count: int) -> None:
         """Test handling of multiple duplicates in batch."""
-        # Create original
         source_factory(
             "original.jpg",
             exif_date="2024:05:01 10:00:00",
@@ -178,23 +164,172 @@ class TestDuplicateDetection:
         
         vault.import_dir(vault.source_dir)
         
-        # Create multiple duplicates
         original = vault.source_dir / "original.jpg"
         for i in range(dup_count):
             dup_path = vault.source_dir / f"duplicate_{i}.jpg"
             import shutil
             shutil.copy2(original, dup_path)
         
-        # Import duplicates
         vault.import_dir(vault.source_dir)
         
-        # None of the duplicates should be in DB
         for i in range(dup_count):
             assert_file_duplicate(vault, f"duplicate_{i}.jpg")
         
-        # Only original should be in DB
         files = vault.db_files()
         assert len(files) == 1
+
+
+class TestForceImport:
+    """Test `import --force` behavior."""
+
+    def test_force_import_duplicate(self, vault: VaultEnv, source_factory: callable) -> None:
+        """Force-importing an exact duplicate should overwrite the vault file."""
+        source_factory(
+            "photo.jpg",
+            exif_date="2024:01:01 12:00:00",
+            exif_make="Apple",
+        )
+
+        r1 = vault.import_dir(vault.source_dir)
+        assert r1.returncode == 0
+        data1 = json.loads(r1.stdout)
+        assert data1["imported"] == 1
+
+        # Without force: skipped as duplicate
+        r2 = vault.import_dir(vault.source_dir)
+        assert r2.returncode == 0
+        data2 = json.loads(r2.stdout)
+        assert data2["duplicate"] == 1
+
+        # With force: re-processed
+        r3 = vault.import_dir(vault.source_dir, force=True)
+        assert r3.returncode == 0
+        data3 = json.loads(r3.stdout)
+        assert data3["imported"] == 1
+
+        rows = vault.find_file_in_db("photo.jpg")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "imported"
+
+        files = vault.get_vault_files("photo.jpg")
+        assert len(files) == 1
+
+        v = vault.run("verify")
+        assert v.returncode == 0
+
+    def test_force_import_same_name_different_content(
+        self, vault: VaultEnv, source_factory: callable
+    ) -> None:
+        """Two different files that resolve to the same vault path."""
+        common_mtime = time.time()
+        source_factory(
+            "IMG.jpg",
+            content=b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"A" * 20,
+            mtime=common_mtime,
+            subdir="dir_a",
+        )
+        source_factory(
+            "IMG.jpg",
+            content=b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"B" * 20,
+            mtime=common_mtime,
+            subdir="dir_b",
+        )
+
+        r1 = vault.import_dir(vault.source_dir / "dir_a")
+        assert r1.returncode == 0
+        hash1 = vault.find_file_in_db("IMG.jpg")[0]["xxh3_128"]
+
+        r2 = vault.import_dir(vault.source_dir / "dir_b", force=True)
+        assert r2.returncode == 0
+
+        vault_files = vault.get_vault_files("IMG*.jpg")
+        assert len(vault_files) == 2
+        basenames = {f.name for f in vault_files}
+        assert "IMG.jpg" in basenames
+        assert "IMG.1.jpg" in basenames
+
+        db_rows = vault.db_query(
+            "SELECT * FROM files WHERE path LIKE '%IMG%.jpg%' AND status = 'imported'"
+        )
+        assert len(db_rows) == 2
+        hashes = {r["xxh3_128"] for r in db_rows}
+        assert hash1 in hashes
+
+    def test_force_import_recovers_deleted_file(
+        self, vault: VaultEnv, source_factory: callable
+    ) -> None:
+        """Force-importing after the vault copy was deleted should restore it."""
+        source_factory(
+            "photo.jpg",
+            exif_date="2024:01:01 12:00:00",
+            exif_make="Apple",
+        )
+
+        r1 = vault.import_dir(vault.source_dir)
+        assert r1.returncode == 0
+
+        vault_files = vault.get_vault_files("photo.jpg")
+        assert len(vault_files) == 1
+        vault_files[0].unlink()
+
+        r2 = vault.import_dir(vault.source_dir, force=True)
+        assert r2.returncode == 0
+        data2 = json.loads(r2.stdout)
+        assert data2["imported"] == 1
+
+        restored = vault.get_vault_files("photo.jpg")
+        assert len(restored) == 1
+
+        v = vault.run("verify")
+        assert v.returncode == 0
+
+
+class TestImportIgnoresVault:
+    """Test that import skips the vault when source is an ancestor."""
+
+    def test_import_from_ancestor_skips_vault(self, vault: VaultEnv) -> None:
+        """Importing from a parent directory must not re-import vault files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            vault_sub = tree / "myvault"
+            src_sub = tree / "my_source"
+            vault_sub.mkdir()
+            src_sub.mkdir()
+
+            vault.run("init", cwd=vault_sub, check=True)
+
+            header = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+            (src_sub / "outside.jpg").write_bytes(header + b"A" * 20)
+            (vault_sub / "existing.jpg").write_bytes(header + b"B" * 20)
+
+            r = vault.run(
+                "import",
+                "--yes",
+                "--output=json",
+                "--target",
+                str(vault_sub),
+                str(tree),
+            )
+            assert r.returncode == 0, f"Import failed: {r.stderr}"
+            data = json.loads(r.stdout)
+
+            assert data["imported"] == 1, f"Expected 1 imported, got {data}"
+            assert data["total"] == 1
+
+            db_path = vault_sub / ".svault" / "vault.db"
+            conn = sqlite3.connect(str(db_path))
+            try:
+                rows = conn.execute(
+                    "SELECT path FROM files WHERE path LIKE '%.svault%'"
+                ).fetchall()
+                assert len(rows) == 0, f"Vault metadata leaked: {rows}"
+
+                rows = conn.execute(
+                    "SELECT path FROM files WHERE path LIKE '%existing.jpg%'"
+                ).fetchall()
+                assert len(rows) == 0, f"Vault file was re-imported: {rows}"
+            finally:
+                conn.close()
 
 
 class TestExistingFixtures:

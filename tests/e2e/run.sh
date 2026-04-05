@@ -7,6 +7,7 @@
 #   ./run.sh --release                 # Run with release build
 #   ./run.sh --ramdisk-size 512m       # Use 512MB RAMDisk
 #   ./run.sh --ramdisk-size 1g --cleanup  # Use 1GB RAMDisk and cleanup after
+#   ./run.sh --test-dir /mnt/ext4      # Test on specific filesystem
 #   ./run.sh -v -k test_import         # Verbose, only matching tests
 
 set -e
@@ -48,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             PYTEST_ARGS+=("$1")
             shift
             ;;
-        --ramdisk-size|--ramdisk-path)
+        --ramdisk-size|--ramdisk-path|--test-dir)
             PYTEST_ARGS+=("$1" "$2")
             shift 2
             ;;
@@ -64,6 +65,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --release            Use release build of svault"
             echo "  --ramdisk-size SIZE  Set RAMDisk size (e.g., 512m, 1g)"
             echo "  --ramdisk-path PATH  Set RAMDisk mount path"
+            echo "  --test-dir PATH      Use custom directory instead of RAMDisk"
+            echo "                       Useful for testing on specific filesystems"
             echo "  --cleanup            Cleanup RAMDisk after tests"
             echo "  -v                   Verbose output"
             echo "  -k EXPRESSION        Only run tests matching expression"
@@ -72,6 +75,8 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  ./run.sh                           # Run all tests (excluding FUSE)"
             echo "  ./run.sh --fuse                    # Run all tests including FUSE"
+            echo "  ./run.sh --test-dir /mnt/ext4      # Test on ext4 filesystem"
+            echo "  ./run.sh --test-dir /mnt/btrfs     # Test on btrfs filesystem"
             echo "  ./run.sh -v -k test_import         # Verbose, only import tests"
             echo "  ./run.sh --release --fuse          # Release build with FUSE tests"
             exit 0

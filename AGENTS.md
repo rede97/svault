@@ -85,6 +85,10 @@ cd tests/e2e && bash run.sh --verbose
 bash tests/setup_ramdisk.sh
 cd .ramdisk/vault
 svault status
+
+# 方法 3: 指定自定义目录（测试特定文件系统）
+cd tests/e2e && bash run.sh --test-dir /mnt/ext4    # 在 ext4 上测试
+bash run.sh --test-dir /mnt/btrfs --cleanup         # 在 btrfs 上测试并清理
 ```
 
 ❌ **错误做法**:
@@ -94,6 +98,19 @@ svault init      # 错误！会污染项目目录
 ```
 
 详见 [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) 的 "重要测试规则" 章节。
+
+### E2E 测试目录选项
+
+| 选项 | 说明 | 示例 |
+|------|------|------|
+| 默认 | 使用 RAMDisk (`/tmp/svault-ramdisk`) | `bash run.sh` |
+| `--test-dir PATH` | 使用自定义目录 | `bash run.sh --test-dir /mnt/ext4` |
+| `--ramdisk-path PATH` | 自定义 RAMDisk 挂载点 | `bash run.sh --ramdisk-path /tmp/my-ramdisk` |
+| `--cleanup` | 测试后清理目录 | `bash run.sh --cleanup` |
+
+**注意**: `--test-dir` 和 `--ramdisk-path` 的区别：
+- `--test-dir`: 直接使用现有目录（不挂载 RAMDisk）
+- `--ramdisk-path`: 在该路径挂载 tmpfs RAMDisk
 
 ---
 

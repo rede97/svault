@@ -286,12 +286,13 @@ def check_btrfs_tools():
 def loopback_img_dir(tmp_path: Path) -> Path:
     """Provide a directory for loopback img files.
     
-    Note: Using regular tmp_path instead of RAMDisk to avoid mount cleanup issues.
-    The img files are small (256MB) and will be cleaned up by pytest.
+    Img files are created in pytest's tmp_path for:
+    - Automatic cleanup: tmp_path is cleaned up after test
+    - Flexibility: Works with --test-dir option
+    
+    Note: The img files are small (256MB) and will be cleaned up by pytest.
     """
-    img_dir = tmp_path / "loopback_images"
-    img_dir.mkdir(parents=True, exist_ok=True)
-    return img_dir
+    return tmp_path
 
 
 class TestCrossFilesystemImport:
@@ -382,61 +383,66 @@ class TestCrossFilesystemImport:
             # This test mainly verifies import succeeds on btrfs
             assert vault_files[0].exists(), "File should exist in vault"
 
-    def test_tmpfs_to_ext4_stream_copy(self, tmp_path: Path, svault_binary: Path):
-        """X3: tmpfs → ext4 should use stream copy.
+    def test_cross_fs_stream_copy(self, tmp_path: Path, svault_binary: Path):
+        """X3: Cross-filesystem import should use stream copy.
         
         Setup:
-        - Source on tmpfs (memory)
-        - Vault on regular ext4
+        - Source on test directory (tmpfs or user-specified)
+        - Vault on ext4 loopback (different filesystem)
         
         Verify:
-        - Import succeeds
+        - Import succeeds across filesystem boundary
         - Files are valid
         """
         import sqlite3
         
-        source_dir = tmp_path / "source"
-        vault_dir = tmp_path / "vault"
-        source_dir.mkdir()
-        vault_dir.mkdir()
-        
-        # Create test image file (JPEG)
-        test_file = source_dir / "memory_test.jpg"
+        # Create ext4 loopback for vault to ensure cross-fs scenario
+        vault_fs = LoopbackFs("ext4", size_mb=64)
         try:
-            from PIL import Image
-            img = Image.new("RGB", (100, 100), color="blue")
-            img.save(test_file, "JPEG")
-        except ImportError:
-            # Fallback: minimal JPEG
-            test_file.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+            vault_mount = vault_fs.create(tmp_path)
+        except (subprocess.CalledProcessError, RuntimeError):
+            pytest.skip("Root or passwordless sudo required for loopback mount")
         
-        # Init vault
-        subprocess.run(
-            [str(svault_binary), "init"],
-            cwd=vault_dir,
-            check=True,
-            capture_output=True,
-        )
-        
-        # Import with --yes to skip confirmation
-        result = subprocess.run(
-            [str(svault_binary), "--yes", "import", str(source_dir)],
-            cwd=vault_dir,
-            capture_output=True,
-            text=True,
-        )
-        
-        assert result.returncode == 0, f"Import failed: {result.stderr}"
-        
-        # Verify via database
-        db_path = vault_dir / ".svault" / "vault.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute("SELECT * FROM files WHERE path LIKE '%.jpg%'")
-        rows = cur.fetchall()
-        conn.close()
-        
-        assert len(rows) > 0, "File not imported (not in database)"
+        try:
+            source_dir = tmp_path / "source"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            vault_dir = vault_mount / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create test image file (JPEG)
+            from conftest import create_minimal_jpeg
+            test_file = source_dir / "cross_fs_test.jpg"
+            create_minimal_jpeg(test_file, "CROSS_FS_TEST")
+            
+            # Init vault on ext4
+            subprocess.run(
+                [str(svault_binary), "init"],
+                cwd=vault_dir,
+                check=True,
+                capture_output=True,
+            )
+            
+            # Import with --yes to skip confirmation
+            result = subprocess.run(
+                [str(svault_binary), "--yes", "import", str(source_dir)],
+                cwd=vault_dir,
+                capture_output=True,
+                text=True,
+            )
+            
+            assert result.returncode == 0, f"Import failed: {result.stderr}"
+            
+            # Verify via database
+            db_path = vault_dir / ".svault" / "vault.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute("SELECT * FROM files WHERE path LIKE '%.jpg%'")
+            rows = cur.fetchall()
+            conn.close()
+            
+            assert len(rows) > 0, "File not imported (not in database)"
+        finally:
+            vault_fs.cleanup()
 
 
 class TestFilesystemCapabilities:
