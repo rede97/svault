@@ -274,12 +274,29 @@ def check_root():
 @pytest.fixture
 def check_btrfs_tools():
     """Skip tests if btrfs tools are not available."""
+    # Check mkfs.btrfs
+    result = subprocess.run(["which", "mkfs.btrfs"], capture_output=True)
+    if result.returncode != 0:
+        pytest.skip("mkfs.btrfs not found (install btrfs-progs)")
+    
+    # Check btrfs command
+    result = subprocess.run(["which", "btrfs"], capture_output=True)
+    if result.returncode != 0:
+        pytest.skip("btrfs command not found (install btrfs-progs)")
+    
+    # Check kernel support (try to load module or check /proc/filesystems)
     result = subprocess.run(
-        ["which", "mkfs.btrfs"],
+        ["grep", "btrfs", "/proc/filesystems"],
         capture_output=True,
     )
     if result.returncode != 0:
-        pytest.skip("btrfs-tools not installed")
+        # Try modprobe as fallback
+        result = subprocess.run(
+            ["modprobe", "btrfs"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            pytest.skip("btrfs kernel module not available")
 
 
 @pytest.fixture(scope="function")
@@ -341,12 +358,11 @@ class TestCrossFilesystemImport:
             link_info = check_file_linked(source_file, vault_file[0])
             assert link_info["is_copy"], "Should be copy across different mounts"
 
-    @pytest.mark.skip(reason="btrfs requires kernel support and tools")
     def test_btrfs_to_btrfs_reflink(self, check_root, check_btrfs_tools, loopback_img_dir, svault_binary: Path):
         """X2: btrfs → btrfs should use reflink (same FS type, CoW).
         
-        Note: Skipped by default as btrfs may not be available in all environments.
-        When enabled, tests that svault properly uses reflink on btrfs.
+        Requires: btrfs kernel support, btrfs-progs tools, and root privileges.
+        Skipped dynamically if btrfs is not available.
         """
         with cross_fs_env("btrfs", "btrfs", img_dir=loopback_img_dir) as (source_mount, vault_mount, _, _):
             # Create a JPEG test file (svault only imports media files by default)
@@ -448,9 +464,12 @@ class TestCrossFilesystemImport:
 class TestFilesystemCapabilities:
     """Test filesystem capability detection."""
 
-    @pytest.mark.skip(reason="btrfs requires kernel support and tools")
     def test_reflink_capability_detection(self, check_root, check_btrfs_tools):
-        """Verify we can detect reflink support on btrfs filesystem."""
+        """Verify we can detect reflink support on btrfs filesystem.
+        
+        Requires: btrfs kernel support, btrfs-progs tools, and root privileges.
+        Skipped dynamically if btrfs is not available.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             btrfs = LoopbackFs("btrfs")
             try:
