@@ -140,67 +140,67 @@ fn print_verify_results(
             VerifyResult::Ok => {}
             VerifyResult::Missing => {
                 has_failures = true;
-                println!("{} {} - Missing", style("✗").red().bold(), path);
+                eprintln!("{} {} - Missing", style("✗").red().bold(), path);
             }
             VerifyResult::SizeMismatch { expected, actual } => {
                 has_failures = true;
-                println!("{} {} - Size mismatch (expected {}, got {})",
+                eprintln!("{} {} - Size mismatch (expected {}, got {})",
                     style("✗").red().bold(), path, expected, actual);
             }
             VerifyResult::HashMismatch { algo } => {
                 has_failures = true;
-                println!("{} {} - {} hash mismatch",
+                eprintln!("{} {} - {} hash mismatch",
                     style("✗").red().bold(), path, algo);
             }
             VerifyResult::IoError(e) => {
                 has_failures = true;
-                println!("{} {} - IO error: {}",
+                eprintln!("{} {} - IO error: {}",
                     style("✗").red().bold(), path, e);
             }
             VerifyResult::HashNotAvailable => {
-                println!("{} {} - Hash not available",
+                eprintln!("{} {} - Hash not available",
                     style("!").yellow().bold(), path);
             }
         }
     }
 
-    println!();
-    println!("{}", style("Summary:").bold());
-    println!(
+    eprintln!();
+    eprintln!("{}", style("Summary:").bold());
+    eprintln!(
         "  {} {}",
         style(format!("OK:               {:>6}", summary.ok)).green(),
         style("verified successfully")
     );
     if summary.missing > 0 {
-        println!(
+        eprintln!(
             "  {} {}",
             style(format!("Missing:          {:>6}", summary.missing)).red(),
             style("file not found on disk")
         );
     }
     if summary.size_mismatch > 0 {
-        println!(
+        eprintln!(
             "  {} {}",
             style(format!("Size mismatch:    {:>6}", summary.size_mismatch)).red(),
             style("file size differs from database")
         );
     }
     if summary.hash_mismatch > 0 {
-        println!(
+        eprintln!(
             "  {} {}",
             style(format!("Hash mismatch:    {:>6}", summary.hash_mismatch)).red(),
             style("hash does not match database")
         );
     }
     if summary.io_error > 0 {
-        println!(
+        eprintln!(
             "  {} {}",
             style(format!("IO error:         {:>6}", summary.io_error)).red(),
             style("unable to read file")
         );
     }
     if summary.hash_not_available > 0 {
-        println!(
+        eprintln!(
             "  {} {}",
             style(format!("Hash pending:     {:>6}", summary.hash_not_available)).yellow(),
             style("hash not yet computed")
@@ -416,7 +416,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     nice: background_hash_nice,
                 };
                 let summary = svault_core::background_hash::run_background_hash(opts, &db)?;
-                println!(
+                eprintln!(
                     "Processed {} file(s), {} failed.",
                     summary.processed, summary.failed
                 );
@@ -458,7 +458,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
 
             if let Some(seconds) = recent {
-                println!(
+                eprintln!(
                     "{} Verifying files imported in the last {} seconds",
                     style("Verify:").bold().cyan(),
                     style(seconds).cyan()
@@ -476,26 +476,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 println!("{} {}", style("✓").green().bold(), file_path.display());
                             }
                             VerifyResult::Missing => {
-                                println!("{} {} - File not found", style("✗").red().bold(), file_path.display());
+                                eprintln!("{} {} - File not found", style("✗").red().bold(), file_path.display());
                                 std::process::exit(1);
                             }
                             VerifyResult::SizeMismatch { expected, actual } => {
-                                println!("{} {} - Size mismatch (expected {}, got {})",
+                                eprintln!("{} {} - Size mismatch (expected {}, got {})",
                                     style("✗").red().bold(), file_path.display(), expected, actual);
                                 std::process::exit(1);
                             }
                             VerifyResult::HashMismatch { algo } => {
-                                println!("{} {} - Hash mismatch ({})",
+                                eprintln!("{} {} - Hash mismatch ({})",
                                     style("✗").red().bold(), file_path.display(), algo);
                                 std::process::exit(1);
                             }
                             VerifyResult::IoError(e) => {
-                                println!("{} {} - IO error: {}",
+                                eprintln!("{} {} - IO error: {}",
                                     style("✗").red().bold(), file_path.display(), e);
                                 std::process::exit(1);
                             }
                             VerifyResult::HashNotAvailable => {
-                                println!("{} {} - Hash not computed yet",
+                                eprintln!("{} {} - Hash not computed yet",
                                     style("!").yellow().bold(), file_path.display());
                             }
                         }
@@ -505,7 +505,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
             } else {
-                println!(
+                eprintln!(
                     "{} Verifying all files in vault",
                     style("Verify:").bold().cyan()
                 );
@@ -546,7 +546,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("cannot list manifests: {e}"))?;
 
                 if manifests.is_empty() {
-                    println!("No import sessions found.");
+                    eprintln!("No import sessions found.");
                     return Ok(());
                 }
 
@@ -648,7 +648,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     println!("{}", serde_json::to_string_pretty(&json)?);
                 } else {
                     if events.is_empty() {
-                        println!("No events found.");
+                        eprintln!("No events found.");
                         return Ok(());
                     }
                     println!("{:>6}  {:<22}  {:<20}  payload", "seq", "time", "event");

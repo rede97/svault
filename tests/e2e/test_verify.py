@@ -51,7 +51,8 @@ class TestVerifyBasic:
         
         result = vault.run("verify", capture=True)
         assert result.returncode == 0
-        assert "OK" in result.stdout or "Summary" in result.stdout
+        combined = result.stdout + result.stderr
+        assert "OK" in combined or "Summary" in combined
     
     def test_verify_single_file_ok(self, vault: VaultEnv) -> None:
         """验证单个完好文件"""
@@ -64,6 +65,8 @@ class TestVerifyBasic:
         
         result = vault.run("verify", "--file", file_path, capture=True)
         assert result.returncode == 0
+        combined = result.stdout + result.stderr
+        assert "✓" in combined or "OK" in combined
 
 
 class TestVerifyCorruption:
@@ -85,7 +88,8 @@ class TestVerifyCorruption:
         
         result = vault.run("verify", capture=True, check=False)
         assert result.returncode != 0
-        assert "mismatch" in result.stdout.lower() or "hash" in result.stdout.lower()
+        combined = result.stdout + result.stderr
+        assert "mismatch" in combined.lower() or "hash" in combined.lower()
     
     def test_verify_detects_truncation(self, vault: VaultEnv) -> None:
         """Verify 应能检测到文件截断"""
@@ -100,7 +104,8 @@ class TestVerifyCorruption:
         
         result = vault.run("verify", capture=True, check=False)
         assert result.returncode != 0
-        assert "size" in result.stdout.lower() or "mismatch" in result.stdout.lower()
+        combined = result.stdout + result.stderr
+        assert "size" in combined.lower() or "mismatch" in combined.lower()
     
     def test_verify_detects_missing_file(self, vault: VaultEnv) -> None:
         """Verify 应能检测到文件丢失"""
@@ -113,7 +118,8 @@ class TestVerifyCorruption:
         
         result = vault.run("verify", capture=True, check=False)
         assert result.returncode != 0
-        assert "missing" in result.stdout.lower()
+        combined = result.stdout + result.stderr
+        assert "missing" in combined.lower()
     
     def test_verify_detects_content_replacement(self, vault: VaultEnv) -> None:
         """Verify 应能检测到内容被替换"""
@@ -145,7 +151,8 @@ class TestVerifyCorruption:
         
         result = vault.run("verify", capture=True, check=False)
         assert result.returncode != 0
-        assert result.stdout.count("mismatch") >= 2 or result.stdout.count("hash") >= 2
+        combined = result.stdout + result.stderr
+        assert combined.count("mismatch") >= 2 or combined.count("hash") >= 2
 
 
 class TestVerifyHashAlgorithms:
@@ -166,7 +173,8 @@ class TestVerifyHashAlgorithms:
         
         result = vault.run("verify", "-H", "fast", capture=True)
         assert result.returncode == 0
-        assert "OK" in result.stdout or "0" in result.stdout
+        combined = result.stdout + result.stderr
+        assert "OK" in combined or "0" in combined
     
     def test_database_hash_matches_actual_file(self, vault: VaultEnv) -> None:
         """数据库中存储的哈希与实际文件匹配"""
@@ -198,9 +206,9 @@ class TestVerifySummary:
         
         result = vault.run("verify", capture=True)
         assert result.returncode == 0
-        
-        assert "Summary" in result.stdout or "Total" in result.stdout
-        assert "OK" in result.stdout or "2" in result.stdout
+        combined = result.stdout + result.stderr
+        assert "Summary" in combined or "Total" in combined
+        assert "OK" in combined or "2" in combined
 
 
 # =============================================================================

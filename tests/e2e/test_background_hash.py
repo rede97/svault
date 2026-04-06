@@ -31,7 +31,8 @@ class TestBackgroundHashBasic:
 
         result = vault.run("verify", "--background-hash", capture=True)
         assert result.returncode == 0
-        assert "Processed 1 file(s), 0 failed." in result.stdout
+        combined = result.stdout + result.stderr
+        assert "Processed 1 file(s), 0 failed." in combined
 
         # Verify sha256 is now populated
         files = vault.db_files()
@@ -47,7 +48,8 @@ class TestBackgroundHashBasic:
         # SHA-256 already present because of secure hash import
         result = vault.run("verify", "--background-hash", capture=True)
         assert result.returncode == 0
-        assert "Processed 0 file(s), 0 failed." in result.stdout
+        combined = result.stdout + result.stderr
+        assert "Processed 0 file(s), 0 failed." in combined
 
 
 class TestBackgroundHashOptions:
@@ -64,7 +66,8 @@ class TestBackgroundHashOptions:
 
         result = vault.run("verify", "--background-hash", "--background-hash-limit", "1", capture=True)
         assert result.returncode == 0
-        assert "Processed 1 file(s), 0 failed." in result.stdout
+        combined = result.stdout + result.stderr
+        assert "Processed 1 file(s), 0 failed." in combined
 
         pending_after = [f for f in vault.db_files() if f["sha256"] is None]
         assert len(pending_after) == 1
@@ -76,4 +79,5 @@ class TestBackgroundHashOptions:
 
         result = vault.run("verify", "--background-hash", "--background-hash-nice", capture=True)
         assert result.returncode == 0
-        assert "Processed 1 file(s), 0 failed." in result.stdout
+        combined = result.stdout + result.stderr
+        assert "Processed 1 file(s), 0 failed." in combined

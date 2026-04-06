@@ -127,7 +127,8 @@ class TestHistoryFilters:
             capture=True,
         )
         assert result.returncode == 0
-        assert "No events found" in result.stdout or "events" in result.stdout
+        combined = result.stdout + result.stderr
+        assert "No events found" in combined or "events" in combined
 
 
 class TestHistoryBySession:
@@ -176,4 +177,5 @@ class TestHistoryBySession:
         """History --by-session on empty vault should show no sessions."""
         result = vault.run("history", "--by-session", capture=True)
         assert result.returncode == 0
-        assert "No import sessions found" in result.stdout
+        combined = result.stdout + result.stderr
+        assert "No import sessions found" in combined
