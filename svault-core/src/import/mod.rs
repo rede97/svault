@@ -12,6 +12,7 @@ pub mod types;
 pub mod exif;
 pub mod path;
 pub mod recheck;
+pub mod scan;
 pub mod staging;
 pub mod update;
 pub mod utils;
