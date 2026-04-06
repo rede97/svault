@@ -29,6 +29,25 @@ cargo run -p svault -- init
 cargo run -p svault -- import <source-dir>
 ```
 
+### 构建发布版本
+
+```bash
+# 标准发布构建
+./scripts/build-release.sh
+
+# CentOS 7 / 旧版 glibc 兼容构建 (使用 cargo-zigbuild)
+./scripts/build-release.sh --centos
+# 或
+./scripts/build-centos.sh
+
+# 构建所有变体
+./scripts/build-release.sh --all
+```
+
+**CentOS 兼容构建要求：**
+- 安装 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild): `cargo install cargo-zigbuild`
+- 安装 [Zig](https://ziglang.org/download/) (用于提供 libc 链接)
+
 ---
 
 ## 关键文档
