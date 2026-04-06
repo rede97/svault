@@ -21,10 +21,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub quiet: bool,
 
-    /// Emit JSON progress events to stderr
-    #[arg(long, global = true)]
-    pub progress: bool,
-
     #[command(subcommand)]
     pub command: Command,
 }
@@ -67,11 +63,6 @@ pub enum Command {
         /// Use this to intentionally re-import an identical file.
         #[arg(long)]
         force: bool,
-
-        /// Print duplicate files during the scan.
-        /// By default duplicates are counted but not listed.
-        #[arg(long)]
-        show_dup: bool,
     },
 
     /// Re-check a previous import against its manifest.
@@ -183,10 +174,6 @@ pub enum Command {
         /// Maximum number of files to process when --background-hash is used
         #[arg(long, value_name = "N")]
         background_hash_limit: Option<usize>,
-
-        /// Run at low IO priority when --background-hash is used
-        #[arg(long)]
-        background_hash_nice: bool,
     },
 
     /// Show vault statistics
@@ -212,10 +199,6 @@ pub enum Command {
         /// Show low-level event stream instead of session view
         #[arg(long, group = "display_mode")]
         events: bool,
-
-        /// Filter by event type (e.g. file.imported, file.path_updated)
-        #[arg(long, value_name = "TYPE", requires = "events")]
-        event_type: Option<String>,
 
         /// Maximum number of sessions/events to show
         #[arg(long, default_value = "50", value_name = "N")]

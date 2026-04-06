@@ -36,10 +36,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             hash,
             strategy,
-            show_dup,
             force,
             ..
-        } => commands::import::run(output, dry_run, yes, source, target, hash, strategy, show_dup, force),
+        } => commands::import::run(output, dry_run, yes, source, target, hash, strategy, force),
         Command::Recheck {
             source,
             target,
@@ -58,7 +57,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             upgrade_links,
             background_hash,
             background_hash_limit,
-            background_hash_nice,
         } => commands::verify::run(
             output,
             hash,
@@ -67,7 +65,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             upgrade_links,
             background_hash,
             background_hash_limit,
-            background_hash_nice,
         ),
         Command::Status => commands::status::run(output),
         Command::History {
@@ -75,10 +72,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             from,
             to,
             events,
-            event_type,
             limit,
             verbose,
-        } => commands::history::run(output, file, from, to, events, event_type, limit, verbose),
+        } => commands::history::run(output, file, from, to, events, limit, verbose),
         Command::Clone { .. } => commands::clone::run(),
         #[cfg(feature = "mtp")]
         Command::Mtp { command } => match command {

@@ -14,7 +14,6 @@ pub fn run(
     target: Option<PathBuf>,
     hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
-    show_dup: bool,
     force: bool,
 ) -> anyhow::Result<()> {
     let source_str = source.to_string_lossy();
@@ -23,7 +22,7 @@ pub fn run(
         // MTP import via VFS
         #[cfg(feature = "mtp")]
         {
-            run_mtp_import(output, dry_run, yes, &source_str, target, hash, strategy, show_dup, force)
+            run_mtp_import(output, dry_run, yes, &source_str, target, hash, strategy, force)
         }
         #[cfg(not(feature = "mtp"))]
         {
@@ -31,7 +30,7 @@ pub fn run(
         }
     } else {
         // Local filesystem import
-        run_local_import(output, dry_run, yes, source, target, hash, strategy, show_dup, force)
+        run_local_import(output, dry_run, yes, source, target, hash, strategy, force)
     }
 }
 
@@ -44,7 +43,6 @@ fn run_mtp_import(
     target: Option<PathBuf>,
     hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
-    show_dup: bool,
     force: bool,
 ) -> anyhow::Result<()> {
     use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
@@ -70,7 +68,6 @@ fn run_mtp_import(
         hash: hash_algo,
         dry_run,
         yes,
-        show_dup,
         import_config: config.import,
         source_name: source_str.to_string(),
         strategy: SyncStrategy(strategy),
@@ -104,7 +101,6 @@ fn run_local_import(
     target: Option<PathBuf>,
     hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
-    show_dup: bool,
     force: bool,
 ) -> anyhow::Result<()> {
     let vault_root = find_vault_root(target, &source)?;
@@ -120,7 +116,6 @@ fn run_local_import(
         strategy: SyncStrategy(strategy),
         dry_run,
         yes,
-        show_dup,
         import_config: config.import,
         force,
     };

@@ -72,8 +72,6 @@ pub struct VfsImportOptions<'a> {
     pub dry_run: bool,
     /// Skip confirmation
     pub yes: bool,
-    /// Show duplicates
-    pub show_dup: bool,
     /// Import configuration
     pub import_config: ImportConfig,
     /// Source display name (for progress messages)
@@ -97,7 +95,6 @@ impl<'a> VfsImportOptions<'a> {
             hash: crate::config::HashAlgorithm::Xxh3_128,
             dry_run: false,
             yes: false,
-            show_dup: false,
             import_config: crate::config::ImportConfig::default(),
             source_name: String::new(),
             strategy: SyncStrategy::default(),
@@ -269,17 +266,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 FileStatus::LikelyNew
             };
 
-            match status {
-                FileStatus::LikelyNew => {
-                    eprintln!("  {} {}", style("Found").green(), style(&rel_path));
-                }
-                FileStatus::LikelyCacheDuplicate if opts.show_dup => {
-                    eprintln!(
-                        "  {}",
-                        style(format!("Duplicate: {}", &rel_path)).yellow()
-                    );
-                }
-                _ => {}
+            if let FileStatus::LikelyNew = status {
+                eprintln!("  {} {}", style("Found").green(), style(&rel_path));
             }
 
             ScanEntry {

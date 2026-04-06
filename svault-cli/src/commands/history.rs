@@ -13,7 +13,6 @@ pub fn run(
     from: Option<String>,
     to: Option<String>,
     events: bool,
-    event_type: Option<String>,
     limit: usize,
     verbose: bool,
 ) -> anyhow::Result<()> {
@@ -24,9 +23,9 @@ pub fn run(
         // Default: Show session-based history (import/add/reconcile)
         show_session_history(output, &vault_root, from, to, limit, verbose)?;
     } else {
-        // Original event-based history
+        // Original event-based history (all events, use grep for filtering)
         show_event_history(
-            output, &vault_root, file, from, to, event_type, limit,
+            output, &vault_root, file, from, to, limit,
         )?;
     }
     Ok(())
@@ -183,7 +182,6 @@ fn show_event_history(
     file: Option<PathBuf>,
     from: Option<String>,
     to: Option<String>,
-    event_type: Option<String>,
     limit: usize,
 ) -> anyhow::Result<()> {
     let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
@@ -193,9 +191,10 @@ fn show_event_history(
     let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
     let file_path = file.as_ref().map(|p| p.to_string_lossy().to_string());
 
+    // No event_type filter - use grep for filtering specific event types
     let events = db.get_events(
         limit,
-        event_type.as_deref(),
+        None, // event_type filter removed - show all events
         from_ms,
         to_ms,
         file_path.as_deref(),

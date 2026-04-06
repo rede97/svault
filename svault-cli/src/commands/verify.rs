@@ -16,7 +16,6 @@ pub fn run(
     upgrade_links: bool,
     background_hash: bool,
     background_hash_limit: Option<usize>,
-    background_hash_nice: bool,
 ) -> anyhow::Result<()> {
     let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
     let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
@@ -29,7 +28,7 @@ pub fn run(
         let opts = background_hash::BackgroundHashOptions {
             vault_root: vault_root.clone(),
             limit: background_hash_limit,
-            nice: background_hash_nice,
+            nice: false, // Auto-managed based on system load
         };
         let summary = background_hash::run_background_hash(opts, &db)?;
         eprintln!(

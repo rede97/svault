@@ -19,8 +19,6 @@ pub struct ImportOptions {
     pub dry_run: bool,
     /// If true, skip the interactive y/N confirmation after Stage B.
     pub yes: bool,
-    /// If true, print duplicate files during the scan.
-    pub show_dup: bool,
     /// Import configuration from `svault.toml`.
     pub import_config: ImportConfig,
     /// Force import even if the file is a confirmed duplicate.
