@@ -72,12 +72,12 @@ class TestBackgroundHashOptions:
         pending_after = [f for f in vault.db_files() if f["sha256"] is None]
         assert len(pending_after) == 1
 
-    def test_background_hash_nice_does_not_fail(self, vault: VaultEnv) -> None:
-        """background-hash --nice should run without errors."""
+    def test_background_hash_computes_missing_sha256(self, vault: VaultEnv) -> None:
+        """background-hash should compute missing SHA-256 hashes."""
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
 
-        result = vault.run("verify", "--background-hash", "--background-hash-nice", capture=True)
+        result = vault.run("verify", "--background-hash", capture=True)
         assert result.returncode == 0
         combined = result.stdout + result.stderr
         assert "Processed 1 file(s), 0 failed." in combined

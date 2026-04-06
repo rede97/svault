@@ -68,13 +68,17 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Collect CRC results and filter out vault paths
     let mut crc_results = Vec::new();
     let mut total = 0usize;
+    let mut scanned = 0usize;
     for result in crc_rx {
-        total += 1;
-        scan_bar.set_position(total as u64);
+        scanned += 1;
+        scan_bar.set_position(scanned as u64);
         
         // Filter out vault paths and show errors in real-time
+        // Ensure vault path ends with '/' for accurate prefix matching
+        let vault_prefix = format!("{}/", vault_canon.to_string_lossy());
+        let is_vault_path = result.file.path.to_string_lossy().starts_with(&vault_prefix);
         match &result.crc {
-            Ok(_) if result.file.path.starts_with(&vault_canon) => {
+            Ok(_) if is_vault_path => {
                 continue; // Skip vault paths
             }
             Err(e) => {
@@ -86,6 +90,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             _ => {}
         }
         
+        total += 1;
         crc_results.push(result);
     }
     scan_bar.finish_and_clear();

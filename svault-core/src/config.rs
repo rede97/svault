@@ -193,7 +193,7 @@ impl<'de> Deserialize<'de> for SyncStrategy {
 }
 
 /// Settings that control how files are imported.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportConfig {
     /// Store full EXIF metadata in file_exif table (default: false).
     #[serde(default)]

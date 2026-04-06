@@ -81,18 +81,8 @@ class TestHistoryEvents:
 class TestHistoryEventFilters:
     """History --events filtering tests."""
 
-    def test_history_events_filter_by_event_type(self, vault: VaultEnv) -> None:
-        """History --events --event-type should only return matching events."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-
-        result = vault.run(
-            "history", "--events", "--event-type", "file.imported", "--output=json", capture=True
-        )
-        assert result.returncode == 0
-        data = json.loads(result.stdout)
-        for event in data["events"]:
-            assert event["event_type"] == "file.imported"
+    # Note: --event-type filter removed. Use grep for filtering:
+    #   svault history --events --output=json | jq '.events[] | select(.event_type=="file.imported")'
 
     def test_history_events_filter_by_file_path(self, vault: VaultEnv) -> None:
         """History --events --file should only return events for that file."""

@@ -116,7 +116,7 @@ fn upgrade_hardlinks(
 }
 
 fn verify_single_file(
-    vault_root: &PathBuf,
+    vault_root: &std::path::Path,
     db: &db::Db,
     file_path: &PathBuf,
     algo: &HashAlgorithm,

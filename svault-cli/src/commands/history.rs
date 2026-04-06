@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::cli::OutputFormat;
 use crate::commands::parse_datetime_to_ms;
 use svault_core::context::VaultContext;
+use svault_core::db::Db;
 use console::style;
 
 #[allow(clippy::too_many_arguments)]
@@ -20,7 +21,7 @@ pub fn run(
 
     if !events {
         // Default: Show session-based history (import/add/reconcile)
-        show_session_history(output, ctx.vault_root(), from, to, limit, verbose)?;
+        show_session_history(output, ctx.vault_root(), ctx.db(), from, to, limit, verbose)?;
     } else {
         // Original event-based history (all events, use grep for filtering)
         show_event_history(
@@ -32,14 +33,13 @@ pub fn run(
 
 fn show_session_history(
     output: OutputFormat,
-    vault_root: &std::path::Path,
+    _vault_root: &std::path::Path,
+    db: &Db,
     from: Option<String>,
     to: Option<String>,
     limit: usize,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
 
     let from_ms = from.as_ref().and_then(|s| parse_datetime_to_ms(s));
     let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
@@ -53,7 +53,7 @@ fn show_session_history(
         None,
     )?;
 
-    let sessions: Vec<_> = all_events
+    let sessions: Vec<(i64, String, String)> = all_events
         .into_iter()
         .filter(|e| e.event_type.starts_with("import.") || e.event_type.starts_with("add."))
         .map(|e| (e.occurred_at, e.event_type, e.payload))
@@ -177,7 +177,7 @@ fn show_session_history(
 #[allow(clippy::too_many_arguments)]
 fn show_event_history(
     output: OutputFormat,
-    vault_root: &std::path::Path,
+    _vault_root: &std::path::Path,
     file: Option<PathBuf>,
     from: Option<String>,
     to: Option<String>,

@@ -143,7 +143,13 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     if opts.src_backend.as_system_fs().is_some() {
         let vault_canon = std::fs::canonicalize(opts.vault_root)
             .unwrap_or_else(|_| opts.vault_root.to_path_buf());
-        dir_entries.retain(|e| !e.path.starts_with(&vault_canon));
+        // Ensure vault path ends with '/' for accurate prefix matching
+        let vault_prefix = format!("{}/", vault_canon.to_string_lossy());
+        // Convert to absolute paths for comparison
+        dir_entries.retain(|e| {
+            let abs_path = opts.src_path.join(&e.path);
+            !abs_path.to_string_lossy().starts_with(&vault_prefix)
+        });
     }
     let total = dir_entries.len();
 
