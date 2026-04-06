@@ -139,13 +139,14 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let mut total_files = 0usize;
     
     for result in crc_rx {
-        total_files += 1;
         scan_bar.inc(1);
         
-        // Skip vault paths
+        // Skip vault paths (don't count in total)
         if result.file.path.ancestors().any(|p| p == vault_canon) {
             continue;
         }
+        
+        total_files += 1;
         
         // Handle CRC errors
         let crc = match result.crc {
