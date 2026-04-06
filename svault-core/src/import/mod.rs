@@ -106,12 +106,18 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     let lookup_results = pipeline::lookup::lookup_duplicates(crc_entries, db, &opts.vault_root)?;
 
-    // Report results (only show new files, duplicates counted in summary)
+    // Report results (show new files, optionally show duplicates)
     for r in &lookup_results {
         let rel_path = r.entry.file.path.strip_prefix(&source_canon)
             .unwrap_or(&r.entry.file.path);
-        if let pipeline::types::FileStatus::LikelyNew = r.status {
-            eprintln!("  {} {}", style("Found").green(), style(rel_path.display()));
+        match r.status {
+            pipeline::types::FileStatus::LikelyNew => {
+                eprintln!("  {} {}", style("Found").green(), style(rel_path.display()));
+            }
+            pipeline::types::FileStatus::LikelyCacheDuplicate if opts.show_dup => {
+                eprintln!("  {} {}", style("Duplicate").yellow(), style(rel_path.display()));
+            }
+            _ => {}
         }
     }
 
@@ -129,16 +135,6 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         eprintln!("  {}  {}",
             style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
             style("already in vault (cache hit)"));
-        // Show duplicate files if --show-dup is enabled
-        if opts.show_dup {
-            eprintln!();
-            eprintln!("{}", style("  Duplicate files:").yellow());
-            for dup in &dup_files {
-                let rel_path = dup.file.path.strip_prefix(&source_canon)
-                    .unwrap_or(&dup.file.path);
-                eprintln!("    {} {}", style("-").yellow(), style(rel_path.display()).yellow());
-            }
-        }
     }
     if failed_b > 0 {
         eprintln!("  {}",

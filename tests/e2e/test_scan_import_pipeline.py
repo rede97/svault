@@ -301,8 +301,8 @@ class TestScanFilterImportPipeline:
 class TestImportShowDup:
     """Test import --show-dup flag for duplicate file visibility."""
 
-    def test_import_show_dup_lists_duplicate_files(self, vault: VaultEnv) -> None:
-        """Test that --show-dup lists specific duplicate files."""
+    def test_import_show_dup_shows_duplicate_files(self, vault: VaultEnv) -> None:
+        """Test that --show-dup shows duplicate files during scanning."""
         # Create and import first batch
         create_minimal_jpeg(vault.source_dir / "photo1.jpg", "content_1")
         create_minimal_jpeg(vault.source_dir / "photo2.jpg", "content_2")
@@ -319,14 +319,14 @@ class TestImportShowDup:
         result2 = vault.run("import", "--yes", "--show-dup", str(new_source))
         assert result2.returncode == 0
         
-        # Should list duplicate files
+        # Should show "Duplicate" label during scanning
         combined = result2.stdout + result2.stderr
-        assert "Duplicate files:" in combined
+        assert "Duplicate" in combined
         assert "photo1.jpg" in combined
         assert "photo2.jpg" in combined
 
-    def test_import_without_show_dup_hides_duplicate_list(self, vault: VaultEnv) -> None:
-        """Test that without --show-dup, duplicate files are not listed."""
+    def test_import_without_show_dup_hides_duplicates(self, vault: VaultEnv) -> None:
+        """Test that without --show-dup, duplicate files are not shown during scanning."""
         # Create and import first batch
         create_minimal_jpeg(vault.source_dir / "photo.jpg", "content")
         result1 = vault.import_dir(vault.source_dir)
@@ -341,10 +341,21 @@ class TestImportShowDup:
         result2 = vault.run("import", "--yes", str(new_source))
         assert result2.returncode == 0
         
-        # Should show summary but not list duplicate files
+        # Should show summary count but not "Duplicate" label for individual files
         combined = result2.stdout + result2.stderr
         assert "Likely duplicate:" in combined
-        assert "Duplicate files:" not in combined
+        # The word "Duplicate" should not appear in scanning section (only in summary)
+        lines = combined.split('\n')
+        scanning_section = False
+        found_duplicate_label = False
+        for line in lines:
+            if "Scanning" in line:
+                scanning_section = True
+            elif "Pre-flight:" in line:
+                scanning_section = False
+            elif scanning_section and "Duplicate" in line and "photo.jpg" in line:
+                found_duplicate_label = True
+        assert not found_duplicate_label
 
 
 class TestScanImportDirectoryStructure:
