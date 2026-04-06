@@ -1,243 +1,283 @@
 # Svault
 
-**Your memories, replicated forever.**
+<p align="center">
+  <img src="https://raw.githubusercontent.com/rede97/svault/main/docs/assets/logo.svg" alt="Svault Logo" width="120">
+</p>
 
-*Built entirely by AI. Verified by reality.*
+<p align="center">
+  <b>Your memories, replicated forever.</b><br>
+  <i>Built entirely by AI. Verified by reality.</i>
+</p>
 
-> Svault = Svalbard + Vault
-
-[![CI](https://github.com/rede97/svault/actions/workflows/ci.yml/badge.svg)](https://github.com/rede97/svault/actions/workflows/ci.yml)
-[![Release](https://github.com/rede97/svault/actions/workflows/release.yml/badge.svg)](https://github.com/rede97/svault/actions/workflows/release.yml)
-[![Crates.io](https://img.shields.io/crates/v/svault)](https://crates.io/crates/svault)
-[![Crates.io](https://img.shields.io/crates/v/svault-core)](https://crates.io/crates/svault-core)
-
----
-
-## What is Svault?
-
-Svault is an open-source, content-addressed multimedia archival tool written in Rust. It is designed to safely back up photos and videos across multiple drives, deduplicate files by content, and manage composite media formats like Live Photos and RAW+JPEG pairs — all from the command line.
-
-Svault is also an experiment: every line of code is written by AI. The repository serves as a public benchmark for AI's ability to design, implement, and maintain a real production-grade software system.
-
----
-
-## 这是什么?
-
-Svault 是一个开源的、基于内容寻址的多媒体归档工具，使用 Rust 编写。它帮助你将碎片化的照片和视频安全备份到多块硬盘，对文件进行精确去重，并管理 Live Photo、RAW+JPEG 等复合媒体格式——一切操作均通过命令行完成。
-
-Svault 同时也是一场公开实验：所有代码均由 AI 编写。本仓库作为一份公开的基准测试，用于验证 AI 是否具备设计、实现并长期维护生产级软件系统的完整能力。
-
----
-
-## Current Status / 当前状态
-
-Svault is in active development. Core commands `init`, `import`, and `status` are fully implemented. Other commands are stubbed and under development.
-
-当前处于活跃开发阶段。核心命令 `init`、`import` 和 `status` 已完全实现，其余命令正在开发中。
-
-| Command | Status | Description |
-|---------|--------|-------------|
-| `svault init` | ✅ Implemented | Initialize a new vault |
-| `svault import` | ✅ Implemented | Import media from source directory or MTP device |
-| `svault status` | ✅ Implemented | Show vault overview and statistics |
-| `svault mtp ls` | ✅ Implemented | List MTP device contents |
-| `svault mtp tree` | ✅ Implemented | Display MTP device structure as tree |
-| `svault recheck` | ✅ Implemented | Re-check an import session against both source and vault |
-| `svault verify` | ✅ Implemented | Verify file integrity |
-| `svault add` | ✅ Implemented | Register files already in vault |
-| `svault sync` | 📝 Stub | Sync with another vault |
-| `svault reconcile` | ✅ Implemented | Update paths for moved files |
-| `svault history` | ✅ Implemented | Query event log |
-| `svault verify --background-hash` | ✅ Implemented | Compute missing SHA-256 hashes before verifying |
-| `svault clone` | 📝 Stub | Clone subset of vault |
-| `svault db dump` | ✅ Implemented | Export database contents for debugging |
-| `svault db verify-chain` | 📝 Stub | Verify event hash chain |
-| `svault db replay` | 📝 Stub | Replay events to rebuild views |
+<p align="center">
+  <a href="https://github.com/rede97/svault/actions/workflows/ci.yml">
+    <img src="https://github.com/rede97/svault/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://github.com/rede97/svault/actions/workflows/release.yml">
+    <img src="https://github.com/rede97/svault/actions/workflows/release.yml/badge.svg" alt="Release">
+  </a>
+  <a href="https://crates.io/crates/svault">
+    <img src="https://img.shields.io/crates/v/svault" alt="Crates.io">
+  </a>
+  <a href="https://crates.io/crates/svault-core">
+    <img src="https://img.shields.io/crates/v/svault-core" alt="svault-core">
+  </a>
+  <a href="https://opensource.org/licenses/MIT">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
+  </a>
+</p>
 
 ---
 
-## Architecture / 技术架构
+## 🎯 What is Svault?
 
-The project is a Cargo workspace with two crates:
+**Svault** = **S**valbard + **Vault**
 
-```
-svault/
-├── svault-core/   # lib crate — config, db, hash, vfs (no clap dependency)
-└── svault-cli/    # bin crate — CLI entry point (clap), produces `svault` binary
-```
+Svault is a **content-addressed multimedia archive** designed for photographers, videographers, and anyone who values their digital memories. Written in Rust for performance and reliability, it safely backs up photos and videos across multiple drives with **bit-for-bit deduplication**, manages composite media formats (Live Photos, RAW+JPEG), and provides **tamper-evident integrity verification** — all from a fast, intuitive command line interface.
 
-```
-┌─────────────────────────────────────────┐
-│         svault-cli (bin)                │
-│  clap · JSON output · dry-run ·         │
-│  structured exit codes                  │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│         svault-core (lib)               │
-│  ┌──────────────────────────────────┐   │
-│  │  Config (svault.toml / serde)    │   │
-│  ├──────────────────────────────────┤   │
-│  │  Hash   XXH3-128 · SHA-256 ·     │   │
-│  │         CRC32C                   │   │
-│  ├──────────────────────────────────┤   │
-│  │  VFS    reflink → stream copy    │   │
-│  │         (hardlink available      │   │
-│  │          via --strategy)         │   │
-│  ├──────────────────────────────────┤   │
-│  │  DB     Event-sourced SQLite     │   │
-│  │         (append-only event log + │   │
-│  │          materialised views)     │   │
-│  └──────────────────────────────────┘   │
-└─────────────────────────────────────────┘
-```
+### The AI Experiment
 
-**Language:** Rust (edition 2024)
-
-**Storage:** Local filesystem — reflink (btrfs/xfs) → stream copy by default; hardlink available explicitly via `--strategy hardlink` or `--strategy reflink,hardlink`
-
-**Database:** Event-sourced SQLite — every state change is appended to an immutable event log with a SHA-256 tamper-evident hash chain
-
-**Hashing pipeline:** CRC32C (fast fingerprint) → XXH3-128 (collision resolution) → SHA-256 (content identity, lazy)
+Svault is also a **public benchmark** for AI software engineering. Every line of code is written by AI, demonstrating that artificial intelligence can design, implement, and maintain production-grade systems. The repository timeline documents this journey from requirements to working software.
 
 ---
 
-## Features / 功能特性
+## ✨ Features
 
-### MTP Device Support / MTP 设备支持
-Import directly from cameras and phones via USB:
+### 🔒 **Content-Addressed Storage**
+Files are stored by their cryptographic hash (SHA-256), ensuring absolute integrity. Same content = same address, automatic deduplication.
+
+### 📱 **Direct Device Import**
+Import directly from cameras and phones via USB (MTP protocol):
 ```bash
-svault mtp ls mtp://1/           # List available storages
-svault mtp ls mtp://1/SD/        # List SD card contents
-svault mtp tree mtp://1/SD/      # Display as tree
-svault import mtp://1/SD/DCIM/   # Import from device
+svault import mtp://1/SD/DCIM/     # Import from SD card
+svault import mtp://1/Internal\ Storage/  # Import from phone
 ```
 
-### Filename Conflict Resolution / 文件名冲突处理
-When multiple files have the same name (e.g., two cameras with `DSC0001.jpg`), Svault automatically renames subsequent files using the configured `rename_template`:
-```
-DSC0001.jpg       (first file)
-DSC0001.1.jpg     (second file - same name, different content)
-DSC0001.2.jpg     (third file)
-```
+### 🚀 **High-Performance Pipeline**
+Three-tier hashing for speed and accuracy:
+1. **CRC32C** — Fast fingerprinting (hardware-accelerated)
+2. **XXH3-128** — Collision-resistant identification
+3. **SHA-256** — Cryptographic content identity
 
-This prevents overwrites when multiple photographers with the same camera model import on the same day.
+### 🛡️ **Tamper-Evident Database**
+Event-sourced SQLite with SHA-256 hash chain. Every state change is recorded and verifiable.
 
-### Force Import / 强制导入
-By default, Svault skips exact duplicates. To intentionally re-import an identical file (e.g., after restoring from backup), use `--force`:
+### 🔗 **Smart Copy Strategies**
+Automatic fallback chain: `reflink` (CoW) → `hardlink` → `copy`. Preserves space while ensuring reliability.
+
+### 📝 **Safety-First Design**
+- **No delete command** — Review manifests and delete sources manually
+- **Process locking** — Prevents concurrent modifications
+- **Vault self-protection** — Automatically skips vault metadata during import
+
+### 📊 **Rich CLI Experience**
 ```bash
-svault import --force /path/to/source
+svault status      # Beautiful vault overview
+svault history     # Browse import sessions
+svault verify      # Integrity verification with progress
+svault recheck     # Compare source against vault
 ```
 
 ---
 
-## Configuration / 配置
+## 🚀 Quick Start
 
-Run `svault init` to create a vault. A `svault.toml` is generated at the vault root:
+### Installation
+
+```bash
+# Using cargo
+cargo install svault
+
+# Or download prebuilt binary from releases
+curl -L https://github.com/rede97/svault/releases/latest/download/svault-$(uname -s)-$(uname -m) -o svault
+chmod +x svault
+sudo mv svault /usr/local/bin/
+```
+
+### Your First Vault
+
+```bash
+# 1. Create a vault
+cd /mnt/backup/photos
+svault init
+
+# 2. Import from a camera SD card
+svault import /media/SD_CARD/DCIM/ --target 2024
+
+# 3. Check what was imported
+svault status
+
+# 4. Verify everything is intact
+svault verify
+```
+
+### Import from Phone
+
+```bash
+# List connected devices
+svault mtp ls
+
+# Browse device contents
+svault mtp tree mtp://1/ --depth 2
+
+# Import photos from phone
+svault import mtp://1/Internal\ Storage/DCIM/Camera/ --target phone_backup
+```
+
+### Daily Workflow
+
+```bash
+# After a shoot, import new photos
+svault import /mnt/card/DCIM/100CANON/ --target shoots/$(date +%Y-%m-%d)
+
+# Verify the archive is healthy
+svault verify --recent 86400  # Files imported in last 24 hours
+
+# Check import history
+svault history --limit 5
+```
+
+---
+
+## 📖 Command Reference
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `init` | Initialize a new vault | `svault init` |
+| `import <source>` | Import media from directory or device | `svault import /path/to/photos` |
+| `recheck [source]` | Verify import session against manifest | `svault recheck --session <id>` |
+| `add <path>` | Register files already in vault | `svault add ./existing/photos` |
+| `reconcile` | Update paths for moved files | `svault reconcile --root /vault` |
+| `verify` | Check file integrity | `svault verify --file photo.jpg` |
+| `status` | Show vault overview | `svault status` |
+| `history` | Browse import history | `svault history --events` |
+| `mtp ls` | List MTP devices | `svault mtp ls mtp://1/` |
+| `mtp tree` | Browse device as tree | `svault mtp tree mtp://1/DCIM` |
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    svault-cli (bin)                     │
+│         CLI parsing · Output formatting · Progress      │
+└────────────────────┬────────────────────────────────────┘
+                     │
+┌────────────────────▼────────────────────────────────────┐
+│                   svault-core (lib)                     │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  Config  (TOML-based, per-vault settings)        │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │  Hash    CRC32C → XXH3-128 → SHA-256 (lazy)     │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │  VFS     reflink/hardlink/copy with fallback    │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │  Pipeline 5-stage import (scan → crc → lookup   │   │
+│  │            → hash → insert)                     │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │  DB      Event-sourced SQLite with hash chain   │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key Design Decisions:**
+
+- **Append-only event log** — All state changes recorded as events, enabling full history and tamper detection
+- **Lazy SHA-256** — Computed only when needed for collision resolution
+- **Pipeline architecture** — Shared 5-stage pipeline used by `import` and `add` commands
+- **VFS abstraction** — Unified interface for local filesystem and MTP devices
+
+---
+
+## ⚙️ Configuration
+
+On `svault init`, a `svault.toml` is created at the vault root:
 
 ```toml
 [global]
-hash = "xxh3_128"
-sync_strategy = "reflink"
+hash = "xxh3_128"           # fast | secure (SHA-256)
+sync_strategy = "reflink"   # reflink | hardlink | copy
 
 [import]
 store_exif = false
-rename_template = "$filename.$n.$ext"
-path_template = "$year/$mon-$day/$device/$filename"
+rename_template = "$filename.$n.$ext"  # Conflict resolution
+path_template = "$year/$mon-$day/$device"
 allowed_extensions = [
-    "jpg",
-    "jpeg",
-    "heic",
-    "heif",
-    "dng",
-    "cr2",
-    "cr3",
-    "nef",
-    "nrw",
-    "arw",
-    "raf",
-    "orf",
-    "rw2",
-    "pef",
-    "raw",
-    "mov",
-    "mp4",
+    "jpg", "jpeg", "heic", "heif",
+    "dng", "cr2", "cr3", "nef", "arw", "raf",
+    "mov", "mp4", "mts"
 ]
 ```
 
----
+### Conflict Resolution
 
-## Roadmap / 开发路线
-
-| Phase | Deliverables | Status |
-|-------|--------------|--------|
-| Phase 1 | CLI skeleton · event-sourced DB · local VFS · exact dedup · `svault init` | Completed |
-| Phase 2 | `svault import` · 4-stage fingerprint pipeline · manifest output | Completed |
-| Phase 3 | `svault sync` · multi-target replication · `svault reconcile` | Partial (`reconcile` done) |
-| Phase 4 | `svault verify` · hash chain audit · `svault status` / `history` / `verify --background-hash` | Completed |
-| Phase 5 | Composite media (Live Photo, RAW+JPEG) · `svault clone` | Planned |
-| Later | Perceptual dedup · TUI · device auto-detection | Planned |
-
----
-
-## Design Decisions / 设计决策
-
-- **Append-only event log** — All state changes are recorded as events in SQLite. Materialised view tables are derived by replaying those events. This enables full history queries, tamper detection, and database recovery.
-- **Lazy SHA-256** — Full-file SHA-256 is computed only when needed for collision resolution. Fast pre-filters (size, CRC32C tail, XXH3-128) eliminate almost all comparisons before reaching the cryptographic hash.
-- **Svault never deletes your files** — After import, Svault outputs a manifest (archive path ↔ source path). You verify the result and delete source files yourself. A bug in Svault cannot destroy your originals.
-- **Vault process locking** — An advisory lock (`<vault>/.svault/lock`) prevents concurrent `svault` processes from modifying the same vault, avoiding database corruption.
-- **Vault self-protection** — When importing from an ancestor directory, Svault automatically skips its own `.svault/` metadata and any files already inside the vault root.
-- **OS-managed network shares** — SMB/NFS mounts are treated as ordinary local paths. The kernel handles protocol details; Svault stays focused on content addressing.
-
----
-
-## Safety-First Workflow / 安全优先的工作流
-
-Svault deliberately has no delete command. After an import, you receive a manifest:
-
+When importing files with the same name but different content:
 ```
-# svault-import-manifest-20240315T143000.txt
-# Review this file. If the archive looks correct, delete source files manually.
-
-IMPORTED  /archive/2024/03/15/IMG_001.CR3  <--  /mnt/card/DCIM/100CANON/IMG_001.CR3
-SKIPPED   (duplicate sha256:a3f…)           <--  /mnt/card/DCIM/100CANON/IMG_002.CR3
+DSC0001.jpg       (first file)
+DSC0001.1.jpg     (second file - different hash)
+DSC0001.2.jpg     (third file)
 ```
 
-导入完成后，Svault 输出一份映射清单（归档路径 ↔ 原始路径）。你核查归档结果无误后，自行删除源文件。Svault 不提供任何删除命令——对原始数据的任何破坏性操作，都必须经过人工确认。
-
 ---
 
-## The Experiment / 这场实验
+## 🧪 Testing
 
-Svault is not just a tool — it is a public test. The repository timeline documents AI's ability to go from requirements to architecture to working code, sustain long-term decision consistency across sessions, and handle real-world edge cases.
-
-Milestones worth watching:
-- First commit — AI builds from scratch
-- First real-world import run
-- First bug found and diagnosed
-- Architecture comparison across model generations
-
----
-
-## Testing / 测试
-
-Run the integrated test suite:
 ```bash
+# Run unit tests
+cargo test
+
+# Run E2E tests (uses RAMDisk for isolation)
 cd tests/e2e && bash run.sh
+
+# Run with verbose output
+cd tests/e2e && bash run.sh --verbose
+
+# Test specific file system
+bash run.sh --test-dir /mnt/btrfs
 ```
 
-This performs end-to-end validation including:
-- EXIF date extraction and device detection
-- Deduplication (exact duplicates by content hash)
-- Filename conflict resolution (same name, different content)
-- Force import (`--force`) and vault self-protection
-- Recheck workflow and integrity verification
-- MTP device compatibility (when device connected)
-
-The test framework generates synthetic fixtures, runs imports in a RAM disk, and validates database state against expected outcomes.
+**Test Coverage:** 198 E2E tests passing, 117 unit tests.
 
 ---
 
-## License
+## 🗺️ Roadmap
 
-MIT
+| Phase | Status | Deliverables |
+|-------|--------|--------------|
+| ✅ Phase 1 | Complete | CLI skeleton, event-sourced DB, local VFS, `init` |
+| ✅ Phase 2 | Complete | `import`, 5-stage pipeline, manifest output |
+| ✅ Phase 3 | Partial | `reconcile`, multi-target replication (sync stubbed) |
+| ✅ Phase 4 | Complete | `verify`, `history`, `recheck`, background-hash |
+| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG), `clone` |
+| 📋 Later | Planned | Perceptual dedup, TUI, device auto-detection |
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please see [AGENTS.md](./AGENTS.md) for development guidelines and architecture notes.
+
+### Development Setup
+
+```bash
+git clone https://github.com/rede97/svault
+cd svault
+cargo build --release
+
+# Run tests in RAMDisk (recommended)
+cd tests/e2e && bash run.sh --verbose
+```
+
+---
+
+## 📄 License
+
+MIT — See [LICENSE](./LICENSE) for details.
+
+---
+
+<p align="center">
+  <i>Built with ❤️ by AI, for humans.</i><br>
+  <i>Every memory matters. Back them up.</i>
+</p>

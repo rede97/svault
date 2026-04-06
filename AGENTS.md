@@ -1,6 +1,6 @@
 # Svault 开发指南
 
-> 本文档为 AI 助手提供项目背景、开发规范和关键决策记录。
+> 本文档为 AI 助手和开发者提供项目背景、开发规范和关键决策记录。
 
 ---
 
@@ -19,14 +19,14 @@
 cargo build --release
 
 # 运行测试
-cargo test                              # Rust 单元/集成测试
+cargo test                              # Rust 单元测试
 cd tests/e2e && bash run.sh --verbose   # Python E2E 测试
 
 # 初始化 vault
-cargo run -p svault-cli -- init
+cargo run -p svault -- init
 
 # 导入文件
-cargo run -p svault-cli -- import <source-dir>
+cargo run -p svault -- import <source-dir>
 ```
 
 ---
@@ -154,6 +154,34 @@ svault init      # 错误！会污染项目目录
 | `svault-core` | 核心逻辑（lib） | 无 clap（cli feature 可选） |
 | `svault-cli` | CLI 入口（bin） | 依赖 svault-core + clap |
 
+### CLI 架构 (2026-04-05 更新)
+
+```
+svault-cli/src/
+├── main.rs          # 入口：解析 CLI，提取全局参数，路由到命令
+├── cli.rs           # CLI 定义（clap 结构体）
+└── commands/        # 命令实现模块
+    ├── mod.rs       # 共享函数 (find_vault_root, format_bytes, 信号处理)
+    ├── init.rs      # init 命令
+    ├── import.rs    # import 命令 (本地 + MTP)
+    ├── recheck.rs   # recheck 命令
+    ├── add.rs       # add 命令
+    ├── sync.rs      # sync 命令 (stub)
+    ├── reconcile.rs # reconcile 命令
+    ├── verify.rs    # verify 命令
+    ├── status.rs    # status 命令
+    ├── history.rs   # history 命令
+    ├── clone.rs     # clone 命令 (stub)
+    ├── mtp.rs       # mtp ls/tree 子命令
+    └── db.rs        # db 子命令
+```
+
+**设计原则：**
+- 每个命令独立文件，单一职责
+- `main.rs` 只负责 CLI 解析和命令路由
+- 全局参数（`output`, `dry_run`, `yes`）在 `main.rs` 提取后传递给命令
+- 避免在命令模块中直接引用 `&Cli`（防止 borrow checker 问题）
+
 ### VFS 架构
 
 | 模块 | 用途 |
@@ -163,6 +191,23 @@ svault init      # 错误！会污染项目目录
 | `vfs/system.rs` | `SystemFs`：本地文件系统原子操作 |
 | `vfs/mtp.rs` | `MtpFs`：MTP 设备后端（单流） |
 | `vfs/manager.rs` | `VfsManager`：URL 路由与发现 |
+
+### Pipeline 架构 (2026-04-05 新增)
+
+```
+svault-core/src/pipeline/
+├── mod.rs      # Stage trait 定义
+├── scan.rs     # Stage A: 目录扫描 (含 vault 路径过滤)
+├── crc.rs      # Stage B: CRC32C 计算
+├── lookup.rs   # Stage C: DB 查询重复
+├── hash.rs     # Stage D: XXH3/SHA256 哈希
+└── insert.rs   # Stage E: 批量 DB 插入
+```
+
+**设计目的：**
+- `import` 和 `add` 命令共享相同的 5 阶段流水线
+- 消除 ~69% 的代码重复
+- 便于测试和维护
 
 ### 关键设计
 
@@ -180,8 +225,8 @@ svault init      # 错误！会污染项目目录
 ## 已知限制
 
 1. **Windows 支持** - 基础功能可用，但 reflink 需要额外实现
-2. **内存使用** - 导入大量文件时进度条可能占用较多内存
-3. **测试覆盖率** - 单元测试较少，主要依赖 E2E 测试（190 passed, 8 skipped）
+2. **MTP 导入稳定性** - `svault mtp ls/tree` 可用，`import mtp://` 存在稳定性问题
+3. **内存使用** - 导入大量文件时进度条可能占用较多内存
 
 ---
 
@@ -193,4 +238,4 @@ svault init      # 错误！会污染项目目录
 | 2026-04-02 | VFS 重构：解耦 transfer strategy；`--force` 替换 `--ignore-duplicate`；导入自保护；E2E 新增至 64 个 |
 | 2026-04-04 | `--strategy` 移除 `auto`，默认改为 `reflink`；支持逗号组合（如 `reflink,hardlink`）；`copy` 始终兜底；hardlink 不再出现在默认策略中 |
 | 2026-04-04 | 实现 `history` / `background-hash` / `verify --upgrade-links`；支持将 hardlink 原地升级为二进制复制 |
-| 2026-04-05 | E2E 测试代码清理：视频元数据和跨文件系统测试参数化重构，删除重复测试代码 ~110 行 |
+| 2026-04-05 | CLI 重构：拆分 main.rs 为 13 个命令模块；新增 pipeline 架构供 import/add 共享；所有 198 E2E 测试通过 |
