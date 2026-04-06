@@ -257,7 +257,7 @@ class TestRecheckWorkflow:
         corrupt_target.unlink()
 
         # Mark deleted file as missing in DB, then re-import
-        result = vault.run("reconcile", "--clean", "--yes")
+        result = vault.run("update", "--clean", "--yes")
         assert result.returncode == 0
         
         result = vault.import_dir(vault.source_dir, strategy="copy")
@@ -466,7 +466,7 @@ class TestVerifyRecovery:
         vf.unlink()
 
         # Mark deleted file as missing in DB, then re-import
-        result = vault.run("reconcile", "--clean", "--yes")
+        result = vault.run("update", "--clean", "--yes")
         assert result.returncode == 0
         
         result = vault.import_dir(vault.source_dir, strategy="copy")

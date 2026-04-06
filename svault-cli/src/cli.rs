@@ -136,14 +136,17 @@ pub enum Command {
 
     },
 
-    /// Update database paths for moved files
-    Reconcile {
+    /// Update database paths for moved or renamed files
+    ///
+    /// Scans the vault and updates the database to reflect files that were
+    /// moved or renamed outside of Svault. Use --clean to mark missing files.
+    Update {
         /// Sub-directory inside the vault to scan for relocated files.
         /// Defaults to the current working directory (same discovery rules as import).
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
 
-        /// Clean up files that cannot be reconciled (mark as missing in database).
+        /// Clean up files that cannot be found (mark as missing in database).
         /// Files that are not found on disk and cannot be matched will be marked.
         #[arg(long, group = "clean_mode")]
         clean: bool,
@@ -182,8 +185,8 @@ pub enum Command {
 
     /// Query the event log
     ///
-    /// Default shows import/add/reconcile sessions. Use --verbose to show files.
-    /// Use --events for low-level event stream (import, add, reconcile, file.imported, etc.)
+    /// Default shows import/add/update sessions. Use --verbose to show files.
+    /// Use --events for low-level event stream (import, add, update, file.imported, etc.)
     History {
         /// Filter to events for this file
         #[arg(long, value_name = "PATH")]

@@ -1,4 +1,4 @@
-//! `svault reconcile` — update database paths for moved or renamed files.
+//! `svault update` — update database paths for moved or renamed files.
 //!
 //! Scans the vault directory, computes hashes, and matches them against
 //! database records that are marked `imported` but whose paths no longer exist.
@@ -20,7 +20,7 @@ use crate::vfs::VfsBackend;
 
 /// Summary of a `reconcile` operation.
 #[derive(Debug, Default)]
-pub struct ReconcileSummary {
+pub struct UpdateSummary {
     pub scanned: usize,
     pub missing: usize,
     pub matched: usize,
@@ -28,8 +28,8 @@ pub struct ReconcileSummary {
     pub updated: usize,
 }
 
-/// Options for `svault reconcile`.
-pub struct ReconcileOptions {
+/// Options for `svault update`.
+pub struct UpdateOptions {
     pub root: std::path::PathBuf,
     pub vault_root: std::path::PathBuf,
     pub dry_run: bool,
@@ -40,29 +40,29 @@ pub struct ReconcileOptions {
     pub delete: bool,
 }
 
-/// A single reconciliation match.
+/// A single update match.
 #[derive(Debug)]
-pub struct ReconcileMatch {
+pub struct UpdateMatch {
     pub old_path: String,
     pub new_path: String,
     pub file_id: i64,
 }
 
 /// Run `reconcile` on the vault.
-pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<ReconcileSummary> {
+pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary> {
     // 1. Find missing files in DB
     let missing_files = db.get_missing_files(&opts.vault_root)?;
     let missing_count = missing_files.len();
 
     if missing_count == 0 {
-        eprintln!("{} All tracked files exist on disk — nothing to reconcile.",
-            style("Reconcile:").bold().green());
-        return Ok(ReconcileSummary::default());
+        eprintln!("{} All tracked files exist on disk — nothing to update.",
+            style("Update:").bold().green());
+        return Ok(UpdateSummary::default());
     }
 
     eprintln!(
         "{} {} tracked file(s) missing from disk",
-        style("Reconcile:").bold().cyan(),
+        style("Update:").bold().cyan(),
         style(missing_count).cyan()
     );
 
@@ -76,7 +76,7 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
     if scanned == 0 {
         eprintln!("{} No files found on disk to match against.",
             style("Warning:").yellow().bold());
-        return Ok(ReconcileSummary { missing: missing_count, ..Default::default() });
+        return Ok(UpdateSummary { missing: missing_count, ..Default::default() });
     }
 
     eprintln!(
@@ -112,7 +112,7 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
     );
     bar.set_prefix("Hashing  ");
 
-    let matches: Vec<ReconcileMatch> = disk_entries
+    let matches: Vec<UpdateMatch> = disk_entries
         .into_par_iter()
         .filter_map(|e| {
             let filename = e.path.file_name()
@@ -139,7 +139,7 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
                 for candidate in candidates {
                     if candidate.size == meta.len() as i64 {
                         let rel_new = e.path.strip_prefix(&opts.vault_root).unwrap_or(&e.path);
-                        return Some(ReconcileMatch {
+                        return Some(UpdateMatch {
                             old_path: candidate.path.clone(),
                             new_path: rel_new.to_string_lossy().into_owned(),
                             file_id: candidate.id,
@@ -180,7 +180,7 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
             std::io::stdin().read_line(&mut line)?;
             if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
                 eprintln!("{}", style("Aborted. No changes made.").yellow());
-                return Ok(ReconcileSummary {
+                return Ok(UpdateSummary {
                     scanned,
                     missing: missing_count,
                     matched,
@@ -311,7 +311,7 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
         }
     }
 
-    Ok(ReconcileSummary {
+    Ok(UpdateSummary {
         scanned,
         missing: missing_count,
         matched,

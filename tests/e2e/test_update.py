@@ -8,7 +8,7 @@ from conftest import VaultEnv, create_minimal_jpeg
 class TestReconcileCommand:
     """End-to-end tests for `svault reconcile`."""
 
-    def test_reconcile_finds_moved_file(self, vault: VaultEnv) -> None:
+    def test_update_finds_moved_file(self, vault: VaultEnv) -> None:
         """Import a file, rename it inside the vault, then reconcile."""
         src_file = vault.source_dir / "photo.jpg"
         create_minimal_jpeg(src_file, "RELOCATE_ME_12345")
@@ -24,7 +24,7 @@ class TestReconcileCommand:
         assert new_path.exists()
 
         # Reconcile with --yes
-        result = vault.run("reconcile", "--yes", f"--target={vault.vault_dir}")
+        result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Matched:" in combined
@@ -36,7 +36,7 @@ class TestReconcileCommand:
         assert len(rows) == 1
         assert "renamed.jpg" in rows[0]["path"]
 
-    def test_reconcile_dry_run_no_changes(self, vault: VaultEnv) -> None:
+    def test_update_dry_run_no_changes(self, vault: VaultEnv) -> None:
         """Default dry-run should not modify the database."""
         src_file = vault.source_dir / "photo.jpg"
         create_minimal_jpeg(src_file, "RELOCATE_ME_12345")
@@ -50,7 +50,7 @@ class TestReconcileCommand:
         original_path = vault.db_files()[0]["path"]
 
         # Run without --yes
-        result = vault.run("reconcile", f"--target={vault.vault_dir}")
+        result = vault.run("update", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Matches found:" in combined
@@ -59,18 +59,18 @@ class TestReconcileCommand:
         rows = vault.db_files()
         assert rows[0]["path"] == original_path
 
-    def test_reconcile_no_missing_files(self, vault: VaultEnv) -> None:
+    def test_update_no_missing_files(self, vault: VaultEnv) -> None:
         """When all files are in place, reconcile should report nothing to do."""
         src_file = vault.source_dir / "photo.jpg"
         create_minimal_jpeg(src_file, "STAY_PUT_12345")
         vault.import_dir(vault.source_dir)
 
-        result = vault.run("reconcile", f"--target={vault.vault_dir}")
+        result = vault.run("update", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "nothing to reconcile" in combined.lower() or "All tracked files exist" in combined
 
-    def test_reconcile_renamed_directory_then_verify_passes(self, vault: VaultEnv) -> None:
+    def test_update_renamed_directory_then_verify_passes(self, vault: VaultEnv) -> None:
         """Rename an entire directory inside the vault, reconcile, then verify should pass."""
         from conftest import copy_fixture
         copy_fixture(vault, "apple_with_exif.jpg")
@@ -88,7 +88,7 @@ class TestReconcileCommand:
         old_dir.rename(new_dir)
 
         # Reconcile from the vault root
-        result = vault.run("reconcile", "--yes", f"--target={vault.vault_dir}")
+        result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Updated:" in combined
@@ -100,7 +100,7 @@ class TestReconcileCommand:
         assert "OK" in result.stdout or "verified successfully" in result.stderr
         assert "Missing" not in result.stdout
 
-    def test_reconcile_clean_missing_files(self, vault: VaultEnv) -> None:
+    def test_update_clean_missing_files(self, vault: VaultEnv) -> None:
         """Import a file, delete it from vault, then reconcile --clean should mark it missing."""
         src_file = vault.source_dir / "photo.jpg"
         create_minimal_jpeg(src_file, "DELETE_ME_12345")
@@ -112,7 +112,7 @@ class TestReconcileCommand:
         vault_files[0].unlink()
 
         # Reconcile with --clean --yes
-        result = vault.run("reconcile", "--clean", "--yes", f"--target={vault.vault_dir}")
+        result = vault.run("update", "--clean", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Cleaned:" in combined or "marked as missing" in combined.lower()
@@ -122,7 +122,7 @@ class TestReconcileCommand:
         assert len(rows) == 1
         assert rows[0]["status"] == "missing"
 
-    def test_reconcile_clean_dry_run_no_changes(self, vault: VaultEnv) -> None:
+    def test_update_clean_dry_run_no_changes(self, vault: VaultEnv) -> None:
         """reconcile --clean without --yes should not modify the database."""
         src_file = vault.source_dir / "photo.jpg"
         create_minimal_jpeg(src_file, "CLEAN_TEST_12345")
@@ -135,7 +135,7 @@ class TestReconcileCommand:
         original_status = vault.db_files()[0]["status"]
 
         # Run --clean without --yes (dry-run mode for clean)
-        result = vault.run("reconcile", "--clean", f"--target={vault.vault_dir}")
+        result = vault.run("update", "--clean", f"--target={vault.vault_dir}")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "Files to mark as missing:" in combined
@@ -144,7 +144,7 @@ class TestReconcileCommand:
         rows = vault.db_files()
         assert rows[0]["status"] == original_status
 
-    def test_reconcile_no_clean_leaves_unmatched(self, vault: VaultEnv) -> None:
+    def test_update_no_clean_leaves_unmatched(self, vault: VaultEnv) -> None:
         """Without --clean, unmatched files should remain as 'imported'."""
         src_file = vault.source_dir / "photo.jpg"
         create_minimal_jpeg(src_file, "UNMATCHED_12345")
@@ -155,7 +155,7 @@ class TestReconcileCommand:
         vault_files[0].unlink()
 
         # Reconcile without --clean
-        result = vault.run("reconcile", "--yes", f"--target={vault.vault_dir}")
+        result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
 
         # DB status should still be 'imported' (not cleaned)

@@ -12,8 +12,8 @@ pub mod types;
 pub mod exif;
 pub mod path;
 pub mod recheck;
-pub mod reconcile;
 pub mod staging;
+pub mod update;
 pub mod utils;
 pub mod vfs_import;
 
@@ -214,7 +214,7 @@ fn handle_no_new_files(
         eprintln!("{}", style("Note:").bold().cyan());
         eprintln!("  {} file(s) already exist in vault but were moved.",
             style(moved_files.len()).cyan());
-        eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
+        eprintln!("  Use {} to update their paths:", style("svault update").bold());
         for (src, old) in moved_files.iter().take(3) {
             eprintln!("    {} → new import from {}", 
                 style(old).dim(),

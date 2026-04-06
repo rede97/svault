@@ -512,7 +512,7 @@ class TestEdgeCases:
             "duplicate" in combined.lower() or
             "already" in combined.lower() or
             "moved" in combined.lower() or
-            "reconcile" in combined.lower()
+            "update" in combined.lower()
         ), f"Should detect vault-internal move or duplicate:\n{combined}"
 
     def test_import_with_subdirectories(self, vault: VaultEnv) -> None:

@@ -242,16 +242,16 @@ class TestAddWithImport:
 
 
 class TestAddInternalMoveDetection:
-    """Test add command detects vault-internal moves and suggests reconcile."""
+    """Test add command detects vault-internal moves and suggest update."""
 
-    def test_add_detects_vault_internal_move_suggests_reconcile(self, vault: VaultEnv) -> None:
-        """When files are moved within vault, add should suggest reconcile.
+    def test_add_detects_vault_internal_move_suggests_update(self, vault: VaultEnv) -> None:
+        """When files are moved within vault, add should suggest update.
         
         Scenario:
         1. Import files to vault/2023/
         2. Move directory to vault/2023_new/ (outside svault)
         3. Run 'svault add vault/2023_new'
-        4. Should detect as moved files and suggest 'svault reconcile'
+        4. Should detect as moved files and suggest update'
         """
         # Step 1: Create and import files to 2023/
         src_2023 = vault.source_dir / "2023"
@@ -277,9 +277,9 @@ class TestAddInternalMoveDetection:
         result = vault.run("add", str(vault_2023_new))
         combined = result.stderr + result.stdout
         
-        # Step 4: Should suggest reconcile (check for Moved or Duplicate in output)
+        # Step 4: Should suggest update (check for Moved or Duplicate in output)
         assert (
-            "reconcile" in combined.lower() or
+            "update" in combined.lower() or
             "moved" in combined.lower() or
             "duplicate" in combined.lower()
         ), f"Expected 'reconcile', 'moved' or 'duplicate' in output, got:\n{combined}"
@@ -298,7 +298,7 @@ class TestAddInternalMoveDetection:
         1. Files exist in vault/archive/photos/
         2. User runs: mv vault/archive/photos vault/archive/photos_backup
         3. User runs: svault add vault/archive/photos_backup
-        4. Should detect as moved and suggest reconcile
+        4. Should detect as moved and suggest update
         """
         # Setup: Create tracked files
         archive_dir = vault.vault_dir / "archive" / "photos"
@@ -322,12 +322,12 @@ class TestAddInternalMoveDetection:
         result = vault.run("add", str(new_dir))
         combined = result.stderr + result.stdout
         
-        # Should suggest reconcile (or show as duplicate/moved)
+        # Should suggest update (or show as duplicate/moved)
         assert (
-            "reconcile" in combined.lower() or 
+            "update" in combined.lower() or 
             "moved" in combined.lower() or
             "duplicate" in combined.lower()
-        ), f"Should detect move and suggest reconcile:\n{combined}"
+        ), f"Should detect move and suggest update:\n{combined}"
 
 
 # Note: RAW ID tests for add command are in test_raw_id.py::TestRawIdAddCommand

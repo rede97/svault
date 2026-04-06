@@ -20,7 +20,7 @@ pub fn run(
     let ctx = VaultContext::open_cwd()?;
 
     if !events {
-        // Default: Show session-based history (import/add/reconcile)
+        // Default: Show session-based history (import/add/update)
         show_session_history(output, ctx.vault_root(), ctx.db(), from, to, limit, verbose)?;
     } else {
         // Original event-based history (all events, use grep for filtering)
@@ -53,7 +53,7 @@ fn show_session_history(
         None,
     )?;
 
-    // Filter for import/add/reconcile events (both old and new event types)
+    // Filter for import/add/update events (both old and new event types)
     let sessions: Vec<(i64, String, String)> = all_events
         .into_iter()
         .filter(|e| {
@@ -65,7 +65,7 @@ fn show_session_history(
         .collect();
 
     if sessions.is_empty() {
-        eprintln!("No import/add/reconcile history found.");
+        eprintln!("No import/add/update history found.");
         eprintln!("Use --events to see all events.");
         return Ok(());
     }
@@ -121,7 +121,7 @@ fn show_session_history(
             }))?
         );
     } else {
-        println!("{}", style("History (import/add/reconcile)").bold().underlined());
+        println!("{}", style("History (import/add/update)").bold().underlined());
         println!();
 
         let mut sessions_vec: Vec<_> = session_map.into_iter().collect();

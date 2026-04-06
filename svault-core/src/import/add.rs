@@ -180,7 +180,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         eprintln!("{}", style("Note:").bold().cyan());
         eprintln!("  {} file(s) appear to have been moved within the vault.",
             style(moved_count).cyan());
-        eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
+        eprintln!("  Use {} to update their paths:", style("svault update").bold());
         
         for (_, (current, old)) in moved_files.iter().take(3).enumerate() {
             let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);
@@ -254,7 +254,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         eprintln!("{}", style("Note:").bold().cyan());
         eprintln!("  {} file(s) appear to have been moved within the vault.",
             style(moved_files.len()).cyan());
-        eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
+        eprintln!("  Use {} to update their paths:", style("svault update").bold());
         
         for (_, (current, old)) in moved_files.iter().take(3).enumerate() {
             let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);

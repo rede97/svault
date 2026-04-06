@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use svault_core::context::VaultContext;
-use svault_core::import::reconcile::{run_reconcile, ReconcileOptions};
+use svault_core::import::update::{run_update, UpdateOptions};
 
 pub fn run(
     dry_run: bool,
@@ -13,7 +13,7 @@ pub fn run(
     let cwd = std::env::current_dir()?;
     let scan_root = target.unwrap_or_else(|| cwd.clone());
     let ctx = VaultContext::open(None, &scan_root)?;
-    let opts = ReconcileOptions {
+    let opts = UpdateOptions {
         root: scan_root,
         vault_root: ctx.vault_root().to_path_buf(),
         dry_run,
@@ -21,6 +21,6 @@ pub fn run(
         clean,
         delete,
     };
-    run_reconcile(opts, ctx.db())?;
+    run_update(opts, ctx.db())?;
     Ok(())
 }
