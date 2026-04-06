@@ -318,7 +318,6 @@ mod tests {
         let cfg = Config::default();
         
         // Global config defaults
-        assert!(matches!(cfg.global.hash, HashAlgorithm::Xxh3_128));
         assert_eq!(cfg.global.sync_strategy.0.len(), 1);
         assert!(matches!(cfg.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
         
@@ -379,7 +378,6 @@ mod tests {
         let loaded: Config = toml::from_str(&toml_str).expect("should deserialize");
         
         // Verify key values roundtrip
-        assert!(matches!(loaded.global.hash, HashAlgorithm::Xxh3_128));
         assert_eq!(loaded.import.rename_template, original.import.rename_template);
         assert_eq!(loaded.import.allowed_extensions, original.import.allowed_extensions);
     }
@@ -391,16 +389,12 @@ mod tests {
     #[test]
     fn parses_minimal_valid_config() {
         let toml = r#"
-[global]
-hash = "sha256"
-
 [import]
 path_template = "$year/$filename"
 allowed_extensions = ["jpg", "png"]
 "#;
         
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
-        assert!(matches!(cfg.global.hash, HashAlgorithm::Sha256));
         assert_eq!(cfg.import.path_template, "$year/$filename");
         assert_eq!(cfg.import.allowed_extensions, vec!["jpg", "png"]);
     }
@@ -586,7 +580,6 @@ allowed_extensions = ["jpg"]
         let loaded = Config::load(dir.path()).expect("should load config");
         
         // Verify values
-        assert!(matches!(loaded.global.hash, HashAlgorithm::Xxh3_128));
         assert!(!loaded.import.store_exif);
     }
 
@@ -617,7 +610,6 @@ allowed_extensions = ["jpg"]
         // Write a custom config manually
         let custom_toml = r#"
 [global]
-hash = "sha256"
 sync_strategy = ["hardlink", "copy"]
 
 [import]
@@ -632,7 +624,6 @@ allowed_extensions = ["cr2", "nef", "arw"]
         
         // Load and verify
         let cfg = Config::load(dir.path()).expect("should load custom config");
-        assert!(matches!(cfg.global.hash, HashAlgorithm::Sha256));
         assert_eq!(cfg.global.sync_strategy.0.len(), 2);
         assert!(cfg.import.store_exif);
         assert_eq!(cfg.import.rename_template, "custom-$n.$ext");

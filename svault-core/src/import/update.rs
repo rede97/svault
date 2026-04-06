@@ -134,11 +134,9 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
                 Err(_) => return None,
             };
 
-            // Try definitive match first (sha256) if available
-            if let Some(candidates) = missing_by_sha256.get(&xxh3_str) {
-                // Wait, we need sha256 of disk file, not xxh3
-                // Actually, we should check xxh3 first, then verify with sha256
-            }
+            // TODO: Try definitive match first (sha256) if available
+            // This requires computing SHA-256 of the disk file and comparing
+            // with candidates that have SHA-256 in the database
 
             // First: try fast match by xxh3_128
             if let Some(candidates) = missing_by_xxh3.get(&xxh3_str) {

@@ -185,11 +185,22 @@ pub fn run_scan(opts: ScanOptions, db: Option<&Db>, vault_ctx: Option<&VaultCont
 }
 
 /// Print scan output in pipeable format.
-/// Format: SCAN:<source> new:<file> dup:<file> fail:<file>
+/// Format: SCAN:<source>
+///         new:<file>
+///         dup:<file>
+///         fail:<file>
 fn print_scan_output(source: &Path, summary: &ScanSummary, show_dup: bool) {
     let source_display = source.display().to_string();
-    let mut parts = vec![format!("SCAN:{}", source_display)];
+    
+    // Print source line
+    println!("SCAN:{}", source_display);
 
+    // If no results collected, return early
+    if summary.results.is_empty() {
+        return;
+    }
+
+    // Print each file on its own line
     for result in &summary.results {
         let prefix = match result.status {
             FileScanStatus::New => "new",
@@ -205,25 +216,15 @@ fn print_scan_output(source: &Path, summary: &ScanSummary, show_dup: bool) {
         let rel_str = result.rel_path.display().to_string();
         // Escape spaces and colons in paths for safe parsing
         let escaped = rel_str.replace(' ', "\\ ").replace(':', "\\:");
-        parts.push(format!("{}:{}", prefix, escaped));
+        println!("{}:{}", prefix, escaped);
     }
-
-    // If no results collected (collect_results=false), generate from summary
-    if summary.results.is_empty() {
-        // This is a simplified output for human-readable mode
-        // In practice, we'd need to track files to generate this
-        // For now, just print the SCAN: prefix
-        println!("SCAN:{}", source_display);
-        return;
-    }
-
-    println!("{}", parts.join(" "));
 }
 
 /// Format a scan result as a string (for testing or custom output).
+/// Each entry is on its own line for clarity.
 pub fn format_scan_line(source: &Path, results: &[(PathBuf, FileScanStatus)], show_dup: bool) -> String {
     let source_display = source.display().to_string();
-    let mut parts = vec![format!("SCAN:{}", source_display)];
+    let mut lines = vec![format!("SCAN:{}", source_display)];
 
     for (rel_path, status) in results {
         let prefix = match status {
@@ -238,8 +239,8 @@ pub fn format_scan_line(source: &Path, results: &[(PathBuf, FileScanStatus)], sh
 
         let rel_str = rel_path.display().to_string();
         let escaped = rel_str.replace(' ', "\\ ").replace(':', "\\:");
-        parts.push(format!("{}:{}", prefix, escaped));
+        lines.push(format!("{}:{}", prefix, escaped));
     }
 
-    parts.join(" ")
+    lines.join("\n")
 }

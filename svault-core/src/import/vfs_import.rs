@@ -47,7 +47,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use crate::config::{HashAlgorithm, ImportConfig, SyncStrategy};
+use crate::config::{ImportConfig, SyncStrategy};
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::media::{extract_raw_id_if_raw, is_raw_file};
