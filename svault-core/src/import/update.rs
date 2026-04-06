@@ -235,17 +235,28 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
             }
         }
 
-        // Apply updates
+        // Apply updates with progress bar
+        let update_bar = ProgressBar::new(matched as u64);
+        update_bar.set_style(
+            ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+        update_bar.set_prefix("Updating ");
+
         for m in matches.iter().map(|(m, _)| m) {
+            update_bar.set_message(m.old_path.clone());
             if let Err(e) = db.update_file_path(m.file_id, &m.new_path) {
-                eprintln!("{} Failed to update {}: {}", 
+                eprintln!("\n{} Failed to update {}: {}", 
                     style("Error:").red().bold(), 
                     style(&m.old_path),
                     e);
             } else {
                 updated += 1;
             }
+            update_bar.inc(1);
         }
+        update_bar.finish_and_clear();
     }
 
     // 5. Clean phase (mark unmatched as missing, or delete)
@@ -276,27 +287,47 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
                 style(to_clean.len()).red());
             // Note: actual file deletion would go here
             // For now we just mark as missing in DB
+            let clean_bar = ProgressBar::new(to_clean.len() as u64);
+            clean_bar.set_style(
+                ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+                    .unwrap()
+                    .progress_chars("=> "),
+            );
+            clean_bar.set_prefix("Cleaning ");
             for f in to_clean {
+                clean_bar.set_message(f.path.clone());
                 if let Err(e) = db.update_file_status(f.id, "missing") {
-                    eprintln!("{} Failed to mark {} as missing: {}", 
+                    eprintln!("\n{} Failed to mark {} as missing: {}", 
                         style("Error:").red().bold(), 
                         style(&f.path),
                         e);
                 }
+                clean_bar.inc(1);
             }
+            clean_bar.finish_and_clear();
         } else {
             eprintln!();
             eprintln!("{} Marking {} unmatched file(s) as missing...", 
                 style("Cleaned:").bold().green(),
                 style(to_clean.len()).green());
+            let clean_bar = ProgressBar::new(to_clean.len() as u64);
+            clean_bar.set_style(
+                ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
+                    .unwrap()
+                    .progress_chars("=> "),
+            );
+            clean_bar.set_prefix("Cleaning ");
             for f in to_clean {
+                clean_bar.set_message(f.path.clone());
                 if let Err(e) = db.update_file_status(f.id, "missing") {
-                    eprintln!("{} Failed to mark {} as missing: {}", 
+                    eprintln!("\n{} Failed to mark {} as missing: {}", 
                         style("Error:").red().bold(), 
                         style(&f.path),
                         e);
                 }
+                clean_bar.inc(1);
             }
+            clean_bar.finish_and_clear();
         }
     }
 
