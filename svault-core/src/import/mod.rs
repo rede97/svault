@@ -25,7 +25,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::db::Db;
@@ -55,7 +55,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let scan_rx = pipeline::scan::scan_stream(&source_canon, &exts)?;
 
     // Set up progress bar with spinner (unknown total during streaming)
-    let scan_bar = ProgressBar::new_spinner();
+    let scan_bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stderr());
     scan_bar.set_style(
         ProgressStyle::with_template("{prefix:.bold.blue} {spinner} {pos} files ({per_sec})")
             .unwrap(),
@@ -74,7 +74,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         scan_bar.set_position(scanned as u64);
         
         // Filter out vault paths and show errors in real-time
-        // Check if the file path is within the vault directory by checking ancestors
+        // Check if the file path is within the vault directory
         let is_in_vault = result.file.path.ancestors().any(|p| p == vault_canon);
         match &result.crc {
             Ok(_) if is_in_vault => {
@@ -99,27 +99,38 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // ------------------------------------------------------------------
     // Lookup: DB duplicate check
     // ------------------------------------------------------------------
-    eprintln!("{} {} files in {}", 
-        style("Scanning").bold().cyan(),
-        style(crc_entries.len() + crc_errors.len()).cyan(),
-        style(opts.source.display()));
+    let lookup_bar = ProgressBar::with_draw_target(
+        Some(crc_entries.len() as u64),
+        ProgressDrawTarget::stderr()
+    );
+    lookup_bar.set_style(
+        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos}/{len} files")
+            .unwrap(),
+    );
+    lookup_bar.set_prefix("Checking");
 
     let lookup_results = pipeline::lookup::lookup_duplicates(crc_entries, db, &opts.vault_root)?;
 
-    // Report results (show new files, optionally show duplicates)
-    for r in &lookup_results {
+    // Report results in real-time using progress bar
+    for (i, r) in lookup_results.iter().enumerate() {
+        lookup_bar.set_position((i + 1) as u64);
         let rel_path = r.entry.file.path.strip_prefix(&source_canon)
             .unwrap_or(&r.entry.file.path);
         match r.status {
             pipeline::types::FileStatus::LikelyNew => {
-                eprintln!("  {} {}", style("Found").green(), style(rel_path.display()));
+                lookup_bar.println(format!("  {} {}",
+                    style("Found").green(),
+                    style(rel_path.display())));
             }
             pipeline::types::FileStatus::LikelyCacheDuplicate if opts.show_dup => {
-                eprintln!("  {} {}", style("Duplicate").yellow(), style(rel_path.display()));
+                lookup_bar.println(format!("  {} {}",
+                    style("Duplicate").yellow(),
+                    style(rel_path.display())));
             }
             _ => {}
         }
     }
+    lookup_bar.finish_and_clear();
 
     let (new_files, dup_files) = pipeline::lookup::filter_new(lookup_results, opts.force);
     let likely_dup = dup_files.len();
@@ -139,6 +150,18 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     if failed_b > 0 {
         eprintln!("  {}",
             style(format!("Errors:           {:>6}", failed_b)).red());
+    }
+
+    // Show duplicate files if --show-dup is enabled (for non-TTY environments)
+    if opts.show_dup && !dup_files.is_empty() {
+        eprintln!();
+        for dup in &dup_files {
+            let rel_path = dup.file.path.strip_prefix(&source_canon)
+                .unwrap_or(&dup.file.path);
+            eprintln!("  {} {}",
+                style("Duplicate").yellow(),
+                style(rel_path.display()));
+        }
     }
 
     // Early exit if no new files
