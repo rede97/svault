@@ -74,11 +74,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         scan_bar.set_position(scanned as u64);
         
         // Filter out vault paths and show errors in real-time
-        // Ensure vault path ends with '/' for accurate prefix matching
-        let vault_prefix = format!("{}/", vault_canon.to_string_lossy());
-        let is_vault_path = result.file.path.to_string_lossy().starts_with(&vault_prefix);
+        // Check if the file path is within the vault directory by checking ancestors
+        let is_in_vault = result.file.path.ancestors().any(|p| p == vault_canon);
         match &result.crc {
-            Ok(_) if is_vault_path => {
+            Ok(_) if is_in_vault => {
                 continue; // Skip vault paths
             }
             Err(e) => {
