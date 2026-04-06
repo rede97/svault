@@ -460,6 +460,61 @@ class TestEdgeCases:
         files = vault.db_files()
         assert len(files) == 1
 
+    def test_reimport_after_vault_file_moved_detects_duplicate(self, vault: VaultEnv) -> None:
+        """Vault 文件被移动到 vault 内部新位置后重新导入
+
+        场景：
+        1. 导入文件到 vault/archive/2023/
+        2. 用户手动移动文件到 vault/archive/2024/ (在 vault 内部)
+        3. 重新导入相同文件
+        4. 期望：检测到是 vault 内部移动，不应该创建重复记录
+        5. 应该提示用户使用 reconcile 命令
+
+        期望结果：
+        - 导入时应该检测到 CRC/hash 匹配
+        - 但原路径 (2023/) 的文件已不存在
+        - 应该识别为 vault-internal move
+        - 不应该创建新记录（避免重复）
+        - 应该提示用户使用 svault reconcile
+        """
+        # 创建并导入文件
+        for i in range(3):
+            f = vault.source_dir / f"photo_{i:03d}.jpg"
+            create_minimal_jpeg(f, f"MOVE_TEST_{i}")
+
+        vault.import_dir(vault.source_dir)
+        files_before = vault.db_files()
+        assert len(files_before) == 3
+
+        # 模拟用户移动：找到导入的文件并移动到新位置
+        for f in files_before:
+            old_path = vault.vault_dir / f["path"]
+            # 移动到新的子目录
+            new_dir = vault.vault_dir / "relocated"
+            new_dir.mkdir(parents=True, exist_ok=True)
+            new_path = new_dir / Path(f["path"]).name
+            if old_path.exists():
+                old_path.rename(new_path)
+
+        # 重新导入（不使用 --force）
+        result = vault.import_dir(vault.source_dir)
+        combined = result.stderr + result.stdout
+
+        # 不应该创建新记录（文件已在 vault 中，只是移动了）
+        files_after = vault.db_files()
+        # 应该仍然是 3 个文件（没有重复）
+        assert len(files_after) == 3, \
+            f"Expected 3 files (no duplicates), got {len(files_after)}"
+
+        # 应该提示检测到重复或移动
+        # 可能显示 "Duplicate" 或 "Already in vault" 或建议使用 reconcile
+        assert (
+            "duplicate" in combined.lower() or
+            "already" in combined.lower() or
+            "moved" in combined.lower() or
+            "reconcile" in combined.lower()
+        ), f"Should detect vault-internal move or duplicate:\n{combined}"
+
     def test_import_with_subdirectories(self, vault: VaultEnv) -> None:
         """包含子目录的导入和重新导入
 

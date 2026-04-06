@@ -130,6 +130,50 @@ class TestBatchDeduplication:
         assert len(files) == 1
 
 
+    def test_crc_collision_same_prefix_different_content(self, vault: VaultEnv) -> None:
+        """CRC collision: Two files with same first 64KB but different content.
+        
+        JPEG files use CRC strategy Head(64KB), so if two files have identical
+        first 64KB but differ afterwards, they will have same CRC but different
+        strong hash (XXH3-128).
+        
+        Expected behavior:
+        - Stage B (CRC): Both files have same CRC → marked as "Duplicate"
+        - Stage D (Strong Hash): Different XXH3-128 → confirmed as different files
+        - Both files imported with conflict resolution (photo.jpg, photo.1.jpg)
+        """
+        # Create two files with same JPEG header but different content after
+        header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+        # Add padding to make files larger than 64KB to ensure collision
+        padding = b'\x00' * (65 * 1024)  # 65KB padding
+        
+        f1 = vault.source_dir / "photo_a.jpg"
+        f2 = vault.source_dir / "photo_b.jpg"
+        
+        # File 1: header + padding + "AAAA..."
+        f1.write_bytes(header + padding + b'A' * 1000)
+        # File 2: header + padding + "BBBB..." (same CRC header, different content)
+        f2.write_bytes(header + padding + b'B' * 1000)
+        
+        # Both files should have same CRC (first 64KB identical)
+        import zlib
+        crc1 = zlib.crc32(header + padding[:65536 - len(header)])
+        crc2 = zlib.crc32(header + padding[:65536 - len(header)])
+        assert crc1 == crc2, "Test setup error: CRC should be identical"
+        
+        # Import both files
+        result = vault.import_dir(vault.source_dir)
+        assert result.returncode == 0
+        
+        # Both files should be imported (not duplicates, different content)
+        files = vault.db_files()
+        assert len(files) == 2, f"Expected 2 files (different content), got {len(files)}"
+        
+        # Verify different strong hashes
+        hashes = {f["xxh3_128"] for f in files}
+        assert len(hashes) == 2, "Files should have different XXH3-128 hashes"
+
+
 # ========== Tests migrated from test_import.py ==========
 
 class TestDuplicateDetection:

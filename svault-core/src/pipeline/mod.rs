@@ -19,6 +19,6 @@ pub mod hash;
 pub mod insert;
 
 pub use types::{
-    CopyResult, CrcEntry, FileEntry, FileStatus, HashResult, LookupResult,
+    CheckResult, CopyResult, CrcEntry, FileEntry, FileStatus, HashResult, LookupResult,
     PipelineSummary,
 };

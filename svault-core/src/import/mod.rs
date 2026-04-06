@@ -28,6 +28,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
+use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::pipeline;
 use crate::vfs::system::SystemFs;
@@ -38,8 +39,24 @@ use path::resolve_dest_path;
 use utils::session_id_now;
 
 /// Check if a file is a duplicate via DB lookup.
-/// Returns FileStatus::LikelyCacheDuplicate if found in vault, otherwise LikelyNew.
-fn check_duplicate(entry: &pipeline::types::CrcEntry, db: &Db, vault_root: &Path) -> pipeline::types::FileStatus {
+/// Uses shared CheckResult type for consistent handling in import and add commands.
+/// 
+/// # Arguments
+/// * `entry` - CrcEntry with CRC32C and file metadata
+/// * `db` - Database handle
+/// * `vault_root` - Vault root path for existence checks
+/// * `hash` - Optional (hash_bytes, algorithm) for secondary verification when CRC matches
+/// 
+/// # Special cases
+/// - If status is 'missing': returns Recover (allows re-import with path update)
+/// - If file exists at original path: returns Duplicate
+/// - If CRC matches but file missing: returns Moved (vault-internal move)
+pub fn check_duplicate(
+    entry: &pipeline::types::CrcEntry, 
+    db: &Db, 
+    vault_root: &Path,
+    hash: Option<(&[u8], &HashAlgorithm)>,
+) -> pipeline::CheckResult {
     let ext = entry.file.path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
@@ -51,7 +68,7 @@ fn check_duplicate(entry: &pipeline::types::CrcEntry, db: &Db, vault_root: &Path
         entry.raw_unique_id.as_deref(),
     ) {
         Ok(c) => c,
-        Err(_) => return pipeline::types::FileStatus::LikelyNew,
+        Err(_) => return pipeline::CheckResult::New,
     };
     
     if let Some(row) = cached {
@@ -59,13 +76,34 @@ fn check_duplicate(entry: &pipeline::types::CrcEntry, db: &Db, vault_root: &Path
             (Some(new_id), Some(existing_id)) => new_id == existing_id,
             _ => true,
         };
+        
+        // If strong hash provided, do secondary verification
+        let hash_matches = if let Some((hash_bytes, algo)) = hash {
+            let db_hash = match algo {
+                HashAlgorithm::Xxh3_128 => row.xxh3_128.as_ref(),
+                HashAlgorithm::Sha256 => row.sha256.as_ref(),
+            };
+            db_hash.map(|db| db == hash_bytes).unwrap_or(false)
+        } else {
+            true // No hash provided, trust CRC match
+        };
+        
+        // If status is 'missing', allow re-import with recovery
+        if row.status == "missing" && hash_matches {
+            return pipeline::CheckResult::Recover { old_path: row.path, file_id: row.id };
+        }
+        
         let vault_path = vault_root.join(&row.path);
-        if vault_path.exists() && is_same_raw_id {
-            return pipeline::types::FileStatus::LikelyCacheDuplicate;
+        if vault_path.exists() && is_same_raw_id && hash_matches {
+            // Exact duplicate - file exists at original path
+            return pipeline::CheckResult::Duplicate;
+        } else if is_same_raw_id && hash_matches {
+            // CRC matches but original file missing -> vault-internal move
+            return pipeline::CheckResult::Moved { old_path: row.path };
         }
     }
     
-    pipeline::types::FileStatus::LikelyNew
+    pipeline::CheckResult::New
 }
 
 /// Run the full import pipeline (Stages A–E).
@@ -97,6 +135,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     // Stage C: Lookup (serial from channel) with real-time output
     let mut lookup_results = Vec::new();
+    let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new(); // (src_path, old_vault_path)
     let mut total_files = 0usize;
     
     for result in crc_rx {
@@ -140,28 +179,61 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             src_path: None,
             crc32c: crc,
             raw_unique_id,
+            precomputed_hash: None,
         };
         
         // Immediate DB lookup and real-time output
         let rel_path = entry.file.path.strip_prefix(&source_canon)
             .unwrap_or(&entry.file.path);
-        let status = check_duplicate(&entry, db, &opts.vault_root);
+        let check_result = check_duplicate(&entry, db, &opts.vault_root, None);
         
-        match status {
-            pipeline::types::FileStatus::LikelyCacheDuplicate if opts.show_dup => {
-                scan_bar.println(format!("  {} {}",
-                    style("Duplicate").yellow(),
-                    style(rel_path.display())));
+        match check_result {
+            pipeline::CheckResult::Moved { old_path } => {
+                // Vault-internal move detected
+                scan_bar.println(format!("  {} {} {}",
+                    style("Moved").cyan(),
+                    style(rel_path.display()),
+                    style(format!("(in vault: {})", old_path)).dim()));
+                moved_files.push((result.file.path, old_path));
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyCacheDuplicate 
+                });
             }
-            pipeline::types::FileStatus::LikelyNew => {
+            pipeline::CheckResult::Recover { old_path, .. } => {
+                // Recovery from missing state
+                scan_bar.println(format!("  {} {} {}",
+                    style("Recover").cyan(),
+                    style(rel_path.display()),
+                    style(format!("(was: {})", old_path)).dim()));
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyNew 
+                });
+            }
+            pipeline::CheckResult::Duplicate => {
+                // Regular duplicate
+                if opts.show_dup {
+                    scan_bar.println(format!("  {} {}",
+                        style("Duplicate").yellow(),
+                        style(rel_path.display())));
+                }
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyCacheDuplicate 
+                });
+            }
+            pipeline::CheckResult::New => {
+                // New file
                 scan_bar.println(format!("  {} {}",
                     style("Found").green(),
                     style(rel_path.display())));
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyNew 
+                });
             }
-            _ => {}
         }
-        
-        lookup_results.push(pipeline::types::LookupResult { entry, status });
     }
     scan_bar.finish_and_clear();
 
@@ -201,7 +273,23 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Early exit if no new files
     if new_files.is_empty() {
         eprintln!();
-        eprintln!("All {} files matched cache (no new files detected).", total_files);
+        if !moved_files.is_empty() {
+            // Vault-internal moves detected - suggest reconcile
+            eprintln!("{}", style("Note:").bold().cyan());
+            eprintln!("  {} file(s) already exist in vault but were moved.",
+                style(moved_files.len()).cyan());
+            eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
+            for (src, old) in moved_files.iter().take(3) {
+                eprintln!("    {} → new import from {}", 
+                    style(old).dim(),
+                    style(src.file_name().unwrap_or_default().to_string_lossy()).cyan());
+            }
+            if moved_files.len() > 3 {
+                eprintln!("    ... and {} more", moved_files.len() - 3);
+            }
+        } else {
+            eprintln!("All {} files matched cache (no new files detected).", total_files);
+        }
         return Ok(ImportSummary {
             total: total_files,
             duplicate: likely_dup,
@@ -333,6 +421,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 src_path: Some(src),
                 crc32c: crc,
                 raw_unique_id: raw_id,
+                precomputed_hash: None,
             }
         })
         .collect();

@@ -240,5 +240,90 @@ class TestAddWithImport:
         assert len(paths) >= 1
 
 
+
+class TestAddInternalMoveDetection:
+    """Test add command detects vault-internal moves and suggests reconcile."""
+
+    def test_add_detects_vault_internal_move_suggests_reconcile(self, vault: VaultEnv) -> None:
+        """When files are moved within vault, add should suggest reconcile.
+        
+        Scenario:
+        1. Import files to vault/2023/
+        2. Move directory to vault/2023_new/ (outside svault)
+        3. Run 'svault add vault/2023_new'
+        4. Should detect as moved files and suggest 'svault reconcile'
+        """
+        # Step 1: Create and import files to 2023/
+        src_2023 = vault.source_dir / "2023"
+        src_2023.mkdir(parents=True, exist_ok=True)
+        create_minimal_jpeg(src_2023 / "photo1.jpg", "MOVE_TEST_1")
+        create_minimal_jpeg(src_2023 / "photo2.jpg", "MOVE_TEST_2")
+        
+        vault.import_dir(vault.source_dir)
+        
+        # Verify files imported
+        rows = vault.db_files()
+        assert len(rows) == 2
+        old_paths = {r["path"] for r in rows}
+        assert any("2023" in p for p in old_paths)
+        
+        # Step 2: Simulate move by creating files at new location
+        # In real scenario, user would: mv vault/2023 vault/2023_new
+        vault_2023_new = vault.vault_dir / "2023_new"
+        vault_2023_new.mkdir(parents=True, exist_ok=True)
+        create_minimal_jpeg(vault_2023_new / "photo1.jpg", "MOVE_TEST_1")
+        create_minimal_jpeg(vault_2023_new / "photo2.jpg", "MOVE_TEST_2")
+        
+        # Step 3: Run add on new location
+        result = vault.run("add", str(vault_2023_new))
+        combined = result.stderr + result.stdout
+        
+        # Step 4: Should suggest reconcile
+        assert "reconcile" in combined.lower(), \
+            f"Expected 'reconcile' suggestion in output, got:\n{combined}"
+        
+        # Should NOT add new records (files are duplicates, just moved)
+        rows_after = vault.db_files()
+        # Should still have only 2 files (old paths)
+        # New paths should NOT be added
+        assert len(rows_after) == 2, \
+            f"Expected 2 files in DB, got {len(rows_after)}. Files may have been incorrectly added."
+
+    def test_add_after_manual_directory_rename(self, vault: VaultEnv) -> None:
+        """Simulate user renaming a directory inside vault.
+        
+        User workflow:
+        1. Files exist in vault/archive/photos/
+        2. User runs: mv vault/archive/photos vault/archive/photos_backup
+        3. User runs: svault add vault/archive/photos_backup
+        4. Should detect as moved and suggest reconcile
+        """
+        # Setup: Create tracked files
+        archive_dir = vault.vault_dir / "archive" / "photos"
+        archive_dir.mkdir(parents=True)
+        create_minimal_jpeg(archive_dir / "vacation.jpg", "VACATION_UNIQUE")
+        
+        vault.run("add", str(archive_dir))
+        
+        # Verify tracked
+        rows = vault.db_files()
+        assert len(rows) == 1
+        assert "archive/photos" in rows[0]["path"]
+        
+        # Simulate rename: create at new path, old path still exists in DB but not FS
+        # (In real scenario, mv removes old path)
+        # We simulate by creating new path, the old path check will fail
+        new_dir = vault.vault_dir / "archive" / "photos_backup"
+        new_dir.mkdir(parents=True)
+        create_minimal_jpeg(new_dir / "vacation.jpg", "VACATION_UNIQUE")
+        
+        result = vault.run("add", str(new_dir))
+        combined = result.stderr + result.stdout
+        
+        # Should suggest reconcile
+        assert "reconcile" in combined.lower() or "moved" in combined.lower(), \
+            f"Should detect move and suggest reconcile:\n{combined}"
+
+
 # Note: RAW ID tests for add command are in test_raw_id.py::TestRawIdAddCommand
 # to avoid duplication.

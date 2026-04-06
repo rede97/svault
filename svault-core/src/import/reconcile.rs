@@ -190,8 +190,18 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
             }
         }
 
-        let _now_ms = crate::import::utils::unix_now_ms();
+        // Update DB with progress bar
+        let update_bar = ProgressBar::new(matched as u64);
+        update_bar.set_style(
+            ProgressStyle::with_template("{prefix:.bold.magenta} [{bar:40}] {pos}/{len}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+        update_bar.set_prefix("Updating ");
+
         for m in &matches {
+            update_bar.inc(1);
+            
             let payload = serde_json::json!({
                 "old_path": m.old_path,
                 "new_path": m.new_path,
@@ -207,11 +217,12 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
                     Ok(())
                 },
             ) {
-                eprintln!("  {} Failed to update {}: {}", style("Error").red(), m.old_path, e);
+                update_bar.println(format!("  {} Failed to update {}: {}", style("Error").red(), m.old_path, e));
                 continue;
             }
             updated += 1;
         }
+        update_bar.finish_and_clear();
     }
 
     // 5. Clean unmatched files (if requested)
@@ -248,13 +259,24 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
             };
 
             if should_proceed {
+                // Clean with progress bar
+                let clean_bar = ProgressBar::new(unmatched_files.len() as u64);
+                clean_bar.set_style(
+                    ProgressStyle::with_template("{prefix:.bold.yellow} [{bar:40}] {pos}/{len}")
+                        .unwrap()
+                        .progress_chars("=> "),
+                );
+                clean_bar.set_prefix("Cleaning ");
+
                 for f in unmatched_files {
+                    clean_bar.inc(1);
+                    
                     // Delete file if requested (and it somehow exists)
                     if opts.delete {
                         let full_path = opts.vault_root.join(&f.path);
                         if full_path.exists() {
                             if let Err(e) = fs::remove_file(&full_path) {
-                                eprintln!("  {} Failed to delete {}: {}", style("Error").red(), f.path, e);
+                                clean_bar.println(format!("  {} Failed to delete {}: {}", style("Error").red(), f.path, e));
                                 continue;
                             }
                             deleted += 1;
@@ -263,11 +285,12 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
 
                     // Update status to 'missing'
                     if let Err(e) = db.update_file_status(f.id, "missing") {
-                        eprintln!("  {} Failed to update status for {}: {}", style("Error").red(), f.path, e);
+                        clean_bar.println(format!("  {} Failed to update status for {}: {}", style("Error").red(), f.path, e));
                         continue;
                     }
                     cleaned += 1;
                 }
+                clean_bar.finish_and_clear();
             }
         }
     }

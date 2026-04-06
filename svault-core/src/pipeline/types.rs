@@ -58,7 +58,7 @@ pub struct FileEntry {
     pub mtime_ms: i64,
 }
 
-/// Stage B output: File entry with CRC32C fingerprint.
+/// Stage B output: File entry with fingerprint (CRC32C or strong hash).
 #[derive(Debug, Clone)]
 pub struct CrcEntry {
     /// File metadata (path is vault destination for import)
@@ -68,6 +68,22 @@ pub struct CrcEntry {
     pub src_path: Option<PathBuf>,
     pub crc32c: u32,
     pub raw_unique_id: Option<String>,
+    /// Pre-computed strong hash (if --hash fast mode enabled).
+    /// When present, Stage D can skip re-computing the hash.
+    pub precomputed_hash: Option<Vec<u8>>,
+}
+
+impl CrcEntry {
+    /// Create a new CrcEntry with precomputed_hash defaulting to None.
+    pub fn new(file: FileEntry, crc32c: u32) -> Self {
+        Self {
+            file,
+            src_path: None,
+            crc32c,
+            raw_unique_id: None,
+            precomputed_hash: None,
+        }
+    }
 }
 
 /// File status after DB lookup (Stage B2).
@@ -79,6 +95,22 @@ pub enum FileStatus {
     LikelyCacheDuplicate,
     /// Failed to process (e.g., CRC error)
     Failed(String),
+}
+
+/// Result of duplicate check with optional move detection.
+/// Used by both `import` and `add` commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckResult {
+    /// New file, not in DB
+    New,
+    /// Exact duplicate (same content, same path or existing file)
+    Duplicate,
+    /// Vault-internal move (same content, different path, old file missing)
+    /// Contains the old path from DB
+    Moved { old_path: String },
+    /// Recovery from missing state (DB has 'missing' status, re-import allowed)
+    /// Contains the old path and file ID to update
+    Recover { old_path: String, file_id: i64 },
 }
 
 /// Stage B2 output: Entry with duplicate lookup result.

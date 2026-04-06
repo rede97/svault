@@ -124,12 +124,19 @@ pub fn batch_insert(
 
     // Batch insert using transaction and prepared statement
     if !files_to_insert.is_empty() {
+        let mut updated_count = 0;
+        let mut inserted_count = 0;
+        
         db.with_transaction(|conn| {
-            // Prepare statement once (optimization #2)
-            let mut stmt = conn.prepare(
+            // Prepare statements once
+            let mut insert_stmt = conn.prepare(
                 "INSERT OR IGNORE INTO files \
                  (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)"
+            )?;
+            
+            let mut update_stmt = conn.prepare(
+                "UPDATE files SET path = ?1, status = 'imported', mtime = ?2, imported_at = ?3 WHERE id = ?4"
             )?;
 
             for r in &files_to_insert {
@@ -140,23 +147,52 @@ pub fn batch_insert(
                     HashAlgorithm::Xxh3_128 => (Some(r.hash_bytes.as_slice()), None),
                     HashAlgorithm::Sha256 => (None, Some(r.hash_bytes.as_slice())),
                 };
+                
+                // Check if there's a 'missing' file with same hash to recover
+                let hash_bytes = xxh3.or(sha256).map(|b| b.to_vec());
+                let missing_file: Option<i64> = if let Some(ref hash) = hash_bytes {
+                    let hash_col = match opts.hash_algo {
+                        HashAlgorithm::Xxh3_128 => "xxh3_128",
+                        HashAlgorithm::Sha256 => "sha256",
+                    };
+                    conn.query_row(
+                        &format!("SELECT id FROM files WHERE {} = ?1 AND status = 'missing' LIMIT 1", hash_col),
+                        [hash],
+                        |row| row.get(0),
+                    ).ok()
+                } else {
+                    None
+                };
 
-                stmt.execute(rusqlite::params![
-                    rel_str,
-                    r.size as i64,
-                    r.mtime_ms,
-                    r.crc32c as i64,
-                    r.raw_unique_id.as_deref(),
-                    xxh3.map(|b| b.to_vec()),
-                    sha256.map(|b| b.to_vec()),
-                    now_ms,
-                ])?;
+                if let Some(file_id) = missing_file {
+                    // Recover missing file: update path and status
+                    update_stmt.execute(rusqlite::params![
+                        rel_str,
+                        r.mtime_ms,
+                        now_ms,
+                        file_id,
+                    ])?;
+                    updated_count += 1;
+                } else {
+                    // Normal insert
+                    insert_stmt.execute(rusqlite::params![
+                        rel_str,
+                        r.size as i64,
+                        r.mtime_ms,
+                        r.crc32c as i64,
+                        r.raw_unique_id.as_deref(),
+                        xxh3.map(|b| b.to_vec()),
+                        sha256.map(|b| b.to_vec()),
+                        now_ms,
+                    ])?;
+                    inserted_count += 1;
+                }
             }
             
             Ok(())
         })?;
 
-        summary.added = files_to_insert.len();
+        summary.added = inserted_count + updated_count;
     }
 
     // Record single batch event (optimization #3)

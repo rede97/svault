@@ -150,6 +150,7 @@ pub fn split_results(results: Vec<CrcResult>) -> (Vec<CrcEntry>, Vec<CrcResult>)
                     src_path: None, // Path is already the source path
                     crc32c: crc,
                     raw_unique_id: r.raw_unique_id,
+                    precomputed_hash: None,
                 });
             }
             Err(_) => {

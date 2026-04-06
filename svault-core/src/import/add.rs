@@ -22,6 +22,8 @@ pub struct AddSummary {
     pub duplicate: usize,
     pub skipped: usize,
     pub failed: usize,
+    /// Files detected as vault-internal moves
+    pub moved: usize,
 }
 
 /// Options for `svault add`.
@@ -31,35 +33,9 @@ pub struct AddOptions {
     pub hash: HashAlgorithm,
 }
 
-/// Check if a file is a duplicate via DB lookup.
-fn check_duplicate(entry: &pipeline::types::CrcEntry, db: &Db, vault_root: &std::path::Path) -> pipeline::types::FileStatus {
-    let ext = entry.file.path.extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    
-    let cached = match db.lookup_by_crc32c(
-        entry.file.size as i64,
-        entry.crc32c,
-        ext,
-        entry.raw_unique_id.as_deref(),
-    ) {
-        Ok(c) => c,
-        Err(_) => return pipeline::types::FileStatus::LikelyNew,
-    };
-    
-    if let Some(row) = cached {
-        let is_same_raw_id = match (&entry.raw_unique_id, &row.raw_unique_id) {
-            (Some(new_id), Some(existing_id)) => new_id == existing_id,
-            _ => true,
-        };
-        let vault_path = vault_root.join(&row.path);
-        if vault_path.exists() && is_same_raw_id {
-            return pipeline::types::FileStatus::LikelyCacheDuplicate;
-        }
-    }
-    
-    pipeline::types::FileStatus::LikelyNew
-}
+/// Use shared check_duplicate function from import module.
+/// Note: add command uses the same logic but with different handling for moves.
+pub use super::check_duplicate;
 
 /// Run `add` on a directory inside the vault.
 pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
@@ -88,6 +64,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
 
     // Stage C: Lookup (serial from channel) with real-time output
     let mut lookup_results = Vec::new();
+    let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new(); // (current_path, old_path)
     let mut total_files = 0usize;
     
     for result in crc_rx {
@@ -126,39 +103,59 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
             src_path: None,
             crc32c: crc,
             raw_unique_id,
+            precomputed_hash: None,
         };
         
         // Immediate DB lookup and real-time output
         let rel_path = entry.file.path.strip_prefix(&opts.vault_root)
             .unwrap_or(&entry.file.path);
-        let status = check_duplicate(&entry, db, &opts.vault_root);
+        let check_result = check_duplicate(&entry, db, &opts.vault_root, None);
         
-        match status {
-            pipeline::types::FileStatus::LikelyCacheDuplicate => {
-                eprintln!("  {} {}",
+        match check_result {
+            pipeline::CheckResult::Duplicate => {
+                scan_bar.println(format!("  {} {}",
                     style("Duplicate").yellow(),
-                    style(rel_path.display()));
+                    style(rel_path.display())));
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyCacheDuplicate 
+                });
             }
-            pipeline::types::FileStatus::LikelyNew => {
-                eprintln!("  {} {}",
+            pipeline::CheckResult::Moved { old_path } => {
+                scan_bar.println(format!("  {} {} {}",
+                    style("Moved").cyan(),
+                    style(rel_path.display()),
+                    style(format!("(from: {})", old_path)).dim()));
+                moved_files.push((result.file.path, old_path));
+                // Don't add to lookup_results - will be handled separately
+            }
+            pipeline::CheckResult::Recover { .. } => {
+                // For add command, recovery is treated as new file
+                scan_bar.println(format!("  {} {}",
                     style("Found").green(),
-                    style(rel_path.display()));
+                    style(rel_path.display())));
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyNew 
+                });
             }
-            _ => {}
+            pipeline::CheckResult::New => {
+                scan_bar.println(format!("  {} {}",
+                    style("Found").green(),
+                    style(rel_path.display())));
+                lookup_results.push(pipeline::types::LookupResult { 
+                    entry, 
+                    status: pipeline::types::FileStatus::LikelyNew 
+                });
+            }
         }
-        
-        lookup_results.push(pipeline::types::LookupResult { entry, status });
     }
     scan_bar.finish_and_clear();
 
-    if lookup_results.is_empty() {
-        eprintln!("\nNo files found to add.");
-        return Ok(AddSummary::default());
-    }
-
     let (new_files, dup_files) = pipeline::lookup::filter_new(lookup_results, false);
     let likely_dup = dup_files.len();
-    let failed_b = total_files.saturating_sub(new_files.len() + dup_files.len());
+    let moved_count = moved_files.len();
+    let failed_b = total_files.saturating_sub(new_files.len() + dup_files.len() + moved_count);
 
     // Pre-flight
     eprintln!();
@@ -171,12 +168,34 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
             style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
             style("already in vault"));
     }
+    if moved_count > 0 {
+        eprintln!("  {}  {}",
+            style(format!("Moved:            {:>6}", moved_count)).cyan(),
+            style("vault-internal move detected"));
+    }
 
-    if new_files.is_empty() {
-        eprintln!("\nAll files already tracked.");
+    // If only moved files detected, suggest reconcile and exit
+    if new_files.is_empty() && moved_count > 0 {
+        eprintln!();
+        eprintln!("{}", style("Note:").bold().cyan());
+        eprintln!("  {} file(s) appear to have been moved within the vault.",
+            style(moved_count).cyan());
+        eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
+        
+        for (_, (current, old)) in moved_files.iter().take(3).enumerate() {
+            let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);
+            eprintln!("    {} → {}", 
+                style(old).dim(),
+                style(current_rel.display()).cyan());
+        }
+        if moved_files.len() > 3 {
+            eprintln!("    ... and {} more", moved_files.len() - 3);
+        }
+        
         return Ok(AddSummary {
             total: total_files,
             skipped: likely_dup,
+            moved: moved_count,
             ..Default::default()
         });
     }
@@ -198,19 +217,6 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     // Check duplicates (allow same path re-add)
     let hash_results = pipeline::hash::check_duplicates(
         hash_results, db, &opts.vault_root, &opts.hash, true)?;
-
-    // Detect vault-internal moves (same content, different path)
-    let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new();
-    for r in &hash_results {
-        if r.is_duplicate && r.dup_reason.as_deref() == Some("db") {
-            if let Ok(Some(existing)) = db.lookup_by_hash(&r.hash_bytes, &opts.hash) {
-                let existing_path = opts.vault_root.join(&existing.path);
-                if existing_path != r.path {
-                    moved_files.push((r.path.clone(), existing.path.clone()));
-                }
-            }
-        }
-    }
 
     // ------------------------------------------------------------------
     // Stage E: Insert
@@ -242,7 +248,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
             style(summary.failed).red());
     }
 
-    // Suggest reconcile for vault-internal moves
+    // Suggest reconcile for vault-internal moves (when mixed with new files)
     if !moved_files.is_empty() {
         eprintln!();
         eprintln!("{}", style("Note:").bold().cyan());
@@ -250,10 +256,10 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
             style(moved_files.len()).cyan());
         eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
         
-        for (_, (current, original)) in moved_files.iter().take(3).enumerate() {
+        for (_, (current, old)) in moved_files.iter().take(3).enumerate() {
             let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);
             eprintln!("    {} → {}", 
-                style(original).dim(),
+                style(old).dim(),
                 style(current_rel.display()).cyan());
         }
         if moved_files.len() > 3 {
@@ -267,5 +273,6 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         duplicate: summary.duplicate + likely_dup,
         skipped: summary.skipped,
         failed: summary.failed + failed_b,
+        moved: moved_count,
     })
 }
