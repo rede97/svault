@@ -23,35 +23,25 @@ pub struct InsertOptions<'a> {
 }
 
 /// Convert hash bytes to hex string for manifest.
-///
-/// # Format Compatibility Warning
-///
-/// This function produces a simple byte-array hex string (e.g., "f12ea78b...").
-/// For XXH3-128, this means the hex string represents the little-endian byte array
-/// from `Xxh3Digest::to_bytes()`, NOT the Display trait format.
-///
-/// This is critical because `import::recheck::compute_hash()` must use the SAME
-/// format when computing hashes for comparison. If the formats differ, recheck
-/// will report all files as "diverged" even when they are intact.
-///
-/// See `import::recheck::compute_hash()` for the corresponding logic.
 fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Insert all valid entries into DB and optionally write manifest.
+/// Insert all valid entries into DB using batch transaction.
+///
+/// Optimizations:
+/// 1. **Batch transaction** - All inserts in single transaction (major speedup)
+/// 2. **Prepared statement** - SQL compiled once, reused for all rows
+/// 3. **Single event** - One "batch.imported" event per command instead of per-file events
 ///
 /// # Arguments
 /// * `results` - Hash results (with is_duplicate and dup_reason flags)
 /// * `db` - Database handle
 /// * `opts` - Insert options
+/// * `progress` - Optional progress bar
 ///
 /// # Returns
 /// PipelineSummary with counts of added/duplicate/failed/skipped files.
-///
-/// # Note
-/// This function does NOT print output. Callers should iterate results
-/// and display status as needed.
 pub fn batch_insert(
     results: Vec<HashResult>,
     db: &Db,
@@ -60,6 +50,8 @@ pub fn batch_insert(
 ) -> anyhow::Result<PipelineSummary> {
     let mut summary = PipelineSummary::new(results.len());
     let now_ms = crate::import::utils::unix_now_ms();
+
+    // Prepare manifest if needed
     let mut manifest = if opts.write_manifest && opts.source_root.is_some() {
         Some(ImportManifest {
             session_id: opts.session_id.to_string(),
@@ -72,13 +64,15 @@ pub fn batch_insert(
         None
     };
 
+    // Collect files to be inserted (filter duplicates first)
+    let mut files_to_insert: Vec<HashResult> = Vec::with_capacity(results.len());
+    
     for r in results {
-        // Update progress bar
+        // Update progress bar (filtering phase)
         if let Some(pb) = progress {
             pb.inc(1);
         }
         
-        // Compute relative path from vault root
         let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
         let rel_str = rel_path.to_string_lossy().into_owned();
 
@@ -91,8 +85,8 @@ pub fn batch_insert(
         }
 
         // Handle errors
-        if let Some(ref _reason) = r.dup_reason {
-            if _reason.starts_with("hash error") {
+        if let Some(ref reason) = r.dup_reason {
+            if reason.starts_with("hash error") {
                 summary.failed += 1;
             } else {
                 summary.duplicate += 1;
@@ -106,51 +100,12 @@ pub fn batch_insert(
             continue;
         }
 
-        // Prepare hash fields
-        let (xxh3, sha256) = match opts.hash_algo {
-            HashAlgorithm::Xxh3_128 => (Some(r.hash_bytes.as_slice()), None),
-            HashAlgorithm::Sha256 => (None, Some(r.hash_bytes.as_slice())),
-        };
-
-        // Insert into DB via event
-        let payload = serde_json::json!({
-            "path": rel_str,
-            "size": r.size as i64,
-            "mtime_ms": r.mtime_ms,
-            "crc32c": r.crc32c as i64,
-            "xxh3_128": xxh3.map(|b| b.to_vec()),
-            "sha256": sha256.map(|b| b.to_vec()),
-            "raw_unique_id": r.raw_unique_id,
-        });
-
-        db.append_event(
-            "file.imported",
-            "file",
-            0, // entity_id placeholder
-            &payload.to_string(),
-            |conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO files \
-                     (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)",
-                    rusqlite::params![
-                        rel_str,
-                        r.size as i64,
-                        r.mtime_ms,
-                        r.crc32c as i64,
-                        r.raw_unique_id.as_deref(),
-                        xxh3.map(|b| b.to_vec()),
-                        sha256.map(|b| b.to_vec()),
-                        now_ms,
-                    ],
-                )?;
-                Ok(())
-            },
-        )?;
-
-        // Add to manifest
+        // Add to manifest if needed
         if let Some(ref mut m) = manifest {
-            // Use src_path if available, fallback to vault path (for add command)
+            let (xxh3, sha256) = match opts.hash_algo {
+                HashAlgorithm::Xxh3_128 => (Some(r.hash_bytes.as_slice()), None),
+                HashAlgorithm::Sha256 => (None, Some(r.hash_bytes.as_slice())),
+            };
             let src_path = r.src_path.clone().unwrap_or_else(|| r.path.clone());
             m.files.push(ImportRecord {
                 src_path,
@@ -164,8 +119,65 @@ pub fn batch_insert(
             });
         }
 
-        summary.added += 1;
+        files_to_insert.push(r);
     }
+
+    // Batch insert using transaction and prepared statement
+    if !files_to_insert.is_empty() {
+        db.with_transaction(|conn| {
+            // Prepare statement once (optimization #2)
+            let mut stmt = conn.prepare(
+                "INSERT OR IGNORE INTO files \
+                 (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)"
+            )?;
+
+            for r in &files_to_insert {
+                let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
+                let rel_str = rel_path.to_string_lossy();
+
+                let (xxh3, sha256) = match opts.hash_algo {
+                    HashAlgorithm::Xxh3_128 => (Some(r.hash_bytes.as_slice()), None),
+                    HashAlgorithm::Sha256 => (None, Some(r.hash_bytes.as_slice())),
+                };
+
+                stmt.execute(rusqlite::params![
+                    rel_str,
+                    r.size as i64,
+                    r.mtime_ms,
+                    r.crc32c as i64,
+                    r.raw_unique_id.as_deref(),
+                    xxh3.map(|b| b.to_vec()),
+                    sha256.map(|b| b.to_vec()),
+                    now_ms,
+                ])?;
+            }
+            
+            Ok(())
+        })?;
+
+        summary.added = files_to_insert.len();
+    }
+
+    // Record single batch event (optimization #3)
+    // Instead of N per-file events, record 1 summary event
+    let batch_payload = serde_json::json!({
+        "session_id": opts.session_id,
+        "file_count": summary.added,
+        "total_count": summary.total,
+        "duplicate_count": summary.duplicate,
+        "skipped_count": summary.skipped,
+        "failed_count": summary.failed,
+        "hash_algorithm": format!("{:?}", opts.hash_algo).to_lowercase(),
+    });
+    
+    db.append_event(
+        "batch.imported",
+        "import",
+        0,
+        &batch_payload.to_string(),
+        |_conn| Ok(()),
+    )?;
 
     // Write manifest file
     if let Some(m) = manifest {
@@ -173,22 +185,6 @@ pub fn batch_insert(
         std::fs::create_dir_all(&manifest_dir)?;
         let manifest_path = manifest_dir.join(format!("import-{}.json", opts.session_id));
         m.save(&manifest_path)?;
-
-        // Also record import.completed event
-        let completed_payload = serde_json::json!({
-            "session_id": opts.session_id,
-            "total_files": summary.total,
-            "new_files": summary.added,
-            "duplicate_files": summary.duplicate,
-            "manifest_path": manifest_path.to_string_lossy().to_string(),
-        });
-        db.append_event(
-            "import.completed",
-            "import",
-            0,
-            &completed_payload.to_string(),
-            |_conn| Ok(()),
-        )?;
     }
 
     Ok(summary)
@@ -255,5 +251,57 @@ mod tests {
         
         assert_eq!(summary.duplicate, 1);
         assert_eq!(summary.added, 0);
+    }
+
+    #[test]
+    fn test_batch_insert_multiple_files() {
+        let tmp = TempDir::new().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        
+        let results = vec![
+            HashResult {
+                path: tmp.path().join("photo1.jpg"),
+                src_path: Some(PathBuf::from("/source/photo1.jpg")),
+                size: 1000,
+                mtime_ms: 12345,
+                crc32c: 111,
+                raw_unique_id: None,
+                hash_bytes: vec![1, 2, 3, 4],
+                is_duplicate: false,
+                dup_reason: None,
+            },
+            HashResult {
+                path: tmp.path().join("photo2.jpg"),
+                src_path: Some(PathBuf::from("/source/photo2.jpg")),
+                size: 2000,
+                mtime_ms: 12346,
+                crc32c: 222,
+                raw_unique_id: None,
+                hash_bytes: vec![5, 6, 7, 8],
+                is_duplicate: false,
+                dup_reason: None,
+            },
+        ];
+        
+        let opts = InsertOptions {
+            vault_root: tmp.path(),
+            hash_algo: &HashAlgorithm::Xxh3_128,
+            session_id: "test-001",
+            write_manifest: false,
+            source_root: None,
+            force: false,
+        };
+
+        let summary = batch_insert(results, &db, opts, None).unwrap();
+        
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.added, 2);
+        assert_eq!(summary.duplicate, 0);
+        
+        // Verify files were actually inserted
+        let file1 = db.get_file_by_path("photo1.jpg").unwrap();
+        let file2 = db.get_file_by_path("photo2.jpg").unwrap();
+        assert!(file1.is_some());
+        assert!(file2.is_some());
     }
 }

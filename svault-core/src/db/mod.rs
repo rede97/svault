@@ -129,6 +129,18 @@ impl Db {
         Ok(())
     }
 
+    /// Execute a function within a database transaction.
+    /// The transaction is committed if `f` returns Ok, otherwise rolled back.
+    pub fn with_transaction<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&Connection) -> Result<R>,
+    {
+        let tx = self.conn.unchecked_transaction()?;
+        let result = f(&self.conn)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// Verify the entire event hash chain. Returns `Ok(())` if intact, or an
     /// error describing the first broken link (by seq number).
     pub fn verify_chain(&self) -> Result<()> {
