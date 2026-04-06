@@ -49,7 +49,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     // Set up progress bar with spinner
     let scan_bar = ProgressBar::new_spinner();
     scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files scanned")
+        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files ({per_sec})")
             .unwrap(),
     );
     scan_bar.set_prefix("Scanning");
@@ -57,12 +57,21 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     // Stream CRC computation
     let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, Some(scan_bar.clone()));
 
-    // Collect all CRC results
+    // Collect CRC results with real-time error display
     let mut crc_results = Vec::new();
     let mut total = 0usize;
     for result in crc_rx {
         total += 1;
         scan_bar.set_position(total as u64);
+        
+        // Show errors in real-time
+        if let Err(e) = &result.crc {
+            scan_bar.println(format!("  {} {} - {}", 
+                style("Error").red(), 
+                style(&result.file.path.display()),
+                e));
+        }
+        
         crc_results.push(result);
     }
     scan_bar.finish_and_clear();

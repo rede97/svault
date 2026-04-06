@@ -28,7 +28,6 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::pipeline;
 use crate::vfs::system::SystemFs;
@@ -55,60 +54,50 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Stream scan files (parallel traversal)
     let scan_rx = pipeline::scan::scan_stream(&source_canon, &exts)?;
 
-    // Filter out vault paths in streaming fashion
-    let (filter_tx, filter_rx) = std::sync::mpsc::channel();
-    let vault_canon_filter = vault_canon.clone();
-    std::thread::spawn(move || {
-        for entry_result in scan_rx {
-            match entry_result {
-                Ok(entry) if !entry.path.starts_with(&vault_canon_filter) => {
-                    let _ = filter_tx.send(Ok(entry));
-                }
-                Ok(_) => {} // Skip vault paths
-                Err(e) => {
-                    let _ = filter_tx.send(Err(e));
-                }
-            }
-        }
-    });
-
     // Set up progress bar with spinner (unknown total during streaming)
     let scan_bar = ProgressBar::new_spinner();
     scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.blue} {spinner} {pos} files scanned")
+        ProgressStyle::with_template("{prefix:.bold.blue} {spinner} {pos} files ({per_sec})")
             .unwrap(),
     );
     scan_bar.set_prefix("Scanning");
 
     // Stream CRC computation (batched + parallel)
-    let crc_rx = pipeline::crc::compute_crcs_stream(filter_rx, Some(scan_bar.clone()));
+    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, Some(scan_bar.clone()));
 
-    // Collect all CRC results
+    // Collect CRC results and filter out vault paths
     let mut crc_results = Vec::new();
     let mut total = 0usize;
     for result in crc_rx {
         total += 1;
         scan_bar.set_position(total as u64);
+        
+        // Filter out vault paths and show errors in real-time
+        match &result.crc {
+            Ok(_) if result.file.path.starts_with(&vault_canon) => {
+                continue; // Skip vault paths
+            }
+            Err(e) => {
+                scan_bar.println(format!("  {} {} - {}", 
+                    style("Error").red(), 
+                    style(&result.file.path.display()),
+                    e));
+            }
+            _ => {}
+        }
+        
         crc_results.push(result);
     }
     scan_bar.finish_and_clear();
 
     let (crc_entries, crc_errors) = pipeline::crc::split_results(crc_results);
 
-    // Report CRC errors
-    for err in &crc_errors {
-        eprintln!("  {} {} - {}", 
-            style("Error").red(), 
-            style(&err.file.path.display()),
-            err.crc.as_ref().unwrap_err());
-    }
-
     // ------------------------------------------------------------------
     // Lookup: DB duplicate check
     // ------------------------------------------------------------------
     eprintln!("{} {} files in {}", 
         style("Scanning").bold().cyan(),
-        style(total).cyan(),
+        style(crc_entries.len() + crc_errors.len()).cyan(),
         style(opts.source.display()));
 
     let lookup_results = pipeline::lookup::lookup_duplicates(crc_entries, db, &opts.vault_root)?;
@@ -277,7 +266,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Convert to CrcEntry for hash stage
     let crc_entries: Vec<pipeline::types::CrcEntry> = copied
         .into_iter()
-        .map(|(src, dest, size, mtime, crc, raw_id)| {
+        .map(|(_src, dest, size, mtime, crc, raw_id)| {
             pipeline::types::CrcEntry {
                 file: pipeline::types::FileEntry { path: dest, size, mtime_ms: mtime },
                 crc32c: crc,

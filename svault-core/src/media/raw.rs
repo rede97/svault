@@ -3,10 +3,10 @@
 //! Extracts camera serial number and image unique ID from various RAW formats.
 //! This information is used as an additional duplicate detection layer beyond CRC32.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::Path;
 
-use super::{MediaError, Result};
+use super::Result;
 
 /// Unique identifier extracted from a RAW file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

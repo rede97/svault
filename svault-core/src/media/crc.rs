@@ -3,7 +3,7 @@
 //! This module is internal - users interact with checksums through `MediaInfo::checksum`.
 
 use crate::media::formats::MediaFormat;
-use crate::media::{MediaReader, Result, CHECKSUM_BUFFER_SIZE};
+use crate::media::{MediaReader, Result};
 use std::fs::File;
 use std::io::SeekFrom;
 use std::path::Path;
