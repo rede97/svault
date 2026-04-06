@@ -361,7 +361,7 @@ class VaultEnv:
     def db_files(self) -> list[dict[str, Any]]:
         """Get all rows from the files table."""
         return self.db_query(
-            "SELECT path, size, mtime, crc32c_val, xxh3_128, sha256, status, imported_at FROM files"
+            "SELECT path, size, mtime, crc32c, xxh3_128, sha256, status, imported_at FROM files"
         )
     
     def find_file_in_db(self, filename: str) -> list[dict[str, Any]]:

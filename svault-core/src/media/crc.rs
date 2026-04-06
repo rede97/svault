@@ -12,13 +12,41 @@ use std::path::Path;
 pub fn compute_checksum(path: &Path, format: &MediaFormat) -> Result<u32> {
     let mut file = File::open(path)?;
     let strategy = CrcStrategy::for_format(format);
+    compute_checksum_with_strategy(&mut file, strategy)
+}
+
+/// Compute checksum with a specific strategy.
+pub fn compute_checksum_with_strategy(
+    reader: &mut dyn MediaReader,
+    strategy: CrcStrategy,
+) -> Result<u32> {
+    use std::io::Read;
     
     match strategy {
-        CrcStrategy::Head(n) => compute_head(&mut file, n),
-        CrcStrategy::Tail(n) => compute_tail(&mut file, n),
-        CrcStrategy::Full => compute_full(&mut file),
-        CrcStrategy::Range(start, len) => compute_range(&mut file, start, len),
-        CrcStrategy::Custom(func) => func(&mut file),
+        CrcStrategy::Head(n) => compute_head(reader, n),
+        CrcStrategy::Tail(n) => compute_tail(reader, n),
+        CrcStrategy::HeadTail(head_n, tail_m) => {
+            // Read head
+            reader.seek(SeekFrom::Start(0))?;
+            let mut head_buf = vec![0u8; head_n];
+            let head_read = reader.read(&mut head_buf)?;
+            head_buf.truncate(head_read);
+            
+            // Read tail
+            let len = reader.len()?;
+            let tail_start = len.saturating_sub(tail_m as u64);
+            reader.seek(SeekFrom::Start(tail_start))?;
+            let mut tail_buf = vec![0u8; tail_m];
+            let tail_read = reader.read(&mut tail_buf)?;
+            tail_buf.truncate(tail_read);
+            
+            // Combine and hash
+            head_buf.extend_from_slice(&tail_buf);
+            Ok(crate::media::crc32_bytes(&head_buf))
+        }
+        CrcStrategy::Full => compute_full(reader),
+        CrcStrategy::Range(start, len) => compute_range(reader, start, len),
+        CrcStrategy::Custom(func) => func(reader),
     }
 }
 
@@ -30,6 +58,9 @@ pub enum CrcStrategy {
     Head(usize),
     /// Read last N bytes from end of file.
     Tail(usize),
+    /// Read first N bytes from start AND last M bytes from end.
+    /// Total buffer size is N + M (128KB max recommended for performance).
+    HeadTail(usize, usize),
     /// Read the entire file.
     Full,
     /// Read a specific byte range.
@@ -40,23 +71,33 @@ pub enum CrcStrategy {
 
 impl CrcStrategy {
     /// Get the default strategy for a media format.
+    /// 
+    /// CRC strategy is format-specific to handle different metadata locations:
+    /// - JPEG: Head (64KB) - image data starts early, metadata at start
+    /// - PNG: Tail (64KB) - image data at end, metadata at start (can be modified)
+    /// - MP4/MOV: Head + Tail (128KB total) - moov atom at end, mdat at start
+    /// - RAW: Full file - these are precious, use entire content
     pub fn for_format(format: &MediaFormat) -> Self {
         use MediaFormat::*;
 
         match format {
-            // Image formats: use head to avoid mutable metadata
-            Jpeg | Heif | Heic | Avif | Webp => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
+            // Image formats: use head (64KB) - image data starts early
+            Jpeg => CrcStrategy::Head(64 * 1024),
+            Heif | Heic | Avif | Webp => CrcStrategy::Head(64 * 1024),
 
-            // PNG: use tail (image data is at the end, metadata at start)
-            Png => CrcStrategy::Tail(CHECKSUM_BUFFER_SIZE),
+            // PNG: use tail (64KB) - image data at end, metadata at start
+            // Metadata (text chunks) can be modified without changing image
+            Png => CrcStrategy::Tail(64 * 1024),
 
-            // Video formats: head is usually enough (moov atom)
-            Mov | Mp4 | Avi | Mkv => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
+            // Video formats: head + tail (128KB = 64KB head + 64KB tail)
+            // MP4/MOV: moov atom (metadata) often at end, mdat (media) at start
+            Mov | Mp4 => CrcStrategy::HeadTail(64 * 1024, 64 * 1024),
+            Avi | Mkv => CrcStrategy::Head(64 * 1024),
 
-            // RAW formats: these are sensitive, use full file
+            // RAW formats: full file - these are precious
             Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => CrcStrategy::Full,
 
-            // Unknown: use full file to be safe
+            // Unknown: full file to be safe
             Unknown(_) => CrcStrategy::Full,
         }
     }

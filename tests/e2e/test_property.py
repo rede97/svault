@@ -47,7 +47,7 @@ def _db_files(vault_dir: Path) -> list[dict]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     cur = conn.execute(
-        "SELECT path, size, mtime, crc32c_val, xxh3_128, sha256, status, imported_at FROM files"
+        "SELECT path, size, mtime, crc32c, xxh3_128, sha256, status, imported_at FROM files"
     )
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()

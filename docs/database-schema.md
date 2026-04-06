@@ -79,26 +79,40 @@ INSERT INTO metadata VALUES ('crc32c_epoch', '1');  -- CRC32C 缓存世代，应
 
 ```sql
 CREATE TABLE files (
-    id                   INTEGER PRIMARY KEY,
-    xxh3_128             TEXT,              -- XXH3-128 哈希（dedup_hash=xxh3_128 时必填）
-    sha256               TEXT,              -- SHA-256 哈希（dedup_hash=sha256 时必填，或后台补全）
-    size                 INTEGER NOT NULL,  -- 字节数，普通索引
-    path                 TEXT NOT NULL,     -- 当前路径（物化视图，可变）
-    mtime                INTEGER NOT NULL,  -- 最后修改时间戳
-    group_id             INTEGER REFERENCES media_groups(id),  -- NULL = 独立文件
-    role                 TEXT,              -- 'primary'/'motion'/'depth'/'auxiliary'
-    crc32c               INTEGER,           -- CRC32C 值（临时指纹，epoch 失效）
-    status               TEXT NOT NULL DEFAULT 'imported',  -- 'imported'/'duplicate'/'deleted'
-    duplicate_of         INTEGER REFERENCES files(id),      -- 重复时指向原始文件
-    import_session_id    INTEGER REFERENCES import_sessions(id) NOT NULL
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    xxh3_128             BLOB,              -- XXH3-128 strong hash (fast dedup)
+    sha256               BLOB,              -- SHA-256 strong hash (secure identity)
+    size                 INTEGER NOT NULL,  -- File size in bytes
+    path                 TEXT    NOT NULL,  -- Current vault path (mutable)
+    mtime                INTEGER NOT NULL,  -- Source file modification time
+    group_id             INTEGER REFERENCES media_groups(id),
+    role                 TEXT,              -- primary/motion/depth/auxiliary
+    crc32c               INTEGER,           -- Format-specific CRC32C (see media/crc.rs)
+    exif_fp              TEXT,              -- EXIF fingerprint for grouping
+    status               TEXT    NOT NULL DEFAULT 'imported',
+    duplicate_of         INTEGER REFERENCES files(id),
+    imported_at          INTEGER NOT NULL
 );
 
 CREATE UNIQUE INDEX idx_files_xxh3_128 ON files(xxh3_128) WHERE xxh3_128 IS NOT NULL;
 CREATE UNIQUE INDEX idx_files_sha256   ON files(sha256)   WHERE sha256 IS NOT NULL;
 CREATE INDEX idx_files_size            ON files(size);
 CREATE INDEX idx_files_group           ON files(group_id);
-CREATE INDEX idx_files_session         ON files(import_session_id);
 ```
+
+**CRC32C 字段说明**：
+
+`crc32c` 是格式特定的快速指纹，用于第一次扫描时快速去重检测。不同媒体格式使用不同的计算策略：
+
+| 格式 | 策略 | 说明 |
+|------|------|------|
+| JPEG | Head 64KB | 图像数据从早期开始，元数据在头部 |
+| PNG | Tail 64KB | 图像数据在尾部，元数据在头部（可被修改） |
+| MP4/MOV | Head+Tail 128KB | moov atom（元数据）通常在尾部，mdat（媒体数据）在头部 |
+| RAW | Full file | 原始文件珍贵，使用完整内容计算 |
+| 其他 | Full file | 未知格式使用完整文件确保安全 |
+
+第一次扫描时使用 `size + crc32c + 扩展名` 三元组进行快速比对，避免不同格式文件之间的哈希碰撞。
 
 ### import_sessions
 

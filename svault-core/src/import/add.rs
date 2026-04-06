@@ -157,7 +157,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
             |conn| {
                 conn.execute(
                     "INSERT INTO files \
-                     (path, size, mtime, crc32c_val, xxh3_128, sha256, status, imported_at) \
+                     (path, size, mtime, crc32c, xxh3_128, sha256, status, imported_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'imported', ?7)",
                     rusqlite::params![rel_str, size as i64, mtime_ms, crc as i64, xxh3, sha256, now_ms],
                 )?;

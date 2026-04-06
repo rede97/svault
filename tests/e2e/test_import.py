@@ -61,7 +61,7 @@ class TestNormalImport:
             "Apple iPhone 15",
             "apple_test.jpg",
         )
-        assert row["crc32c_val"] is not None
+        assert row["crc32c"] is not None
     
     def test_import_no_device(self, vault: VaultEnv, source_factory: callable) -> None:
         """Import file with EXIF date but no Make/Model.

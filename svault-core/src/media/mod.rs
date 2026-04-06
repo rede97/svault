@@ -31,8 +31,8 @@ use std::path::Path;
 use thiserror::Error;
 
 mod binding;
-mod crc;
-mod formats;
+pub mod crc;
+pub mod formats;
 pub mod video;
 
 pub use binding::{BindingDetector, BindingKind, MediaBinding};

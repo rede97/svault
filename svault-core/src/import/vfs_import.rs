@@ -225,7 +225,13 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 Ok(v) => v,
             };
 
-            let cached = db.lookup_by_crc32c(e.size as i64, crc).unwrap_or(None);
+            // Get file extension for format-specific lookup
+            let ext = e.path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            
+            let cached = db.lookup_by_crc32c(e.size as i64, crc, ext).unwrap_or(None);
             let status = if let Some(ref row) = cached {
                 let vault_path = opts.vault_root.join(&row.path);
                 if vault_path.exists() {

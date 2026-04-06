@@ -32,7 +32,9 @@ use rayon::prelude::*;
 
 use crate::config::HashAlgorithm;
 use crate::db::Db;
-use crate::hash::{crc32c_region, xxh3_128_file, sha256_file};
+use crate::hash::{xxh3_128_file, sha256_file};
+use crate::media::MediaFormat;
+use crate::media::crc::compute_checksum;
 use crate::vfs::system::SystemFs;
 use crate::vfs::transfer::transfer_file;
 use crate::vfs::VfsBackend;
@@ -83,11 +85,14 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     );
     scan_bar.set_prefix("Scanning");
 
+    // Compute format-specific CRC32C for each file
     let crcs: Vec<(crate::vfs::DirEntry, Result<u32, String>)> = dir_entries
         .into_par_iter()
         .map(|e| {
             let abs = opts.source.join(&e.path);
-            let result = crc32c_region(&abs, 0, 65536)
+            let format = MediaFormat::from_path(&abs)
+                .unwrap_or(crate::media::MediaFormat::Unknown(""));
+            let result = compute_checksum(&abs, &format)
                 .map_err(|err| err.to_string());
             scan_bar.inc(1);
             (e, result)
@@ -124,7 +129,12 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 Ok(v) => v,
             };
             
-            let cached = db.lookup_by_crc32c(e.size as i64, crc).unwrap_or(None);
+            // Get file extension for format-specific lookup
+            let ext = abs.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            
+            let cached = db.lookup_by_crc32c(e.size as i64, crc, ext).unwrap_or(None);
             let status = if let Some(ref row) = cached {
                 // If the DB says it exists but the actual vault file is gone
                 // (e.g. user manually deleted it), treat it as new so it can be re-imported.
@@ -514,7 +524,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             |conn| {
                 conn.execute(
                     "INSERT OR IGNORE INTO files \
-                     (path, size, mtime, crc32c_val, xxh3_128, sha256, status, imported_at) \
+                     (path, size, mtime, crc32c, xxh3_128, sha256, status, imported_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'imported', ?7)",
                     rusqlite::params![
                         path_str,

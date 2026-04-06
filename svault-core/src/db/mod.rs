@@ -305,17 +305,15 @@ CREATE TABLE IF NOT EXISTS media_groups (
 
 CREATE TABLE IF NOT EXISTS files (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    xxh3_128             BLOB,
-    sha256               BLOB,
-    size                 INTEGER NOT NULL,
-    path                 TEXT    NOT NULL,
-    mtime                INTEGER NOT NULL,
+    xxh3_128             BLOB,              -- XXH3-128 strong hash (fast dedup)
+    sha256               BLOB,              -- SHA-256 strong hash (secure identity)
+    size                 INTEGER NOT NULL,  -- File size in bytes
+    path                 TEXT    NOT NULL,  -- Current vault path (mutable)
+    mtime                INTEGER NOT NULL,  -- Source file modification time
     group_id             INTEGER REFERENCES media_groups(id),
-    role                 TEXT,
-    crc32c_val           INTEGER,
-    crc32c_region        TEXT,
-    crc32c_handler_ver   TEXT,
-    exif_fp              TEXT,
+    role                 TEXT,              -- primary/motion/depth/auxiliary
+    crc32c               INTEGER,           -- Format-specific CRC32C (see media/crc.rs)
+    exif_fp              TEXT,              -- EXIF fingerprint for grouping
     status               TEXT    NOT NULL DEFAULT 'imported',
     duplicate_of         INTEGER REFERENCES files(id),
     imported_at          INTEGER NOT NULL
