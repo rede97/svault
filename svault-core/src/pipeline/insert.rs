@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use console::style;
-
 use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::pipeline::types::{HashResult, PipelineSummary};
@@ -26,6 +24,18 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 /// Insert all valid entries into DB and optionally write manifest.
+///
+/// # Arguments
+/// * `results` - Hash results (with is_duplicate and dup_reason flags)
+/// * `db` - Database handle
+/// * `opts` - Insert options
+///
+/// # Returns
+/// PipelineSummary with counts of added/duplicate/failed/skipped files.
+///
+/// # Note
+/// This function does NOT print output. Callers should iterate results
+/// and display status as needed.
 pub fn batch_insert(
     results: Vec<HashResult>,
     db: &Db,
@@ -56,24 +66,12 @@ pub fn batch_insert(
             continue;
         }
 
-        // Handle errors and duplicates
-        if let Some(reason) = &r.dup_reason {
-            if reason.starts_with("hash error") {
+        // Handle errors
+        if let Some(ref _reason) = r.dup_reason {
+            if _reason.starts_with("hash error") {
                 summary.failed += 1;
-                eprintln!(
-                    "  {} {} - {}",
-                    style("Error").red(),
-                    style(rel_path.display()),
-                    reason
-                );
             } else {
                 summary.duplicate += 1;
-                eprintln!(
-                    "  {} {} ({})",
-                    style("Duplicate").yellow(),
-                    style(rel_path.display()),
-                    reason
-                );
             }
             continue;
         }
@@ -168,4 +166,65 @@ pub fn batch_insert(
     }
 
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::pipeline::types::HashResult;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_batch_insert_empty() {
+        let tmp = TempDir::new().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        
+        let results = vec![];
+        let opts = InsertOptions {
+            vault_root: tmp.path(),
+            hash_algo: &HashAlgorithm::Xxh3_128,
+            session_id: "test-001",
+            write_manifest: false,
+            source_root: None,
+        };
+
+        let summary = batch_insert(results, &db, opts).unwrap();
+        
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.added, 0);
+    }
+
+    #[test]
+    fn test_batch_insert_skips_duplicates() {
+        let tmp = TempDir::new().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        
+        let results = vec![
+            HashResult {
+                path: PathBuf::from("/vault/photo.jpg"),
+                size: 1000,
+                mtime_ms: 12345,
+                crc32c: 999,
+                raw_unique_id: None,
+                hash_bytes: vec![1, 2, 3, 4],
+                is_duplicate: true,
+                dup_reason: Some("db".to_string()),
+            },
+        ];
+        
+        let opts = InsertOptions {
+            vault_root: Path::new("/vault"),
+            hash_algo: &HashAlgorithm::Xxh3_128,
+            session_id: "test-001",
+            write_manifest: false,
+            source_root: None,
+        };
+
+        let summary = batch_insert(results, &db, opts).unwrap();
+        
+        assert_eq!(summary.duplicate, 1);
+        assert_eq!(summary.added, 0);
+    }
 }
