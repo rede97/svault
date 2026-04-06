@@ -3,7 +3,7 @@
 //! This module is internal - users interact with checksums through `MediaInfo::checksum`.
 
 use crate::media::formats::MediaFormat;
-use crate::media::{MediaReader, Result};
+use crate::media::{MediaReader, Result, CHECKSUM_BUFFER_SIZE};
 use std::fs::File;
 use std::io::SeekFrom;
 use std::path::Path;
@@ -16,12 +16,10 @@ pub fn compute_checksum(path: &Path, format: &MediaFormat) -> Result<u32> {
 }
 
 /// Compute checksum with a specific strategy.
-pub fn compute_checksum_with_strategy(
+pub(crate) fn compute_checksum_with_strategy(
     reader: &mut dyn MediaReader,
     strategy: CrcStrategy,
 ) -> Result<u32> {
-    use std::io::Read;
-    
     match strategy {
         CrcStrategy::Head(n) => compute_head(reader, n),
         CrcStrategy::Tail(n) => compute_tail(reader, n),
@@ -53,7 +51,7 @@ pub fn compute_checksum_with_strategy(
 /// Checksum strategy implementations.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-pub enum CrcStrategy {
+pub(crate) enum CrcStrategy {
     /// Read first N bytes from start of file.
     Head(usize),
     /// Read last N bytes from end of file.
@@ -82,21 +80,21 @@ impl CrcStrategy {
 
         match format {
             // Image formats: use head (64KB) - image data starts early
-            Jpeg => CrcStrategy::Head(64 * 1024),
-            Heif | Heic | Avif | Webp => CrcStrategy::Head(64 * 1024),
+            Jpeg => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
+            Heif | Heic | Avif | Webp => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
 
             // PNG: use tail (64KB) - image data at end, metadata at start
             // Metadata (text chunks) can be modified without changing image
-            Png => CrcStrategy::Tail(64 * 1024),
+            Png => CrcStrategy::Tail(CHECKSUM_BUFFER_SIZE),
 
             // Video formats: head + tail (128KB = 64KB head + 64KB tail)
             // MP4/MOV: moov atom (metadata) often at end, mdat (media) at start
-            Mov | Mp4 => CrcStrategy::HeadTail(64 * 1024, 64 * 1024),
-            Avi | Mkv => CrcStrategy::Head(64 * 1024),
+            Mov | Mp4 => CrcStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE),
+            Avi | Mkv => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
 
             // RAW formats: head + tail (128KB total)
             // RAW files are large; head+tail captures embedded JPEG preview and metadata
-            Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => CrcStrategy::HeadTail(64 * 1024, 64 * 1024),
+            Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => CrcStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE),
 
             // Unknown: full file to be safe
             Unknown(_) => CrcStrategy::Full,
@@ -167,10 +165,10 @@ mod tests {
     #[test]
     fn test_head_checksum() {
         let data = test_data();
-        let expected = crate::media::crc32_bytes(&data[..64 * 1024]);
+        let expected = crate::media::crc32_bytes(&data[..CHECKSUM_BUFFER_SIZE]);
 
         let mut cursor = Cursor::new(data);
-        let result = compute_head(&mut cursor, 64 * 1024).unwrap();
+        let result = compute_head(&mut cursor, CHECKSUM_BUFFER_SIZE).unwrap();
 
         assert_eq!(result, expected);
     }
@@ -178,10 +176,10 @@ mod tests {
     #[test]
     fn test_tail_checksum() {
         let data = test_data();
-        let expected = crate::media::crc32_bytes(&data[data.len() - 64 * 1024..]);
+        let expected = crate::media::crc32_bytes(&data[data.len() - CHECKSUM_BUFFER_SIZE..]);
 
         let mut cursor = Cursor::new(data);
-        let result = compute_tail(&mut cursor, 64 * 1024).unwrap();
+        let result = compute_tail(&mut cursor, CHECKSUM_BUFFER_SIZE).unwrap();
 
         assert_eq!(result, expected);
     }

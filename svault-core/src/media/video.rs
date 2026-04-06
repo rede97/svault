@@ -210,7 +210,7 @@ fn parse_mvhd_box<R: Read + Seek>(reader: &mut R, box_size: u64) -> Result<Optio
     // Difference: 66 years = 2_082_844_800 seconds
     const QT_TO_UNIX_OFFSET: u64 = 2_082_844_800;
 
-    if creation_time > 0 && creation_time > QT_TO_UNIX_OFFSET {
+    if creation_time > QT_TO_UNIX_OFFSET {
         let unix_secs = creation_time - QT_TO_UNIX_OFFSET;
         Ok(Some((unix_secs * 1000) as i64))
     } else {

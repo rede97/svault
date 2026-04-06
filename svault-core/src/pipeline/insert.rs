@@ -21,6 +21,18 @@ pub struct InsertOptions<'a> {
 }
 
 /// Convert hash bytes to hex string for manifest.
+///
+/// # Format Compatibility Warning
+///
+/// This function produces a simple byte-array hex string (e.g., "f12ea78b...").
+/// For XXH3-128, this means the hex string represents the little-endian byte array
+/// from `Xxh3Digest::to_bytes()`, NOT the Display trait format.
+///
+/// This is critical because `import::recheck::compute_hash()` must use the SAME
+/// format when computing hashes for comparison. If the formats differ, recheck
+/// will report all files as "diverged" even when they are intact.
+///
+/// See `import::recheck::compute_hash()` for the corresponding logic.
 fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -194,6 +206,7 @@ mod tests {
             session_id: "test-001",
             write_manifest: false,
             source_root: None,
+            force: false,
         };
 
         let summary = batch_insert(results, &db, opts).unwrap();
@@ -227,6 +240,7 @@ mod tests {
             session_id: "test-001",
             write_manifest: false,
             source_root: None,
+            force: false,
         };
 
         let summary = batch_insert(results, &db, opts).unwrap();

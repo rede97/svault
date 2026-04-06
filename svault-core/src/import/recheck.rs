@@ -257,6 +257,27 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
 }
 
 /// Compute full-file hash using the configured algorithm.
+/// Compute full-file hash using the configured algorithm.
+///
+/// # Format Compatibility
+///
+/// The hash string format MUST match exactly what was stored in the import manifest
+/// (see `pipeline::insert::bytes_to_hex`). This is critical for recheck to work correctly.
+///
+/// For XXH3-128, we use `to_bytes().iter().map(|b| format!("{:02x}", b))` which produces
+/// a little-endian byte array hex string. This differs from `format!("{:x}", hash)` which
+/// uses the Display trait and produces a different byte order (high 64 bits first).
+///
+/// # Example
+///
+/// ```text
+/// XXH3-128 hash of "hello"
+/// - to_bytes() hex:   "f12ea78b328f5c8a0268e0971539ea4f" (little-endian bytes)
+/// - Display trait:    "4fea391597e068028a5c8f328ba72ef1" (high:low u64 format)
+///
+/// Manifest stores: "f12ea78b328f5c8a0268e0971539ea4f"
+/// So we must use to_bytes() format here for comparison to work.
+/// ```
 fn compute_hash(path: &Path, algo: &HashAlgorithm) -> std::io::Result<String> {
     match algo {
         HashAlgorithm::Xxh3_128 => {
