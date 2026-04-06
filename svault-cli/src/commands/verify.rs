@@ -4,7 +4,6 @@ use crate::cli::OutputFormat;
 use svault_core::context::VaultContext;
 use console::style;
 use svault_core::verify::background_hash;
-use svault_core::config::HashAlgorithm;
 use svault_core::db;
 use svault_core::verify::{verify_all, verify_recent, verify_single, VerifyResult, VerifySummary};
 
@@ -17,7 +16,6 @@ pub fn run(
     background_hash_limit: Option<usize>,
 ) -> anyhow::Result<()> {
     let ctx = VaultContext::open_cwd()?;
-    let algo = ctx.default_hash();
 
     if background_hash {
         let opts = background_hash::BackgroundHashOptions {
@@ -42,19 +40,19 @@ pub fn run(
             style("Verify:").bold().cyan(),
             style(seconds).cyan()
         );
-        let (results, summary) = verify_recent(ctx.vault_root(), ctx.db(), &algo, seconds)?;
+        let (results, summary) = verify_recent(ctx.vault_root(), ctx.db(), seconds)?;
         print_verify_results(output, &results, &summary)?;
         return Ok(());
     }
 
     if let Some(file_path) = file {
-        verify_single_file(ctx.vault_root(), ctx.db(), &file_path, &algo)?;
+        verify_single_file(ctx.vault_root(), ctx.db(), &file_path)?;
     } else {
         eprintln!(
             "{} Verifying all files in vault",
             style("Verify:").bold().cyan()
         );
-        let (results, summary) = verify_all(ctx.vault_root(), ctx.db(), &algo)?;
+        let (results, summary) = verify_all(ctx.vault_root(), ctx.db())?;
         print_verify_results(output, &results, &summary)?;
     }
 
@@ -118,9 +116,8 @@ fn verify_single_file(
     vault_root: &std::path::Path,
     db: &db::Db,
     file_path: &PathBuf,
-    algo: &HashAlgorithm,
 ) -> anyhow::Result<()> {
-    match verify_single(vault_root, db, &file_path.to_string_lossy(), algo)? {
+    match verify_single(vault_root, db, &file_path.to_string_lossy())? {
         Some(result) => match result {
             VerifyResult::Ok => {
                 println!("{} {}", style("✓").green().bold(), file_path.display());

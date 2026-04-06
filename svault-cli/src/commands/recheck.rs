@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use svault_core::config::HashAlgorithm;
 use svault_core::context::VaultContext;
 use svault_core::import::recheck::{run_recheck, RecheckOptions};
 use svault_core::verify::manifest::ManifestManager;
@@ -19,13 +18,6 @@ pub fn run(
         manager
             .latest()?
             .ok_or_else(|| anyhow::anyhow!("No import manifests found"))?
-    };
-
-    // Use hash algorithm from manifest, or vault default
-    let hash_algo = match manifest.hash_algorithm.as_str() {
-        "xxh3_128" => HashAlgorithm::Xxh3_128,
-        "sha256" => HashAlgorithm::Sha256,
-        _ => ctx.default_hash(), // Fallback to vault default for unknown values
     };
 
     // Validate source path if explicitly provided
@@ -50,7 +42,6 @@ pub fn run(
     let opts = RecheckOptions {
         vault_root: ctx.vault_root().to_path_buf(),
         manifest,
-        hash: hash_algo,
     };
     run_recheck(opts, ctx.db())?;
     Ok(())

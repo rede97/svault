@@ -59,10 +59,13 @@ pub struct VerifySummary {
 }
 
 /// Verify a single file.
+///
+/// Verification strategy:
+/// - If file has SHA-256 in DB, use it for definitive verification
+/// - Otherwise, use XXH3-128
 pub fn verify_file(
     vault_root: &Path,
     file: &FileRow,
-    algo: &HashAlgorithm,
 ) -> VerifyResult {
     let full_path = vault_root.join(&file.path);
 
@@ -84,52 +87,45 @@ pub fn verify_file(
         };
     }
 
-    // Check hash based on algorithm
-    match algo {
-        HashAlgorithm::Xxh3_128 => {
-            let stored_hash = match &file.xxh3_128 {
-                Some(h) => h,
-                None => return VerifyResult::HashNotAvailable,
-            };
+    // Priority: SHA-256 (definitive) > XXH3-128 (fast)
+    if let Some(stored_sha256) = &file.sha256 {
+        // Definitive verification with SHA-256
+        let computed = match sha256_file(&full_path) {
+            Ok(h) => h,
+            Err(e) => return VerifyResult::IoError(e.to_string()),
+        };
 
-            let computed = match xxh3_128_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => return VerifyResult::IoError(e.to_string()),
+        if computed.to_bytes() != stored_sha256.as_slice() {
+            return VerifyResult::HashMismatch {
+                algo: HashAlgorithm::Sha256,
             };
-
-            if computed.to_bytes() != stored_hash.as_slice() {
-                return VerifyResult::HashMismatch {
-                    algo: HashAlgorithm::Xxh3_128,
-                };
-            }
         }
-        HashAlgorithm::Sha256 => {
-            let stored_hash = match &file.sha256 {
-                Some(h) => h,
-                None => return VerifyResult::HashNotAvailable,
-            };
-
-            let computed = match sha256_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => return VerifyResult::IoError(e.to_string()),
-            };
-
-            if computed.to_bytes() != stored_hash.as_slice() {
-                return VerifyResult::HashMismatch {
-                    algo: HashAlgorithm::Sha256,
-                };
-            }
-        }
+        return VerifyResult::Ok;
     }
 
-    VerifyResult::Ok
+    // Fallback to XXH3-128
+    if let Some(stored_xxh3) = &file.xxh3_128 {
+        let computed = match xxh3_128_file(&full_path) {
+            Ok(h) => h,
+            Err(e) => return VerifyResult::IoError(e.to_string()),
+        };
+
+        if computed.to_bytes() != stored_xxh3.as_slice() {
+            return VerifyResult::HashMismatch {
+                algo: HashAlgorithm::Xxh3_128,
+            };
+        }
+        return VerifyResult::Ok;
+    }
+
+    // No hash available
+    VerifyResult::HashNotAvailable
 }
 
 /// Verify all files in the vault.
 pub fn verify_all(
     vault_root: &Path,
     db: &Db,
-    algo: &HashAlgorithm,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_all_files()?;
     let total = files.len();
@@ -147,7 +143,6 @@ pub fn verify_all(
     bar.set_prefix("Verifying");
 
     let vault_root = vault_root.to_path_buf();
-    let algo = algo.clone();
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
@@ -158,7 +153,7 @@ pub fn verify_all(
                 .unwrap_or_default();
             bar.set_message(filename);
 
-            let result = verify_file(&vault_root, &file, &algo);
+            let result = verify_file(&vault_root, &file);
             if result.is_ok() {
                 bar.println(format!(
                     "  {} {}",
@@ -194,10 +189,9 @@ pub fn verify_single(
     vault_root: &Path,
     db: &Db,
     file_path: &str,
-    algo: &HashAlgorithm,
 ) -> anyhow::Result<Option<VerifyResult>> {
     match db.get_file_by_path(file_path)? {
-        Some(file) => Ok(Some(verify_file(vault_root, &file, algo))),
+        Some(file) => Ok(Some(verify_file(vault_root, &file))),
         None => Ok(None),
     }
 }
@@ -206,7 +200,6 @@ pub fn verify_single(
 pub fn verify_recent(
     vault_root: &Path,
     db: &Db,
-    algo: &HashAlgorithm,
     seconds: u64,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_recent_files(seconds)?;
@@ -225,7 +218,6 @@ pub fn verify_recent(
     bar.set_prefix("Verifying");
 
     let vault_root = vault_root.to_path_buf();
-    let algo = algo.clone();
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
@@ -236,7 +228,7 @@ pub fn verify_recent(
                 .unwrap_or_default();
             bar.set_message(filename);
 
-            let result = verify_file(&vault_root, &file, &algo);
+            let result = verify_file(&vault_root, &file);
             if result.is_ok() {
                 bar.println(format!(
                     "  {} {}",
