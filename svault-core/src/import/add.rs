@@ -7,6 +7,8 @@
 //! - Stage D: Hash (pipeline::hash)
 //! - Stage E: Insert (pipeline::insert)
 
+
+
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -162,6 +164,20 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     let hash_results = pipeline::hash::check_duplicates(
         hash_results, db, &opts.vault_root, &opts.hash, true)?;
 
+    // Detect vault-internal moves (same content, different path)
+    let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new(); // (current_path, original_path)
+    for r in &hash_results {
+        if r.is_duplicate && r.dup_reason.as_deref() == Some("db") {
+            // Check if this is a vault-internal move (different path in DB)
+            if let Ok(Some(existing)) = db.lookup_by_hash(&r.hash_bytes, &opts.hash) {
+                let existing_path = opts.vault_root.join(&existing.path);
+                if existing_path != r.path {
+                    moved_files.push((r.path.clone(), existing.path.clone()));
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Stage E: Insert
     // ------------------------------------------------------------------
@@ -190,6 +206,26 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     if summary.failed > 0 {
         eprintln!("         {} file(s) failed",
             style(summary.failed).red());
+    }
+
+    // Suggest reconcile for vault-internal moves
+    if !moved_files.is_empty() {
+        eprintln!();
+        eprintln!("{}", style("Note:").bold().cyan());
+        eprintln!("  {} file(s) appear to have been moved within the vault.",
+            style(moved_files.len()).cyan());
+        eprintln!("  Use {} to update their paths:", style("svault reconcile").bold());
+        
+        // Show first few examples
+        for (_, (current, original)) in moved_files.iter().take(3).enumerate() {
+            let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);
+            eprintln!("    {} → {}", 
+                style(original).dim(),
+                style(current_rel.display()).cyan());
+        }
+        if moved_files.len() > 3 {
+            eprintln!("    ... and {} more", moved_files.len() - 3);
+        }
     }
 
     Ok(AddSummary {
