@@ -53,9 +53,14 @@ fn show_session_history(
         None,
     )?;
 
+    // Filter for import/add/reconcile events (both old and new event types)
     let sessions: Vec<(i64, String, String)> = all_events
         .into_iter()
-        .filter(|e| e.event_type.starts_with("import.") || e.event_type.starts_with("add."))
+        .filter(|e| {
+            e.event_type.starts_with("import.") 
+                || e.event_type.starts_with("add.")
+                || e.event_type == "batch.imported"
+        })
         .map(|e| (e.occurred_at, e.event_type, e.payload))
         .collect();
 
@@ -81,7 +86,7 @@ fn show_session_history(
                     .entry(session_id.clone())
                     .or_insert((occurred_at, None, payload));
             }
-            "import.completed" | "add.completed" => {
+            "import.completed" | "add.completed" | "batch.imported" => {
                 let entry = session_map
                     .entry(session_id.clone())
                     .or_insert((occurred_at, None, payload.clone()));
