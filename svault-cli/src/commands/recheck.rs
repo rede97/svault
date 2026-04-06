@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::context::VaultContext;
 use svault_core::config::HashAlgorithm;
+use svault_core::context::VaultContext;
 use svault_core::import::recheck::{run_recheck, RecheckOptions};
 use svault_core::verify::manifest::ManifestManager;
 

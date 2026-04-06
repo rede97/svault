@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::context::VaultContext;
 use svault_core::config::HashAlgorithm;
+use svault_core::context::VaultContext;
 use svault_core::import::add::{run_add, AddOptions};
 
 pub fn run(path: PathBuf, hash: Option<HashAlgorithm>) -> anyhow::Result<()> {

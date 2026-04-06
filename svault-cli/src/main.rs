@@ -18,7 +18,6 @@
 
 pub mod cli;
 pub mod commands;
-pub mod context;
 
 use clap::Parser;
 use cli::{Cli, Command, DbCommand, MtpCommand};

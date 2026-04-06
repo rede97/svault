@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
-use crate::context::VaultContext;
 use svault_core::config::SyncStrategy;
+use svault_core::context::VaultContext;
 use svault_core::import::{run as import_run, ImportOptions};
 
 pub fn run(

@@ -1,5 +1,5 @@
 use crate::cli::OutputFormat;
-use crate::context::VaultContext;
+use svault_core::context::VaultContext;
 use svault_core::status;
 
 pub fn run(output: OutputFormat) -> anyhow::Result<()> {

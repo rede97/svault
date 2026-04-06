@@ -13,29 +13,6 @@ pub mod status;
 pub mod sync;
 pub mod verify;
 
-use std::path::{Path, PathBuf};
-
-/// Walk up from `start` looking for `.svault/vault.db`.
-pub fn find_vault_root(target: Option<PathBuf>, source: &Path) -> anyhow::Result<PathBuf> {
-    let start = target
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| source.to_path_buf());
-    let mut cur: &Path = &start;
-    loop {
-        if cur.join(".svault").join("vault.db").exists() {
-            return Ok(cur.to_path_buf());
-        }
-        match cur.parent() {
-            Some(p) => cur = p,
-            None => anyhow::bail!(
-                "no vault found (no .svault/vault.db in {} or any parent). \
-                 Run `svault init` first.",
-                start.display()
-            ),
-        }
-    }
-}
-
 /// Parse a datetime string (RFC 3339 or YYYY-MM-DD) into Unix milliseconds.
 pub fn parse_datetime_to_ms(s: &str) -> Option<i64> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {

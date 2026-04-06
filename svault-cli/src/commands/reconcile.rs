@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::context::VaultContext;
+use svault_core::context::VaultContext;
 use svault_core::import::reconcile::{run_reconcile, ReconcileOptions};
 
 pub fn run(

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
 use crate::commands::parse_datetime_to_ms;
-use crate::context::VaultContext;
+use svault_core::context::VaultContext;
 use console::style;
 
 #[allow(clippy::too_many_arguments)]

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
-use crate::context::VaultContext;
+use svault_core::context::VaultContext;
 use console::style;
 use svault_core::verify::background_hash;
 use svault_core::config::HashAlgorithm;

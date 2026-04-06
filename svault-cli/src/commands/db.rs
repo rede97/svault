@@ -1,5 +1,5 @@
 use crate::cli::{DumpFormat, MtpCommand};
-use crate::commands::find_vault_root;
+use svault_core::context::find_vault_root;
 use svault_core::db;
 
 pub fn run_verify_chain() -> anyhow::Result<()> {

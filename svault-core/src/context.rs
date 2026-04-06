@@ -1,14 +1,35 @@
-//! Vault context management for CLI commands.
+//! Vault context management for all vault operations.
 //!
 //! Provides unified vault discovery, locking, database connection,
-//! and configuration loading for all commands.
+//! and configuration loading for both CLI and programmatic use.
 
 use std::path::{Path, PathBuf};
-use svault_core::config::Config;
-use svault_core::db::Db;
-use svault_core::lock::VaultLock;
+use crate::config::Config;
+use crate::db::Db;
+use crate::lock::VaultLock;
 
-/// Unified vault context for all commands.
+/// Walk up from `start` looking for `.svault/vault.db`.
+pub fn find_vault_root(target: Option<PathBuf>, source: &Path) -> anyhow::Result<PathBuf> {
+    let start = target
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| source.to_path_buf());
+    let mut cur: &Path = &start;
+    loop {
+        if cur.join(".svault").join("vault.db").exists() {
+            return Ok(cur.to_path_buf());
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => anyhow::bail!(
+                "no vault found (no .svault/vault.db in {} or any parent). \
+                 Run `svault init` first.",
+                start.display()
+            ),
+        }
+    }
+}
+
+/// Unified vault context for all operations.
 ///
 /// Manages vault discovery, locking, database connection, and configuration.
 /// Ensures consistent initialization and proper resource cleanup.
@@ -45,33 +66,23 @@ impl VaultContext {
     /// Returns error if vault not found, lock cannot be acquired,
     /// database cannot be opened, or config cannot be loaded.
     pub fn open(target: Option<PathBuf>, reference: &Path) -> anyhow::Result<Self> {
-        let vault_root = crate::commands::find_vault_root(target, reference)?;
-        let lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-        let db_path = vault_root.join(".svault").join("vault.db");
-        let db = Db::open(&db_path)
-            .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-        let config = Config::load(&vault_root)?;
-
-        Ok(Self {
-            vault_root,
-            db,
-            config,
-            _lock: lock,
-        })
+        let vault_root = find_vault_root(target, reference)?;
+        Self::open_at(vault_root)
     }
 
     /// Open context from current directory.
     ///
-    /// Convenience method for commands that don't specify a target.
+    /// Convenience method for operations that don't specify a target.
     pub fn open_cwd() -> anyhow::Result<Self> {
-        Self::open(None, &std::env::current_dir()?)
+        let cwd = std::env::current_dir()?;
+        Self::open_at(find_vault_root(None, &cwd)?)
     }
 
     /// Open context with explicit vault root.
     ///
     /// Used when vault root is already known (e.g., after init).
     pub fn open_at(vault_root: PathBuf) -> anyhow::Result<Self> {
-        let lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+        let lock = crate::lock::acquire_vault_lock(&vault_root)?;
         let db_path = vault_root.join(".svault").join("vault.db");
         let db = Db::open(&db_path)
             .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
@@ -101,7 +112,7 @@ impl VaultContext {
     }
 
     /// Get default hash algorithm from config.
-    pub fn default_hash(&self) -> svault_core::config::HashAlgorithm {
+    pub fn default_hash(&self) -> crate::config::HashAlgorithm {
         self.config.global.hash.clone()
     }
 }
@@ -128,6 +139,13 @@ hash = "xxh3_128"
 
         // Should fail because db doesn't exist yet
         let result = VaultContext::open_at(vault_root);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_vault_root_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let result = find_vault_root(Some(tmp.path().to_path_buf()), tmp.path());
         assert!(result.is_err());
     }
 }
