@@ -27,7 +27,6 @@ import pytest
 
 from conftest import (
     VaultEnv,
-    assert_file_duplicate,
     assert_file_imported,
     assert_path_contains,
     copy_fixture,
@@ -128,56 +127,7 @@ class TestNormalImport:
         assert "Apple Apple" not in row["path"]
 
 
-class TestDuplicateDetection:
-    """Test duplicate file detection based on content hash."""
-    
-    def test_exact_duplicate_not_imported(self, vault: VaultEnv, source_factory: callable) -> None:
-        """Exact byte-for-byte duplicate should not be imported twice."""
-        source_factory(
-            "original.jpg",
-            exif_date="2024:05:01 10:00:00",
-            exif_make="Test",
-            exif_model="Camera",
-        )
-        
-        vault.import_dir(vault.source_dir)
-        assert_file_imported(vault, "original.jpg")
-        
-        # Create duplicate with different name
-        original = vault.source_dir / "original.jpg"
-        duplicate = vault.source_dir / "duplicate.jpg"
-        import shutil
-        shutil.copy2(original, duplicate)
-        
-        vault.import_dir(vault.source_dir)
-        assert_file_duplicate(vault, "duplicate.jpg")
-    
-    @pytest.mark.parametrize("dup_count", [1, 3, 6])
-    def test_multiple_duplicates(self, vault: VaultEnv, source_factory: callable, dup_count: int) -> None:
-        """Test handling of multiple duplicates in batch."""
-        source_factory(
-            "original.jpg",
-            exif_date="2024:05:01 10:00:00",
-            exif_make="Test",
-            exif_model="Camera",
-        )
-        
-        vault.import_dir(vault.source_dir)
-        
-        original = vault.source_dir / "original.jpg"
-        for i in range(dup_count):
-            dup_path = vault.source_dir / f"duplicate_{i}.jpg"
-            import shutil
-            shutil.copy2(original, dup_path)
-        
-        vault.import_dir(vault.source_dir)
-        
-        for i in range(dup_count):
-            assert_file_duplicate(vault, f"duplicate_{i}.jpg")
-        
-        files = vault.db_files()
-        assert len(files) == 1
-
+# Note: Duplicate detection tests are in test_import_dedup.py
 
 class TestForceImport:
     """Test `import --force` behavior."""

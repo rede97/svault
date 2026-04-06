@@ -12,9 +12,9 @@
 |------|------|------|------|------|
 | 单元测试 (Unit) | 117 | 117 | 0 | 0 |
 | 集成测试 (Integration) | 0 | 0 | 0 | 0 |
-| Python E2E 测试 (Linux) | 102 | 100 | 0 | 2 |
-| Python E2E 测试 (Windows) | 102 | 100 | 0 | 2 |
-| **总计** | **321** | **317** | **0** | **4** |
+| Python E2E 测试 (Linux) | 198 | 190 | 0 | 8 |
+| Python E2E 测试 (Windows) | 198 | 190 | 0 | 8 |
+| **总计** | **513** | **505** | **0** | **16** |
 
 ---
 
@@ -270,13 +270,28 @@
 
 | 文件系统 | 特性 | 测试重点 | 状态 |
 |----------|------|----------|------|
-| ext4 | Linux 默认，无 reflink | hardlink/copy 回退 | 🔲 待设计 |
-| btrfs | 支持 reflink | reflink 原子复制 | 🔲 待设计 |
+| ext4 | Linux 默认，无 reflink | hardlink/copy 回退 | ✅ 参数化测试 |
+| btrfs | 支持 reflink | reflink 原子复制 | ✅ 参数化测试 |
 | xfs | 企业级，支持 reflink (v5) | reflink/copy 混合 | 🔲 待设计 |
 | tmpfs | 内存文件系统 | 已用于 E2E | ✅ 在用 |
 
 #### 测试场景设计
 
+**已实现：跨文件系统导入测试** (`test_import_cross_fs.py`)
+
+```python
+@pytest.mark.parametrize(
+    "source_fs,vault_fs,strategy",
+    [
+        ("ext4", "ext4", "copy"),  # X1: ext4 → ext4 使用 copy
+        ("btrfs", "btrfs", "reflink,copy"),  # X2: btrfs → btrfs 使用 reflink
+    ],
+)
+def test_cross_fs_import(...):
+    """X1-X2: 参数化跨文件系统导入测试"""
+```
+
+**待实现单元测试：**
 ```rust
 // 示例：test_integration_fs_relink.rs
 #[test]
@@ -878,21 +893,22 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 
 | ID | 测试场景 | 描述 | 状态 | 测试函数 |
 |----|---------|------|------|----------|
-| V1 | MP4 creation_time (v0) | 32-bit 时间戳解析 | ✅ DONE | `test_parse_mp4_creation_time_v0` |
-| V2 | MP4 creation_time (v1) | 64-bit 时间戳解析 | ✅ DONE | `test_parse_mp4_creation_time_v1` |
-| V3 | MOV creation_time | QuickTime 格式解析 | ✅ DONE | `test_mov_creation_time` |
+| V1-V2 | MP4/MOV creation_time | 参数化测试 MP4 (32/64-bit) 和 MOV 时间戳解析 | ✅ DONE | `test_video_creation_time_extraction[mp4\|mov]` |
+| V3 | 时间戳优先级 | creation_time 优先于 mtime | ✅ DONE | `test_video_creation_time_over_mtime` |
 | V4 | 视频设备信息 | 从 udta/meta box 提取设备名 | 🚫 SKIP | 需要高级元数据注入 |
 | V5 | MTS 时间戳 | AVCHD 格式时间戳提取 | 🔲 TODO | 待实现 |
 | V6 | 视频导入路径 | 视频按 creation_time 组织到 `$year/$mon/$day` | ✅ DONE | `test_video_organized_by_year_month_day` |
 
 **辅助函数：**
-- `create_mp4_with_timestamp()` - 使用 ffmpeg 创建带 creation_time 的 MP4
-- `create_mov_with_timestamp()` - 使用 ffmpeg 创建带 creation_time 的 MOV
+- `_create_video_with_timestamp()` - 统一函数，使用 ffmpeg 创建带 creation_time 的视频（支持 mp4/mov 格式参数）
 - `verify_video_timestamp()` - 使用 ffprobe 验证时间戳
+- `create_mov_with_device_info()` - 创建设备信息元数据视频
+- `verify_video_device_info()` - 验证设备信息元数据
 
 **附加测试：**
-- `test_video_vs_mtime_priority` - 验证 creation_time 优先于 mtime
 - `test_multiple_videos_different_dates` - 多视频按日期分别组织
+- `test_video_device_model_extraction` - 设备模型提取（Apple）
+- `test_video_device_model_samsung` - 设备模型提取（Samsung）
 
 ---
 
@@ -929,6 +945,12 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 - `test_import_disk_full.py`: 空间不足测试（D1,D2,D4）
 - `test_binding.py`: Live Photo/RAW+JPEG/ Burst 测试（F1-F6）
 - `test_import_video_metadata.py`: 视频元数据提取测试（V1-V3,V6）| Kimi |
+| 2026-04-05 | **E2E 测试清理与参数化重构**：
+- `test_import_video_metadata.py`: 合并 MP4/MOV 测试为参数化 `test_video_creation_time_extraction`，删除冗余辅助函数，节省 ~60 行
+- `test_import_cross_fs.py`: 合并 ext4/btrfs 测试为参数化 `test_cross_fs_import`，节省 ~50 行
+- `test_add.py`: 删除重复的 `TestAddRawId` 类（已在 `test_raw_id.py` 覆盖）
+- `test_import.py`: 迁移 `TestDuplicateDetection` 到 `test_import_dedup.py`
+- **总计**: 减少 ~110 行代码，测试数量保持 190 passed, 8 skipped | Kimi |
 
 ---
 

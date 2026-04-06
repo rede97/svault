@@ -82,14 +82,23 @@ class SmallLoopbackFs:
         
         self._mounted = True
         
-        # 设置当前用户为所有者
+        # 设置当前用户为所有者（需要 sudo，因为 mount 可能也是 sudo）
         try:
             import os
-            subprocess.run(
-                ["chown", "-R", f"{os.getuid()}:{os.getgid()}", str(self.mount_point)],
+            uid, gid = os.getuid(), os.getgid()
+            # 先尝试不使用 sudo
+            result = subprocess.run(
+                ["chown", "-R", f"{uid}:{gid}", str(self.mount_point)],
                 check=False,
                 capture_output=True,
             )
+            if result.returncode != 0:
+                # 失败则尝试 sudo
+                subprocess.run(
+                    ["sudo", "-n", "chown", "-R", f"{uid}:{gid}", str(self.mount_point)],
+                    check=False,
+                    capture_output=True,
+                )
         except Exception:
             pass
         

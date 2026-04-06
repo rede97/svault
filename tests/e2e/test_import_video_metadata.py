@@ -16,70 +16,6 @@ from pathlib import Path
 import pytest
 
 
-def create_mp4_with_timestamp(
-    path: Path,
-    creation_time: datetime,
-    size: tuple[int, int] = (100, 100),
-) -> bool:
-    """Create an MP4 file with specific creation_time using ffmpeg.
-    
-    Args:
-        path: Output file path
-        creation_time: Video creation timestamp
-        size: Video dimensions (width, height)
-    
-    Returns:
-        True if successful
-    """
-    # Format timestamp for ffmpeg (ISO 8601)
-    time_str = creation_time.strftime("%Y-%m-%d %H:%M:%S")
-    
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", f"testsrc=duration=1:size={size[0]}x{size[1]}:rate=1",
-            "-pix_fmt", "yuv420p",
-            "-metadata", f"creation_time={time_str}",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            str(path),
-        ],
-        capture_output=True,
-    )
-    
-    return result.returncode == 0
-
-
-def create_mov_with_timestamp(
-    path: Path,
-    creation_time: datetime,
-    size: tuple[int, int] = (100, 100),
-) -> bool:
-    """Create a MOV file with specific creation_time.
-    
-    MOV uses QuickTime format which is similar to MP4.
-    """
-    time_str = creation_time.strftime("%Y-%m-%d %H:%M:%S")
-    
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", f"testsrc=duration=1:size={size[0]}x{size[1]}:rate=1",
-            "-pix_fmt", "yuv420p",
-            "-metadata", f"creation_time={time_str}",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-f", "mov",
-            str(path),
-        ],
-        capture_output=True,
-    )
-    
-    return result.returncode == 0
-
-
 def verify_video_timestamp(path: Path) -> datetime | None:
     """Extract creation_time from video using ffprobe.
     
@@ -116,30 +52,70 @@ def verify_video_timestamp(path: Path) -> datetime | None:
     return None
 
 
+def _create_video_with_timestamp(
+    path: Path,
+    creation_time: datetime,
+    fmt: str = "mp4",
+    size: tuple[int, int] = (100, 100),
+) -> bool:
+    """Create a video file with specific creation_time.
+    
+    Args:
+        path: Output file path
+        creation_time: Video creation timestamp
+        fmt: Format - 'mp4' or 'mov'
+        size: Video dimensions
+    
+    Returns:
+        True if successful
+    """
+    time_str = creation_time.strftime("%Y-%m-%d %H:%M:%S")
+    
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", f"testsrc=duration=1:size={size[0]}x{size[1]}:rate=1",
+        "-pix_fmt", "yuv420p",
+        "-metadata", f"creation_time={time_str}",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+    ]
+    
+    if fmt == "mov":
+        cmd.extend(["-f", "mov"])
+    
+    cmd.append(str(path))
+    
+    result = subprocess.run(cmd, capture_output=True)
+    return result.returncode == 0
+
+
 class TestVideoMetadataExtraction:
     """V1-V3: Video creation_time extraction tests."""
 
-    def test_mp4_creation_time_v0_v1(
-        self, vault, ffmpeg_available
+    @pytest.mark.parametrize(
+        "fmt,filename,year,month",
+        [
+            ("mp4", "test_video_2024.mp4", "2024", "03"),
+            ("mov", "test_video_2023.mov", "2023", "08"),
+        ],
+    )
+    def test_video_creation_time_extraction(
+        self, vault, ffmpeg_available, fmt, filename, year, month
     ):
-        """V1-V2: MP4 creation_time should be extracted and used for path.
+        """V1-V3: Video creation_time should be extracted and used for path.
         
-        Setup:
-        - Create MP4 with specific creation_time
-        - Import
-        
-        Verify:
-        - File organized by creation_time (not mtime)
+        Parametrized for MP4 and MOV formats.
         """
         if not ffmpeg_available:
             pytest.skip("ffmpeg not available")
         
         # Create video with known timestamp
-        timestamp = datetime(2024, 3, 15, 14, 30, 0, tzinfo=timezone.utc)
-        video_path = vault.source_dir / "test_video_2024.mp4"
+        timestamp = datetime(int(year), int(month), 15, 14, 30, 0, tzinfo=timezone.utc)
+        video_path = vault.source_dir / filename
         
-        success = create_mp4_with_timestamp(video_path, timestamp)
-        assert success, "Failed to create test MP4"
+        success = _create_video_with_timestamp(video_path, timestamp, fmt=fmt)
+        assert success, f"Failed to create test {fmt.upper()}"
         
         # Verify timestamp was set
         extracted_ts = verify_video_timestamp(video_path)
@@ -151,50 +127,15 @@ class TestVideoMetadataExtraction:
         
         # Check database for capture_time
         db_result = vault.db_query(
-            "SELECT path FROM files WHERE path LIKE '%.mp4%'"
+            f"SELECT path FROM files WHERE path LIKE '%.{fmt}%'"
         )
         
-        if db_result:
-            path = db_result[0]["path"]
-            # Should be organized by 2024/03/15 (from creation_time)
-            assert "2024" in path, f"Not organized by year: {path}"
-            assert "03" in path or "3" in path, f"Not organized by month: {path}"
+        assert len(db_result) == 1, f"Expected 1 {fmt.upper()} file, found {len(db_result)}"
+        path = db_result[0]["path"]
+        assert year in path, f"Not organized by year: {path}"
+        assert month in path, f"Not organized by month: {path}"
 
-    def test_mov_creation_time(
-        self, vault, ffmpeg_available
-    ):
-        """V3: MOV creation_time should be extracted.
-        
-        Setup:
-        - Create MOV with specific creation_time
-        - Import
-        
-        Verify:
-        - File organized by creation_time
-        """
-        if not ffmpeg_available:
-            pytest.skip("ffmpeg not available")
-        
-        timestamp = datetime(2023, 8, 25, 9, 15, 0, tzinfo=timezone.utc)
-        video_path = vault.source_dir / "test_video_2023.mov"
-        
-        success = create_mov_with_timestamp(video_path, timestamp)
-        assert success, "Failed to create test MOV"
-        
-        # Import
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0, f"Import failed: {result.stderr}"
-        
-        # Check path organization
-        db_result = vault.db_query(
-            "SELECT path FROM files WHERE path LIKE '%.mov%'"
-        )
-        
-        if db_result:
-            path = db_result[0]["path"]
-            assert "2023" in path, f"Not organized by year: {path}"
-
-    def test_video_vs_mtime_priority(
+    def test_video_creation_time_over_mtime(
         self, vault, ffmpeg_available
     ):
         """Video creation_time takes priority over file mtime.
@@ -211,13 +152,12 @@ class TestVideoMetadataExtraction:
             pytest.skip("ffmpeg not available")
         
         import os
-        import time
         
         # Create video with 2024 timestamp
         creation_ts = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         video_path = vault.source_dir / "priority_test.mp4"
         
-        success = create_mp4_with_timestamp(video_path, creation_ts)
+        success = _create_video_with_timestamp(video_path, creation_ts, fmt="mp4")
         assert success
         
         # Set mtime to 2025 (different from creation_time)
@@ -234,12 +174,9 @@ class TestVideoMetadataExtraction:
             "SELECT path FROM files WHERE path LIKE '%priority_test%'"
         )
         
-        if db_result:
-            path = db_result[0]["path"]
-            # Should be in 2024, not 2025
-            assert "2024" in path, (
-                f"File organized by mtime not creation_time: {path}"
-            )
+        assert len(db_result) == 1
+        path = db_result[0]["path"]
+        assert "2024" in path, f"File organized by mtime not creation_time: {path}"
 
 
 class TestVideoDeviceInfo:
@@ -515,7 +452,7 @@ class TestVideoPathOrganization:
         timestamp = datetime(2024, 7, 20, 16, 30, 0, tzinfo=timezone.utc)
         video_path = vault.source_dir / "organization_test.mp4"
         
-        success = create_mp4_with_timestamp(video_path, timestamp)
+        success = _create_video_with_timestamp(video_path, timestamp, fmt="mp4")
         assert success
         
         result = vault.import_dir(vault.source_dir)
@@ -553,7 +490,7 @@ class TestVideoPathOrganization:
         
         for name, timestamp in videos:
             path = vault.source_dir / name
-            success = create_mp4_with_timestamp(path, timestamp)
+            success = _create_video_with_timestamp(path, timestamp, fmt="mp4")
             assert success, f"Failed to create {name}"
         
         result = vault.import_dir(vault.source_dir)

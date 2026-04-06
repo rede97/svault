@@ -955,7 +955,16 @@ fn main() {
     
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
-        eprintln!("error: {e}");
+        let msg = e.to_string();
+        // Improve common error messages for better UX
+        let friendly_msg = if msg.contains("database or disk is full") {
+            "No space left on device (vault disk full)".to_string()
+        } else if msg.contains("disk I/O error") {
+            "Disk I/O error (possible hardware issue or disk full)".to_string()
+        } else {
+            msg
+        };
+        eprintln!("error: {}", friendly_msg);
         std::process::exit(1);
     }
 }

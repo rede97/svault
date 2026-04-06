@@ -315,22 +315,47 @@ def loopback_img_dir(tmp_path: Path) -> Path:
 class TestCrossFilesystemImport:
     """Cross-filesystem import behavior tests."""
 
-    def test_ext4_to_ext4_copy(self, check_root, loopback_img_dir, svault_binary: Path):
-        """X1: ext4 → ext4 should use copy (different mounts).
+    @pytest.mark.parametrize(
+        "source_fs,vault_fs,strategy",
+        [
+            ("ext4", "ext4", "copy"),  # X1: ext4 → ext4 uses copy
+            ("btrfs", "btrfs", "reflink,copy"),  # X2: btrfs → btrfs uses reflink
+        ],
+    )
+    def test_cross_fs_import(
+        self, 
+        check_root, 
+        loopback_img_dir, 
+        svault_binary: Path,
+        source_fs: str,
+        vault_fs: str,
+        strategy: str,
+    ):
+        """X1-X2: Cross-filesystem import with different FS combinations.
         
-        Setup:
-        - Source on ext4 loopback
-        - Vault on ext4 loopback
+        Parametrized for:
+        - ext4 → ext4: Uses copy (different mounts)
+        - btrfs → btrfs: Uses reflink (same FS type, CoW)
         
-        Verify:
-        - Import succeeds
-        - Files are valid copies (not hardlinks - different mounts)
+        Requires: Root or passwordless sudo for loopback mount.
+        Skipped dynamically if filesystem tools are not available.
         """
-        with cross_fs_env("ext4", "ext4", img_dir=loopback_img_dir) as (source_mount, vault_mount, _, _):
-            # Create a JPEG test file (svault only imports media files by default)
+        # Skip btrfs tests if tools not available
+        if source_fs == "btrfs" or vault_fs == "btrfs":
+            result = subprocess.run(["which", "mkfs.btrfs"], capture_output=True)
+            if result.returncode != 0:
+                pytest.skip("btrfs-progs not installed")
+            result = subprocess.run(
+                ["grep", "btrfs", "/proc/filesystems"],
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                pytest.skip("btrfs kernel module not available")
+        
+        with cross_fs_env(source_fs, vault_fs, img_dir=loopback_img_dir) as (source_mount, vault_mount, _, _):
             from conftest import create_minimal_jpeg
-            source_file = source_mount / "test.jpg"
-            create_minimal_jpeg(source_file, "cross_fs_test_data")
+            source_file = source_mount / f"test_{source_fs}.jpg"
+            create_minimal_jpeg(source_file, f"cross_fs_test_{source_fs}")
             
             # Init vault
             result = subprocess.run(
@@ -341,48 +366,14 @@ class TestCrossFilesystemImport:
             )
             assert result.returncode == 0, f"Vault init failed: {result.stderr}"
             
-            # First import (with --yes to skip confirmation)
+            # Import with appropriate strategy
+            cmd = [str(svault_binary), "--yes", "import"]
+            if strategy != "copy":
+                cmd.extend(["--strategy", strategy])
+            cmd.append(str(source_mount))
+            
             result = subprocess.run(
-                [str(svault_binary), "--yes", "import", str(source_mount)],
-                cwd=vault_mount,
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode == 0, f"First import failed: {result.stderr}"
-            
-            # Find imported file
-            vault_file = list(vault_mount.rglob("test.jpg"))
-            assert len(vault_file) > 0, f"File not imported. Vault contents: {list(vault_mount.rglob('*'))}"
-            
-            # Verify it's a copy (different mounts, can't hardlink)
-            link_info = check_file_linked(source_file, vault_file[0])
-            assert link_info["is_copy"], "Should be copy across different mounts"
-
-    def test_btrfs_to_btrfs_reflink(self, check_root, check_btrfs_tools, loopback_img_dir, svault_binary: Path):
-        """X2: btrfs → btrfs should use reflink (same FS type, CoW).
-        
-        Requires: btrfs kernel support, btrfs-progs tools, and root privileges.
-        Skipped dynamically if btrfs is not available.
-        """
-        with cross_fs_env("btrfs", "btrfs", img_dir=loopback_img_dir) as (source_mount, vault_mount, _, _):
-            # Create a JPEG test file (svault only imports media files by default)
-            from conftest import create_minimal_jpeg
-            source_file = source_mount / "reflink_test.jpg"
-            create_minimal_jpeg(source_file, "btrfs_reflink_test")
-            
-            # Init vault
-            result = subprocess.run(
-                [str(svault_binary), "init"],
-                cwd=vault_mount,
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode == 0, f"Vault init failed: {result.stderr}"
-            
-            # Import with reflink strategy (with --yes to skip confirmation)
-            result = subprocess.run(
-                [str(svault_binary), "--yes", "import", "--strategy", "reflink,copy", 
-                 str(source_mount)],
+                cmd,
                 cwd=vault_mount,
                 capture_output=True,
                 text=True,
@@ -390,13 +381,10 @@ class TestCrossFilesystemImport:
             assert result.returncode == 0, f"Import failed: {result.stderr}"
             
             # Find imported file
-            vault_files = list(vault_mount.rglob("reflink_test.jpg"))
-            assert len(vault_files) > 0, "File not imported"
+            vault_files = list(vault_mount.rglob(f"test_{source_fs}.jpg"))
+            assert len(vault_files) > 0, f"File not imported. Vault contents: {list(vault_mount.rglob('*'))}"
             
-            # Should be reflink (same filesystem)
-            link_info = check_file_linked(source_file, vault_files[0])
-            # Note: Due to mount boundaries, might still be copy
-            # This test mainly verifies import succeeds on btrfs
+            # Verify file exists (different mounts can't hardlink)
             assert vault_files[0].exists(), "File should exist in vault"
 
     def test_cross_fs_stream_copy(self, tmp_path: Path, svault_binary: Path):

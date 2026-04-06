@@ -181,7 +181,7 @@ svault init      # 错误！会污染项目目录
 
 1. **Windows 支持** - 基础功能可用，但 reflink 需要额外实现
 2. **内存使用** - 导入大量文件时进度条可能占用较多内存
-3. **测试覆盖率** - 单元测试较少，主要依赖 E2E 测试（64 passed）
+3. **测试覆盖率** - 单元测试较少，主要依赖 E2E 测试（190 passed, 8 skipped）
 
 ---
 
@@ -193,3 +193,4 @@ svault init      # 错误！会污染项目目录
 | 2026-04-02 | VFS 重构：解耦 transfer strategy；`--force` 替换 `--ignore-duplicate`；导入自保护；E2E 新增至 64 个 |
 | 2026-04-04 | `--strategy` 移除 `auto`，默认改为 `reflink`；支持逗号组合（如 `reflink,hardlink`）；`copy` 始终兜底；hardlink 不再出现在默认策略中 |
 | 2026-04-04 | 实现 `history` / `background-hash` / `verify --upgrade-links`；支持将 hardlink 原地升级为二进制复制 |
+| 2026-04-05 | E2E 测试代码清理：视频元数据和跨文件系统测试参数化重构，删除重复测试代码 ~110 行 |

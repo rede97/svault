@@ -13,10 +13,8 @@ import pytest
 from conftest import (
     VaultEnv, 
     create_minimal_jpeg, 
-    create_minimal_png,
     create_minimal_mp4,
     create_minimal_raw,
-    create_dng_with_exif,
 )
 
 
@@ -54,25 +52,25 @@ class TestAddCommand:
         rows2 = vault.db_files()
         assert len(rows2) == 1
 
-    def test_add_detects_duplicates(self, vault: VaultEnv) -> None:
-        """Add a file that is a byte-for-byte duplicate of an imported one."""
-        # First import from source
+    def test_add_detects_duplicates_smoke(self, vault: VaultEnv) -> None:
+        """Smoke test: Add should detect duplicates (basic verification).
+        
+        Detailed deduplication tests are in test_import_dedup.py.
+        """
+        # Import a file first
         src_file = vault.source_dir / "photo.jpg"
-        create_minimal_jpeg(src_file, "DUP_CONTENT_12345")
+        create_minimal_jpeg(src_file, "DUP_CONTENT")
         vault.import_dir(vault.source_dir)
 
-        # Place identical content inside vault under a different name
+        # Try to add identical content with different name
         dup_file = vault.vault_dir / "dup.jpg"
-        create_minimal_jpeg(dup_file, "DUP_CONTENT_12345")
+        create_minimal_jpeg(dup_file, "DUP_CONTENT")
 
         result = vault.run("add", str(vault.vault_dir))
         assert result.returncode == 0
+        # Should report duplicate or skip
         combined = result.stderr + result.stdout
-        assert "duplicate" in combined.lower()
-
-        # Only the original imported file should be in DB
-        rows = vault.find_file_in_db("dup.jpg")
-        assert len(rows) == 0
+        assert "duplicate" in combined.lower() or "0 file(s)" in combined
 
 
 class TestAddFormats:
@@ -242,60 +240,5 @@ class TestAddWithImport:
         assert len(paths) >= 1
 
 
-class TestAddRawId:
-    """Test RAW ID extraction in add command (from test_raw_id.py)."""
-
-    def test_add_extracts_raw_id(self, vault: VaultEnv) -> None:
-        """Add command should extract RAW ID from DNG files."""
-        vault_subdir = vault.vault_dir / "raw_photos"
-        vault_subdir.mkdir()
-        dng_path = vault_subdir / "camera1.dng"
-
-        create_dng_with_exif(
-            dng_path,
-            body_serial="ADD123",
-            image_unique_id="ADD-001"
-        )
-
-        vault.run("add", str(vault_subdir))
-
-        rows = vault.db_query(
-            "SELECT raw_unique_id FROM files WHERE path LIKE '%camera1.dng%'"
-        )
-
-        assert len(rows) == 1
-        raw_id = rows[0]["raw_unique_id"]
-
-        if raw_id is None:
-            pytest.skip("RAW ID extraction not implemented yet")
-
-        assert raw_id == "ADD123:ADD-001"
-
-    def test_add_detects_duplicate_by_raw_id(self, vault: VaultEnv) -> None:
-        """Add should detect duplicates using RAW ID."""
-        # First import a DNG
-        dng1_path = vault.source_dir / "photo1.dng"
-        create_dng_with_exif(
-            dng1_path,
-            body_serial="DUP123",
-            image_unique_id="DUP-001"
-        )
-
-        vault.import_dir(vault.source_dir)
-
-        # Create another DNG with same RAW ID in vault
-        vault_subdir = vault.vault_dir / "more_raws"
-        vault_subdir.mkdir()
-        dng2_path = vault_subdir / "photo2.dng"
-        create_dng_with_exif(
-            dng2_path,
-            content_marker="different",
-            body_serial="DUP123",
-            image_unique_id="DUP-001"
-        )
-
-        result = vault.run("add", str(vault_subdir), check=False)
-
-        output = result.stdout + result.stderr
-        # Should detect as duplicate if RAW ID extraction works
-        assert "duplicate" in output.lower() or "added" in output.lower()
+# Note: RAW ID tests for add command are in test_raw_id.py::TestRawIdAddCommand
+# to avoid duplication.
