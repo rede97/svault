@@ -40,8 +40,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             strategy,
             force,
+            full_id,
             show_dup,
-        } => commands::import::run(output, dry_run, yes, source, files_from, target, strategy, force, show_dup),
+        } => commands::import::run(output, dry_run, yes, source, files_from, target, strategy, force, full_id, show_dup),
         Command::Recheck {
             source,
             target,

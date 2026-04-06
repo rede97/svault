@@ -1,4 +1,4 @@
-//! Stage D: Strong hash verification.
+//! Stage D: Strong hash computation.
 
 use std::path::Path;
 
@@ -6,23 +6,25 @@ use dashmap::{mapref::entry::Entry, DashMap};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 
-use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
-use crate::pipeline::types::{CrcEntry, HashResult};
+use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
 
 /// Compute strong hashes for all entries in parallel.
 ///
+/// Always computes XXH3-128 for deduplication.
+/// Optionally computes SHA-256 when `compute_sha256` is true (for --force or --full-id).
+///
 /// # Arguments
 /// * `entries` - CRC entries (from lookup stage)
-/// * `hash_algo` - Hash algorithm (XXH3-128 or SHA-256)
+/// * `compute_sha256` - If true, also compute SHA-256 for definitive identity
 /// * `progress` - Optional progress bar
 ///
 /// # Returns
 /// List of hash results (errors preserved in result with dup_reason)
 pub fn compute_hashes(
     entries: Vec<CrcEntry>,
-    hash_algo: HashAlgorithm,
+    compute_sha256: bool,
     progress: Option<&ProgressBar>,
 ) -> Vec<HashResult> {
     entries
@@ -30,9 +32,31 @@ pub fn compute_hashes(
         .map(|entry| {
             let abs_path = &entry.file.path;
 
-            let hash_bytes = match hash_algo {
-                HashAlgorithm::Xxh3_128 => match xxh3_128_file(abs_path) {
-                    Ok(d) => d.to_bytes().to_vec(),
+            // Always compute XXH3-128 for deduplication
+            let xxh3_128 = match xxh3_128_file(abs_path) {
+                Ok(h) => h.to_bytes().to_vec(),
+                Err(e) => {
+                    if let Some(pb) = progress {
+                        pb.inc(1);
+                    }
+                    return HashResult {
+                        path: abs_path.clone(),
+                        src_path: entry.src_path.clone(),
+                        size: entry.file.size,
+                        mtime_ms: entry.file.mtime_ms,
+                        crc32c: entry.crc32c,
+                        raw_unique_id: entry.raw_unique_id.clone(),
+                        hash: FileHash::Fast(vec![]), // Empty hash indicates error
+                        is_duplicate: false,
+                        dup_reason: Some(format!("xxh3_128 error: {e}")),
+                    };
+                }
+            };
+
+            // Optionally compute SHA-256 for definitive identity
+            let hash = if compute_sha256 {
+                match sha256_file(abs_path) {
+                    Ok(h) => FileHash::Full(xxh3_128, h.to_bytes().to_vec()),
                     Err(e) => {
                         if let Some(pb) = progress {
                             pb.inc(1);
@@ -44,31 +68,14 @@ pub fn compute_hashes(
                             mtime_ms: entry.file.mtime_ms,
                             crc32c: entry.crc32c,
                             raw_unique_id: entry.raw_unique_id.clone(),
-                            hash_bytes: vec![],
+                            hash: FileHash::Fast(xxh3_128),
                             is_duplicate: false,
-                            dup_reason: Some(format!("hash error: {e}")),
+                            dup_reason: Some(format!("sha256 error: {e}")),
                         };
                     }
-                },
-                HashAlgorithm::Sha256 => match sha256_file(abs_path) {
-                    Ok(d) => d.to_bytes().to_vec(),
-                    Err(e) => {
-                        if let Some(pb) = progress {
-                            pb.inc(1);
-                        }
-                        return HashResult {
-                            path: abs_path.clone(),
-                            src_path: entry.src_path.clone(),
-                            size: entry.file.size,
-                            mtime_ms: entry.file.mtime_ms,
-                            crc32c: entry.crc32c,
-                            raw_unique_id: entry.raw_unique_id.clone(),
-                            hash_bytes: vec![],
-                            is_duplicate: false,
-                            dup_reason: Some(format!("hash error: {e}")),
-                        };
-                    }
-                },
+                }
+            } else {
+                FileHash::Fast(xxh3_128)
             };
 
             if let Some(pb) = progress {
@@ -82,7 +89,7 @@ pub fn compute_hashes(
                 mtime_ms: entry.file.mtime_ms,
                 crc32c: entry.crc32c,
                 raw_unique_id: entry.raw_unique_id,
-                hash_bytes,
+                hash,
                 is_duplicate: false,
                 dup_reason: None,
             }
@@ -92,6 +99,7 @@ pub fn compute_hashes(
 
 /// Check for duplicates using DB lookup + batch dedup.
 ///
+/// Uses SHA-256 for identity if available (definitive), otherwise XXH3-128.
 /// This is a sequential pass that:
 /// 1. Checks hash in DB
 /// 2. Checks against already-seen hashes in current batch
@@ -100,13 +108,11 @@ pub fn compute_hashes(
 /// * `results` - Hash results from parallel computation
 /// * `db` - Database handle
 /// * `vault_root` - Vault root path
-/// * `hash_algo` - Hash algorithm used
 /// * `allow_same_path` - If true, allow re-adding same path (for add command)
 pub fn check_duplicates(
     mut results: Vec<HashResult>,
     db: &Db,
     vault_root: &Path,
-    hash_algo: &HashAlgorithm,
     allow_same_path: bool,
 ) -> anyhow::Result<Vec<HashResult>> {
     let seen: DashMap<Vec<u8>, std::path::PathBuf> = DashMap::new();
@@ -116,8 +122,13 @@ pub fn check_duplicates(
             continue;
         }
 
+        // Get identity hash and algorithm
+        let (hash_bytes, hash_algo) = r.hash.identity();
+        let algo_name = if r.hash.is_full() { "sha256" } else { "xxh3_128" };
+
         // Check hash duplicate in DB
-        let existing = db.lookup_by_hash(&r.hash_bytes, hash_algo).unwrap_or(None);
+        let existing = db.lookup_by_hash(hash_bytes, &hash_algo)?;
+
         if let Some(ref row) = existing {
             let vault_path = vault_root.join(&row.path);
             
@@ -126,22 +137,33 @@ pub fn check_duplicates(
             
             if !is_same_file && vault_path.exists() {
                 r.is_duplicate = true;
-                r.dup_reason = Some("db".to_string());
+                r.dup_reason = Some(format!("db ({algo_name})"));
                 continue;
             }
         }
 
         // Check batch duplicate
-        match seen.entry(r.hash_bytes.clone()) {
+        match seen.entry(hash_bytes.to_vec()) {
             Entry::Vacant(v) => {
                 v.insert(r.path.clone());
             }
             Entry::Occupied(_) => {
                 r.is_duplicate = true;
-                r.dup_reason = Some("batch".to_string());
+                r.dup_reason = Some(format!("batch ({algo_name})"));
             }
         }
     }
 
     Ok(results)
+}
+
+/// Get the identity hash bytes for a HashResult.
+/// Returns SHA-256 if available (definitive), otherwise XXH3-128.
+pub fn get_identity_hash(result: &HashResult) -> &[u8] {
+    result.hash.identity().0
+}
+
+/// Check if the hash result has a full identity (SHA-256).
+pub fn has_definitive_identity(result: &HashResult) -> bool {
+    result.hash.is_full()
 }

@@ -76,8 +76,15 @@ pub enum Command {
 
         /// Force import even when the file is confirmed as a duplicate.
         /// Use this to intentionally re-import an identical file.
+        /// Also computes SHA-256 for definitive identity verification.
         #[arg(long)]
         force: bool,
+
+        /// Compute SHA-256 hash for definitive identity verification.
+        /// Files with SHA-256 are identified by their cryptographic hash,
+        /// providing stronger deduplication guarantees at the cost of speed.
+        #[arg(long)]
+        full_id: bool,
 
         /// Show duplicate files that were skipped during import.
         #[arg(long)]

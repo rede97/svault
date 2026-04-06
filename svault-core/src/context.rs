@@ -111,9 +111,10 @@ impl VaultContext {
         &self.vault_root
     }
 
-    /// Get default hash algorithm from config.
+    /// Get default hash algorithm.
+    /// XXH3-128 is always used as the primary hash for performance.
     pub fn default_hash(&self) -> crate::config::HashAlgorithm {
-        self.config.global.hash.clone()
+        crate::config::HashAlgorithm::Xxh3_128
     }
 }
 

@@ -10,7 +10,7 @@
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::config::{Config, HashAlgorithm};
+use crate::config::Config;
 use crate::db::Db;
 use crate::pipeline;
 
@@ -30,7 +30,8 @@ pub struct AddSummary {
 pub struct AddOptions {
     pub path: std::path::PathBuf,
     pub vault_root: std::path::PathBuf,
-    pub hash: HashAlgorithm,
+    /// Compute SHA-256 for definitive identity.
+    pub full_id: bool,
 }
 
 /// Use shared check_duplicate function from import module.
@@ -211,12 +212,13 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     );
     hash_bar.set_prefix("Hashing  ");
 
-    let hash_results = pipeline::hash::compute_hashes(new_files, opts.hash, Some(&hash_bar));
+    // Compute SHA-256 for --full-id mode
+    let hash_results = pipeline::hash::compute_hashes(new_files, opts.full_id, Some(&hash_bar));
     hash_bar.finish_and_clear();
 
     // Check duplicates (allow same path re-add)
     let hash_results = pipeline::hash::check_duplicates(
-        hash_results, db, &opts.vault_root, &opts.hash, true)?;
+        hash_results, db, &opts.vault_root, true)?;
 
     // ------------------------------------------------------------------
     // Stage E: Insert
@@ -224,7 +226,6 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     let session_id = crate::import::utils::session_id_now();
     let insert_opts = pipeline::insert::InsertOptions {
         vault_root: &opts.vault_root,
-        hash_algo: &opts.hash,
         session_id: &session_id,
         write_manifest: false,
         source_root: None,

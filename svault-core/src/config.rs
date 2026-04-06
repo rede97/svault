@@ -17,14 +17,6 @@ pub struct Config {
 /// Global settings that apply to all operations.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GlobalConfig {
-    /// Hash algorithm used for file identity, deduplication, and verification.
-    /// Applies to all operations (import, sync, add, verify).
-    /// Can be overridden per-command with -H / --hash.
-    ///   xxh3_128 - XXH3-128 (high throughput, non-cryptographic, default)
-    ///   sha256   - SHA-256  (cryptographic strength)
-    #[serde(default)]
-    pub hash: HashAlgorithm,
-
     /// Default file-transfer strategy for sync operations.
     /// Can be overridden per-command with --strategy.
     ///   reflink  - copy-on-write (btrfs/xfs only)
@@ -252,7 +244,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             global: GlobalConfig {
-                hash: HashAlgorithm::Xxh3_128,
                 sync_strategy: SyncStrategy::default(),
             },
             import: ImportConfig {

@@ -15,6 +15,7 @@ pub fn run(
     target: Option<PathBuf>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    full_id: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
     let source_str = source.to_string_lossy();
@@ -22,7 +23,7 @@ pub fn run(
     // Handle files-from mode (including stdin)
     if let Some(files_from_path) = files_from {
         return run_files_from_import(
-            output, dry_run, yes, source, files_from_path, target, strategy, force, show_dup,
+            output, dry_run, yes, source, files_from_path, target, strategy, force, full_id, show_dup,
         );
     }
     
@@ -30,7 +31,7 @@ pub fn run(
         // MTP import via VFS
         #[cfg(feature = "mtp")]
         {
-            run_mtp_import(output, dry_run, yes, &source_str, target, strategy, force, show_dup)
+            run_mtp_import(output, dry_run, yes, &source_str, target, strategy, force, full_id, show_dup)
         }
         #[cfg(not(feature = "mtp"))]
         {
@@ -38,7 +39,7 @@ pub fn run(
         }
     } else {
         // Local filesystem import
-        run_local_import(output, dry_run, yes, source, target, strategy, force, show_dup)
+        run_local_import(output, dry_run, yes, source, target, strategy, force, full_id, show_dup)
     }
 }
 
@@ -55,6 +56,7 @@ fn run_files_from_import(
     target: Option<PathBuf>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    full_id: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
     // Read scan output from stdin or file
@@ -108,17 +110,16 @@ fn run_files_from_import(
         .collect();
 
     let ctx = VaultContext::open(target, &source)?;
-    let hash_algo = ctx.default_hash();
     
     let opts = ImportOptions {
         source: source_canon,
         vault_root: ctx.vault_root().to_path_buf(),
-        hash: hash_algo,
         strategy: SyncStrategy(strategy),
         dry_run,
         yes,
         import_config: ctx.config().import.clone(),
         force,
+        full_id,
         show_dup,
         files_from: None,
     };
@@ -150,13 +151,13 @@ fn run_mtp_import(
     target: Option<PathBuf>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    full_id: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
     use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
     use svault_core::vfs::manager::VfsManager;
 
     let ctx = VaultContext::open(target, &std::env::current_dir()?)?;
-    let hash_algo = ctx.default_hash();
 
     let manager = VfsManager::new();
     let (backend, mtp_path) = manager
@@ -167,13 +168,13 @@ fn run_mtp_import(
         src_backend: &*backend,
         src_path: &mtp_path,
         vault_root: ctx.vault_root(),
-        hash: hash_algo,
         dry_run,
         yes,
         import_config: ctx.config().import.clone(),
         source_name: source_str.to_string(),
         strategy: SyncStrategy(strategy),
         force,
+        full_id,
         show_dup,
         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
     };
@@ -204,19 +205,19 @@ fn run_local_import(
     target: Option<PathBuf>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    full_id: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
     let ctx = VaultContext::open(target, &source)?;
-    let hash_algo = ctx.default_hash();
     let opts = ImportOptions {
         source,
         vault_root: ctx.vault_root().to_path_buf(),
-        hash: hash_algo,
         strategy: SyncStrategy(strategy),
         dry_run,
         yes,
         import_config: ctx.config().import.clone(),
         force,
+        full_id,
         show_dup,
         files_from: None,
     };

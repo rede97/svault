@@ -383,15 +383,16 @@ fn execute_import_stages(
         })
         .collect();
 
-    let hash_results = pipeline::hash::compute_hashes(crc_entries, opts.hash, Some(&hash_bar));
+    // Compute SHA-256 for --force or --full-id mode
+    let compute_sha256 = opts.force || opts.full_id;
+    let hash_results = pipeline::hash::compute_hashes(crc_entries, compute_sha256, Some(&hash_bar));
     hash_bar.finish_and_clear();
 
-    // Check duplicates (skip if force mode)
+    // Check duplicates (skip if force mode - trust user's intent)
     let hash_results = if opts.force {
         hash_results
     } else {
-        pipeline::hash::check_duplicates(
-            hash_results, db, &opts.vault_root, &opts.hash, false)?
+        pipeline::hash::check_duplicates(hash_results, db, &opts.vault_root, false)?
     };
 
     // Stage E: DB insert
@@ -406,7 +407,6 @@ fn execute_import_stages(
     let session_id = session_id_now();
     let insert_opts = pipeline::insert::InsertOptions {
         vault_root: &opts.vault_root,
-        hash_algo: &opts.hash,
         session_id: &session_id,
         write_manifest: true,
         source_root: Some(source_canon),

@@ -66,8 +66,6 @@ pub struct VfsImportOptions<'a> {
     pub src_path: &'a Path,
     /// Vault root directory
     pub vault_root: &'a Path,
-    /// Hash algorithm
-    pub hash: HashAlgorithm,
     /// Dry run
     pub dry_run: bool,
     /// Skip confirmation
@@ -79,7 +77,10 @@ pub struct VfsImportOptions<'a> {
     /// Transfer strategy
     pub strategy: SyncStrategy,
     /// Force import even if the file is a confirmed duplicate.
+    /// Also computes SHA-256 for definitive identity.
     pub force: bool,
+    /// Compute SHA-256 for definitive identity verification.
+    pub full_id: bool,
     /// Show duplicate files that were skipped during import.
     pub show_dup: bool,
     /// CRC32 fingerprint buffer size in bytes (default: 64KB)
@@ -94,13 +95,13 @@ impl<'a> VfsImportOptions<'a> {
             src_backend,
             src_path: Path::new(""),
             vault_root,
-            hash: crate::config::HashAlgorithm::Xxh3_128,
             dry_run: false,
             yes: false,
             import_config: crate::config::ImportConfig::default(),
             source_name: String::new(),
             strategy: SyncStrategy::default(),
             force: false,
+            full_id: false,
             show_dup: false,
             crc_buffer_size: 64 * 1024, // 64KB default
         }
@@ -574,7 +575,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     );
     verify_bar.set_prefix("Verifying");
 
-    let verified: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32, Vec<u8>)> = copied
+    let verified: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32, Vec<u8>, Option<Vec<u8>>)> = copied
         .into_par_iter()
         .filter_map(|(src, dest, size, taken_ms, crc)| {
             let filename = src
@@ -583,18 +584,26 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 .unwrap_or_default();
             verify_bar.set_message(filename);
 
-            let hash_result = match opts.hash {
-                HashAlgorithm::Xxh3_128 => {
-                    xxh3_128_file(&dest).map(|h| h.to_bytes().to_vec())
+            // Always compute XXH3-128; optionally compute SHA-256 for full_id mode
+            let xxh3_result = xxh3_128_file(&dest).map(|h| h.to_bytes().to_vec());
+            
+            let hash_result = match xxh3_result {
+                Ok(xxh3) => {
+                    if opts.full_id {
+                        match sha256_file(&dest) {
+                            Ok(sha256) => Ok((xxh3, Some(sha256.to_bytes().to_vec()))),
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        Ok((xxh3, None))
+                    }
                 }
-                HashAlgorithm::Sha256 => {
-                    sha256_file(&dest).map(|h| h.to_bytes().to_vec())
-                }
+                Err(e) => Err(e),
             };
 
             verify_bar.inc(1);
             match hash_result {
-                Ok(hash) => Some((src, dest, size, taken_ms, crc, hash)),
+                Ok((xxh3, sha256)) => Some((src, dest, size, taken_ms, crc, xxh3, sha256)),
                 Err(_) => None,
             }
         })
@@ -604,14 +613,9 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
 
     // Stage E: DB insert and manifest
     let imported_at = chrono::Utc::now().timestamp_millis();
-    for (_src, dest, size, taken_ms, crc, hash) in verified.iter() {
+    for (_src, dest, size, taken_ms, crc, xxh3, sha256) in verified.iter() {
         let relpath = dest.strip_prefix(opts.vault_root).unwrap_or(dest);
         let relpath_str = relpath.to_string_lossy();
-
-        let (xxh3_bytes, sha256_bytes) = match opts.hash {
-            HashAlgorithm::Xxh3_128 => (Some(hash.as_slice()), None),
-            HashAlgorithm::Sha256 => (None, Some(hash.as_slice())),
-        };
 
         let _ = db.insert_file_row(
             &relpath_str,
@@ -619,8 +623,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
             *taken_ms,
             Some(*crc),
             None, // raw_unique_id - not extracted for VFS imports yet
-            xxh3_bytes,
-            sha256_bytes,
+            Some(xxh3.as_slice()),
+            sha256.as_ref().map(|s| s.as_slice()),
             "imported",
             imported_at,
         );
@@ -632,19 +636,15 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager};
     let manifest_records: Vec<ImportRecord> = verified
         .iter()
-        .map(|(src, dest, size, taken_ms, crc, hash)| {
-            let (xxh3, sha256) = match opts.hash {
-                HashAlgorithm::Xxh3_128 => {
-                    let low = u64::from_le_bytes(hash[..8].try_into().unwrap());
-                    let high = u64::from_le_bytes(hash[8..16].try_into().unwrap());
-                    let hex = format!("{:016x}{:016x}", high, low);
-                    (Some(hex), None)
-                }
-                HashAlgorithm::Sha256 => {
-                    let hex = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-                    (None, Some(hex))
-                }
+        .map(|(src, dest, size, taken_ms, crc, xxh3, sha256)| {
+            let xxh3_hex = {
+                let low = u64::from_le_bytes(xxh3[..8].try_into().unwrap());
+                let high = u64::from_le_bytes(xxh3[8..16].try_into().unwrap());
+                format!("{:016x}{:016x}", high, low)
             };
+            let sha256_hex = sha256.as_ref().map(|h| {
+                h.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            });
             let dest_rel = dest.strip_prefix(opts.vault_root).unwrap_or(dest).to_path_buf();
             ImportRecord {
                 src_path: src.clone(),
@@ -652,8 +652,8 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 size: *size as u64,
                 mtime_ms: *taken_ms,
                 crc32c: *crc,
-                xxh3_128: xxh3,
-                sha256,
+                xxh3_128: Some(xxh3_hex),
+                sha256: sha256_hex,
                 imported_at,
             }
         })
@@ -663,7 +663,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         session_id: session_id.clone(),
         source_root: std::path::PathBuf::from(&opts.source_name),
         imported_at,
-        hash_algorithm: opts.hash.to_string(),
+        hash_algorithm: if opts.full_id { "full".to_string() } else { "xxh3_128".to_string() },
         files: manifest_records,
     };
     let manifest_manager = ManifestManager::new(opts.vault_root);

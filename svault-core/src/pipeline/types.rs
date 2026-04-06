@@ -121,6 +121,9 @@ pub struct LookupResult {
 }
 
 /// Stage D output: Entry with strong hash computed.
+///
+/// Uses an enum to distinguish between fast (xxh3 only) and full (xxh3 + sha256) hashes.
+/// This provides type-level guarantees about which hashes are available.
 #[derive(Debug, Clone)]
 pub struct HashResult {
     /// Vault destination path (where file was copied to).
@@ -135,13 +138,59 @@ pub struct HashResult {
     pub mtime_ms: i64,
     pub crc32c: u32,
     pub raw_unique_id: Option<String>,
-    /// Hash bytes - format depends on algorithm:
-    /// - XXH3-128: 16 bytes (little-endian)
-    /// - SHA-256: 32 bytes
-    pub hash_bytes: Vec<u8>,
+    /// Hash identity - either fast (xxh3 only) or full (xxh3 + sha256)
+    pub hash: FileHash,
     pub is_duplicate: bool,
     pub dup_reason: Option<String>,
 }
+
+/// File hash identity.
+///
+/// - `Fast`: XXH3-128 only (fast computation, used for deduplication)
+/// - `Full`: XXH3-128 + SHA-256 (cryptographic identity, used when --full-id or --force)
+#[derive(Debug, Clone)]
+pub enum FileHash {
+    /// Fast hash (XXH3-128) for deduplication.
+    /// 16 bytes, fast to compute.
+    Fast(Vec<u8>),
+    /// Full hash with both XXH3-128 and SHA-256.
+    /// XXH3-128 for dedup, SHA-256 for definitive identity.
+    Full(Vec<u8>, Vec<u8>),
+}
+
+impl FileHash {
+    /// Get the XXH3-128 hash bytes (always available).
+    pub fn xxh3_128(&self) -> &[u8] {
+        match self {
+            FileHash::Fast(xxh3) => xxh3,
+            FileHash::Full(xxh3, _) => xxh3,
+        }
+    }
+
+    /// Get the SHA-256 hash bytes if available.
+    pub fn sha256(&self) -> Option<&[u8]> {
+        match self {
+            FileHash::Fast(_) => None,
+            FileHash::Full(_, sha256) => Some(sha256),
+        }
+    }
+
+    /// Check if this is a full hash (has SHA-256).
+    pub fn is_full(&self) -> bool {
+        matches!(self, FileHash::Full(_, _))
+    }
+
+    /// Get the identity hash for database lookup.
+    /// Returns SHA-256 if available (definitive), otherwise XXH3-128.
+    pub fn identity(&self) -> (&[u8], HashAlgorithm) {
+        match self {
+            FileHash::Fast(xxh3) => (xxh3, HashAlgorithm::Xxh3_128),
+            FileHash::Full(_, sha256) => (sha256, HashAlgorithm::Sha256),
+        }
+    }
+}
+
+use crate::config::HashAlgorithm;
 
 /// Stage C output (import only): File copy result.
 #[derive(Debug, Clone)]

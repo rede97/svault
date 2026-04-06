@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use crate::config::{ImportConfig, SyncStrategy};
-use crate::config::HashAlgorithm;
 
 /// Options controlling a single import run.
 pub struct ImportOptions {
@@ -11,8 +10,6 @@ pub struct ImportOptions {
     pub source: PathBuf,
     /// Vault root directory (contains `.svault/`).
     pub vault_root: PathBuf,
-    /// Hash algorithm to use for Stage D (strong hash).
-    pub hash: HashAlgorithm,
     /// File transfer strategy.
     pub strategy: SyncStrategy,
     /// If true, scan and report but do not copy files or write to DB.
@@ -22,7 +19,11 @@ pub struct ImportOptions {
     /// Import configuration from `svault.toml`.
     pub import_config: ImportConfig,
     /// Force import even if the file is a confirmed duplicate.
+    /// Also computes SHA-256 for definitive identity.
     pub force: bool,
+    /// Compute SHA-256 for definitive identity verification.
+    /// When present, SHA-256 serves as the definitive file identity.
+    pub full_id: bool,
     /// Show duplicate files that were skipped during import.
     pub show_dup: bool,
     /// Optional file containing list of paths to import (one per line).
