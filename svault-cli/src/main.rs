@@ -25,8 +25,9 @@
 //! | `--yes` | Skip confirmation prompts |
 //! | `--quiet` | Suppress non-error output |
 //! | `--progress` | Emit JSON progress events to stderr |
-//! | `--config <PATH>` | Path to config file |
-//! | `--vault <PATH>` | Override vault root directory |
+//!
+//! All commands automatically discover the vault by walking up from the current
+//! directory to find `.svault/vault.db`. Commands must be run inside a vault.
 //!
 //! ## Commands
 //!
@@ -365,7 +366,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Add { path, hash } => {
-            let vault_root = find_vault_root(cli.vault, &path)?;
+            let vault_root = find_vault_root(None, &path)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
@@ -383,7 +384,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Reconcile { target, clean, delete } => {
             let cwd = std::env::current_dir()?;
             let scan_root = target.unwrap_or_else(|| cwd.clone());
-            let vault_root = find_vault_root(cli.vault, &scan_root)?;
+            let vault_root = find_vault_root(None, &scan_root)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
@@ -402,7 +403,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             use svault_core::verify::{verify_all, verify_single, verify_recent, VerifyResult};
             use console::style;
 
-            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
@@ -516,7 +517,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Status => {
-            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
                 .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
@@ -533,7 +534,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::History { file, from, to, events, event_type, limit, verbose } => {
-            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
 
             if !events {
@@ -709,7 +710,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Clone { .. } => {
-            let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
+            let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             todo!("clone")
         }
@@ -825,9 +826,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         
         Command::Db { command } => {
-            let vault_root = cli.vault
-                .or_else(|| std::env::current_dir().ok())
-                .ok_or_else(|| anyhow::anyhow!("cannot determine vault root"))?;
+            let cwd = std::env::current_dir()?;
+            let vault_root = find_vault_root(None, &cwd)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
             let db_path = vault_root.join(".svault").join("vault.db");
             

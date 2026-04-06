@@ -36,7 +36,7 @@ pub struct GlobalConfig {
 }
 
 /// Hash algorithm used for file identity and deduplication.
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "cli", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum HashAlgorithm {

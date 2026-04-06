@@ -6,6 +6,7 @@ pub mod hash;
 pub mod import;
 pub mod lock;
 pub mod media;
+pub mod pipeline;
 pub mod status;
 pub mod verify;
 pub mod vfs;

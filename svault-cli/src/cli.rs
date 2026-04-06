@@ -25,14 +25,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub progress: bool,
 
-    /// Path to config file
-    #[arg(long, global = true, value_name = "PATH")]
-    pub config: Option<std::path::PathBuf>,
-
-    /// Override vault root directory
-    #[arg(long, global = true, value_name = "PATH")]
-    pub vault: Option<std::path::PathBuf>,
-
     #[command(subcommand)]
     pub command: Command,
 }

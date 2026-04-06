@@ -96,7 +96,11 @@ impl VfsBackend for SystemFs {
             if entry.file_type().is_dir() {
                 continue;
             }
-            let path = entry.path();
+            // Get absolute path from jwalk, then make it relative to vfs root
+            let abs_path = entry.path();
+            let path = abs_path.strip_prefix(&self.root)
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| abs_path.to_path_buf());
             if !vfs_ext_matches(&path, &exts_ref) {
                 continue;
             }
