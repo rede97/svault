@@ -1,7 +1,5 @@
-pub mod background_hash;
 pub mod config;
 pub mod db;
-pub mod hardlink_upgrade;
 pub mod hash;
 pub mod import;
 pub mod lock;

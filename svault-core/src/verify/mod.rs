@@ -3,6 +3,8 @@
 //! This module provides functionality to verify that files in the vault
 //! match their stored hashes, detecting corruption or tampering.
 
+pub mod background_hash;
+pub mod hardlink_upgrade;
 pub mod manifest;
 
 use std::path::Path;

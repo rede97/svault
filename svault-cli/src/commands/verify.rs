@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::cli::OutputFormat;
 use crate::context::VaultContext;
 use console::style;
-use svault_core::background_hash;
+use svault_core::verify::background_hash;
 use svault_core::config::HashAlgorithm;
 use svault_core::db;
 use svault_core::verify::{verify_all, verify_recent, verify_single, VerifyResult, VerifySummary};
@@ -82,10 +82,10 @@ fn upgrade_hardlinks(
 
     for file_row in files_to_check {
         let full_path = vault_root.join(&file_row.path);
-        match svault_core::hardlink_upgrade::is_hardlinked(&full_path) {
+        match svault_core::verify::hardlink_upgrade::is_hardlinked(&full_path) {
             Ok(true) => {
                 if let Err(e) =
-                    svault_core::hardlink_upgrade::upgrade_to_binary_copy(&full_path)
+                    svault_core::verify::hardlink_upgrade::upgrade_to_binary_copy(&full_path)
                 {
                     eprintln!(
                         "  {} Failed to upgrade hardlink {}: {}",
