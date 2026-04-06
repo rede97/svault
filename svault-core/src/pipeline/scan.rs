@@ -32,9 +32,11 @@ pub fn scan_files(
         .into_iter()
         .filter_map(|e| {
             // Filter out vault paths if requested
+            // e.path is relative to root, convert to absolute for comparison
             if exclude_vault {
                 if let Some(ref v) = vault_canon {
-                    if e.path.starts_with(v) {
+                    let abs_path = root.join(&e.path);
+                    if abs_path.starts_with(v) {
                         return None;
                     }
                 }

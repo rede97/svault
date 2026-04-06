@@ -64,7 +64,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let dir_entries = src_fs.walk(Path::new(""), &exts)
         .map_err(|e| anyhow::anyhow!("scan failed: {e}"))?;
     let dir_entries: Vec<_> = dir_entries.into_iter()
-        .filter(|e| !e.path.starts_with(&vault_canon))
+        .filter(|e| {
+            // e.path is relative to source, convert to absolute for comparison
+            let abs_path = source_canon.join(&e.path);
+            !abs_path.starts_with(&vault_canon)
+        })
         .collect();
     let total = dir_entries.len();
 

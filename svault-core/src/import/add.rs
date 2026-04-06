@@ -211,9 +211,6 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     };
 
     let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts)?;
-    
-    eprintln!("DEBUG: summary.total={}, summary.added={}, summary.duplicate={}, summary.skipped={}, summary.failed={}",
-        summary.total, summary.added, summary.duplicate, summary.skipped, summary.failed);
 
     // Print summary
     eprintln!(

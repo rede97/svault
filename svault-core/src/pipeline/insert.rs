@@ -106,7 +106,24 @@ pub fn batch_insert(
             "file",
             0, // entity_id placeholder
             &payload.to_string(),
-            |_conn| Ok(()),
+            |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO files \
+                     (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)",
+                    rusqlite::params![
+                        rel_str,
+                        r.size as i64,
+                        r.mtime_ms,
+                        r.crc32c as i64,
+                        r.raw_unique_id.as_deref(),
+                        xxh3.map(|b| b.to_vec()),
+                        sha256.map(|b| b.to_vec()),
+                        now_ms,
+                    ],
+                )?;
+                Ok(())
+            },
         )?;
 
         // Add to manifest
