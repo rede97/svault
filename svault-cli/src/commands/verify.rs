@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
-use crate::commands::find_vault_root;
+use crate::context::VaultContext;
 use console::style;
 use svault_core::background_hash;
 use svault_core::config::HashAlgorithm;
@@ -17,20 +17,16 @@ pub fn run(
     background_hash: bool,
     background_hash_limit: Option<usize>,
 ) -> anyhow::Result<()> {
-    let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
-    let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-    let config = svault_core::config::Config::load(&vault_root)?;
-    let algo = hash.unwrap_or(config.global.hash.clone());
+    let ctx = VaultContext::open_cwd()?;
+    let algo = hash.unwrap_or_else(|| ctx.default_hash());
 
     if background_hash {
         let opts = background_hash::BackgroundHashOptions {
-            vault_root: vault_root.clone(),
+            vault_root: ctx.vault_root().to_path_buf(),
             limit: background_hash_limit,
             nice: false, // Auto-managed based on system load
         };
-        let summary = background_hash::run_background_hash(opts, &db)?;
+        let summary = background_hash::run_background_hash(opts, ctx.db())?;
         eprintln!(
             "Processed {} file(s), {} failed.",
             summary.processed, summary.failed
@@ -38,7 +34,7 @@ pub fn run(
     }
 
     if upgrade_links {
-        upgrade_hardlinks(&vault_root, &db, recent, file.as_ref())?;
+        upgrade_hardlinks(ctx.vault_root(), ctx.db(), recent, file.as_ref())?;
     }
 
     if let Some(seconds) = recent {
@@ -47,19 +43,19 @@ pub fn run(
             style("Verify:").bold().cyan(),
             style(seconds).cyan()
         );
-        let (results, summary) = verify_recent(&vault_root, &db, &algo, seconds)?;
+        let (results, summary) = verify_recent(ctx.vault_root(), ctx.db(), &algo, seconds)?;
         print_verify_results(output, &results, &summary)?;
         return Ok(());
     }
 
     if let Some(file_path) = file {
-        verify_single_file(&vault_root, &db, &file_path, &algo)?;
+        verify_single_file(ctx.vault_root(), ctx.db(), &file_path, &algo)?;
     } else {
         eprintln!(
             "{} Verifying all files in vault",
             style("Verify:").bold().cyan()
         );
-        let (results, summary) = verify_all(&vault_root, &db, &algo)?;
+        let (results, summary) = verify_all(ctx.vault_root(), ctx.db(), &algo)?;
         print_verify_results(output, &results, &summary)?;
     }
 
@@ -67,7 +63,7 @@ pub fn run(
 }
 
 fn upgrade_hardlinks(
-    vault_root: &PathBuf,
+    vault_root: &std::path::Path,
     db: &db::Db,
     recent: Option<u64>,
     file: Option<&PathBuf>,

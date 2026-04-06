@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
-use crate::commands::find_vault_root;
+use crate::context::VaultContext;
 use svault_core::config::HashAlgorithm;
-use svault_core::db;
 use svault_core::import::recheck::{run_recheck, RecheckOptions};
 use svault_core::verify::manifest::ManifestManager;
 
@@ -12,14 +11,10 @@ pub fn run(
     session: Option<String>,
     hash: Option<HashAlgorithm>,
 ) -> anyhow::Result<()> {
-    let vault_root = find_vault_root(target, &std::env::current_dir()?)?;
-    let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-    let config = svault_core::config::Config::load(&vault_root)?;
-    let hash_algo = hash.unwrap_or(config.global.hash.clone());
+    let ctx = VaultContext::open(target, &std::env::current_dir()?)?;
+    let hash_algo = hash.unwrap_or_else(|| ctx.default_hash());
 
-    let manager = ManifestManager::new(&vault_root);
+    let manager = ManifestManager::new(ctx.vault_root());
     let manifest = if let Some(session_id) = session {
         manager.load(&session_id)?
     } else {
@@ -48,10 +43,10 @@ pub fn run(
     }
 
     let opts = RecheckOptions {
-        vault_root,
+        vault_root: ctx.vault_root().to_path_buf(),
         manifest,
         hash: hash_algo,
     };
-    run_recheck(opts, &db)?;
+    run_recheck(opts, ctx.db())?;
     Ok(())
 }

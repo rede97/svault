@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
-use crate::commands::find_vault_root;
+use crate::context::VaultContext;
 use svault_core::config::SyncStrategy;
-use svault_core::db;
 use svault_core::import::{run as import_run, ImportOptions};
 
 pub fn run(
@@ -48,13 +47,8 @@ fn run_mtp_import(
     use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
     use svault_core::vfs::manager::VfsManager;
 
-    let vault_root = find_vault_root(target.clone(), &std::env::current_dir()?)?;
-    let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-
-    let config = svault_core::config::Config::load(&vault_root)?;
-    let hash_algo = hash.unwrap_or(config.global.hash.clone());
+    let ctx = VaultContext::open(target, &std::env::current_dir()?)?;
+    let hash_algo = hash.unwrap_or_else(|| ctx.default_hash());
 
     let manager = VfsManager::new();
     let (backend, mtp_path) = manager
@@ -64,18 +58,18 @@ fn run_mtp_import(
     let opts = VfsImportOptions {
         src_backend: &*backend,
         src_path: &mtp_path,
-        vault_root: &vault_root,
+        vault_root: ctx.vault_root(),
         hash: hash_algo,
         dry_run,
         yes,
-        import_config: config.import,
+        import_config: ctx.config().import.clone(),
         source_name: source_str.to_string(),
         strategy: SyncStrategy(strategy),
         force,
         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
     };
 
-    let summary = run_vfs_import(opts, &db)?;
+    let summary = run_vfs_import(opts, ctx.db())?;
 
     if matches!(output, OutputFormat::Json) {
         println!(
@@ -103,23 +97,19 @@ fn run_local_import(
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
 ) -> anyhow::Result<()> {
-    let vault_root = find_vault_root(target, &source)?;
-    let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-    let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-        .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
-    let config = svault_core::config::Config::load(&vault_root)?;
-    let hash_algo = hash.unwrap_or(config.global.hash.clone());
+    let ctx = VaultContext::open(target, &source)?;
+    let hash_algo = hash.unwrap_or_else(|| ctx.default_hash());
     let opts = ImportOptions {
         source,
-        vault_root,
+        vault_root: ctx.vault_root().to_path_buf(),
         hash: hash_algo,
         strategy: SyncStrategy(strategy),
         dry_run,
         yes,
-        import_config: config.import,
+        import_config: ctx.config().import.clone(),
         force,
     };
-    let summary = import_run(opts, &db)?;
+    let summary = import_run(opts, ctx.db())?;
     if matches!(output, OutputFormat::Json) {
         println!(
             "{}",
