@@ -6,7 +6,7 @@ use indicatif::ProgressBar;
 
 use crate::db::Db;
 use crate::pipeline::types::{FileHash, HashResult, PipelineSummary};
-use crate::verify::manifest::{ImportManifest, ImportRecord};
+use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager};
 
 /// Options for batch insertion.
 pub struct InsertOptions<'a> {
@@ -212,12 +212,8 @@ pub fn batch_insert(
     // Write manifest file if needed
     if let Some(m) = manifest {
         if !m.files.is_empty() {
-            let manifest_path = opts.vault_root.join(".svault").join("staging").join(format!("import_{}.json", opts.session_id));
-            if let Some(parent) = manifest_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let json = serde_json::to_string_pretty(&m)?;
-            std::fs::write(&manifest_path, json)?;
+            let manager = ManifestManager::new(opts.vault_root);
+            manager.save(&m)?;
         }
     }
 

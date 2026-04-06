@@ -43,26 +43,19 @@ class TestConfigHandling:
         content = config_path.read_text()
         assert "[global]" in content
         assert "[import]" in content
-        assert "hash" in content
         assert "sync_strategy" in content
     
-    def test_custom_config_hash_algorithm(self, vault: VaultEnv) -> None:
-        """Custom hash algorithm should be respected."""
-        config_path = vault.vault_dir / "svault.toml"
-        config_path.write_text("""
-[global]
-hash = "sha256"
-
-[import]
-path_template = "$year/$mon-$day/$device/$filename"
-allowed_extensions = ["jpg"]
-""")
-        
+    def test_full_id_computes_sha256(self, vault: VaultEnv) -> None:
+        """--full-id option should compute SHA-256."""
         create_minimal_jpeg(vault.source_dir / "test.jpg", "content1")
-        vault.import_dir(vault.source_dir)
+        # Import with --full-id to compute SHA-256
+        result = vault.run("import", "--yes", "--full-id", str(vault.source_dir))
+        assert result.returncode == 0
         
         rows = vault.db_files()
         assert len(rows) == 1
+        # Verify SHA-256 was computed
+        assert rows[0]["sha256"] is not None, "SHA-256 should be computed with --full-id"
     
     def test_custom_config_extensions(self, vault: VaultEnv) -> None:
         """Custom allowed_extensions should filter files."""

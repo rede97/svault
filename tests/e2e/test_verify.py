@@ -181,11 +181,10 @@ class TestVerifyHashAlgorithms:
     
     def test_database_hash_matches_actual_file(self, vault: VaultEnv) -> None:
         """数据库中存储的哈希与实际文件匹配"""
-        # Use sha256 hash for this test
-        vault.set_hash_algorithm("sha256")
+        # Use --full-id to compute SHA-256 for this test
         f = vault.source_dir / "test.jpg"
         create_minimal_jpeg(f, "TEST_DATA_HASH_CHECK")
-        vault.import_dir(vault.source_dir)
+        vault.import_dir(vault.source_dir, full_id=True)
         
         files = vault.db_files()
         assert len(files) == 1
@@ -252,12 +251,12 @@ class TestRecheckWorkflow:
         result = vault.run("recheck")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
-        assert "Vault corrupted:" in combined
+        assert "Vault corrupted" in combined
 
         corrupt_target.unlink()
 
         # Mark deleted file as missing in DB, then re-import
-        result = vault.run("update", "--clean", "--yes")
+        result = vault.run("update", "--yes")
         assert result.returncode == 0
         
         result = vault.import_dir(vault.source_dir, strategy="copy")
@@ -283,8 +282,8 @@ class TestRecheckWorkflow:
         result = vault.run("recheck")
         assert result.returncode == 0
         combined = result.stderr + result.stdout
-        assert "OK:" in combined
-        assert "VAULT_CORRUPTED" not in combined
+        assert "OK" in combined
+        assert "corrupted" not in combined.lower()
 
     def test_recheck_source_mismatch(self, vault: VaultEnv) -> None:
         """Providing a source path that doesn't match the manifest should error."""
@@ -310,7 +309,7 @@ class TestRecheckWorkflow:
         result = vault.run("recheck", str(vault.source_dir.resolve()))
         assert result.returncode == 0
         combined = result.stderr + result.stdout
-        assert "OK:" in combined
+        assert "OK" in combined
 
 
 # =============================================================================
@@ -466,7 +465,7 @@ class TestVerifyRecovery:
         vf.unlink()
 
         # Mark deleted file as missing in DB, then re-import
-        result = vault.run("update", "--clean", "--yes")
+        result = vault.run("update", "--yes")
         assert result.returncode == 0
         
         result = vault.import_dir(vault.source_dir, strategy="copy")

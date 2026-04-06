@@ -7,7 +7,6 @@ pub fn run(
     dry_run: bool,
     yes: bool,
     target: Option<PathBuf>,
-    clean: bool,
     delete: bool,
 ) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -18,7 +17,6 @@ pub fn run(
         vault_root: ctx.vault_root().to_path_buf(),
         dry_run,
         yes,
-        clean,
         delete,
     };
     run_update(opts, ctx.db())?;

@@ -311,6 +311,7 @@ class VaultEnv:
         hash: str | None = None,  # Deprecated: now uses config default_hash only
         strategy: str | None = None,
         force: bool = False,
+        full_id: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         """Import a directory into the vault.
         
@@ -330,6 +331,8 @@ class VaultEnv:
             args.extend(["--strategy", strategy])
         if force:
             args.append("--force")
+        if full_id:
+            args.append("--full-id")
         # Use absolute path to avoid path duplication bug
         source_path = Path(source).resolve()
         args.append(str(source_path))

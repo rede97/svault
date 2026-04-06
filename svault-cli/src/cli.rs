@@ -146,21 +146,17 @@ pub enum Command {
     /// Update database paths for moved or renamed files
     ///
     /// Scans the vault and updates the database to reflect files that were
-    /// moved or renamed outside of Svault. Use --clean to mark missing files.
+    /// moved or renamed outside of Svault. Missing files are automatically
+    /// marked as missing in the database. Use --delete to permanently remove files.
     Update {
         /// Sub-directory inside the vault to scan for relocated files.
         /// Defaults to the current working directory (same discovery rules as import).
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
 
-        /// Clean up files that cannot be found (mark as missing in database).
-        /// Files that are not found on disk and cannot be matched will be marked.
-        #[arg(long, group = "clean_mode")]
-        clean: bool,
-
-        /// Actually delete files from vault (requires --clean).
+        /// Actually delete files from vault that are missing from disk.
         /// WARNING: This permanently removes files from the vault!
-        #[arg(long, requires = "clean_mode")]
+        #[arg(long)]
         delete: bool,
     },
 

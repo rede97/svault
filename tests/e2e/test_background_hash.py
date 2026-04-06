@@ -42,12 +42,11 @@ class TestBackgroundHashBasic:
 
     def test_background_hash_no_pending_files(self, vault: VaultEnv) -> None:
         """background-hash should report 0 processed when there are no pending files."""
-        # Use sha256 hash so that SHA-256 is computed during import
-        vault.set_hash_algorithm("sha256")
+        # Import with --full-id so SHA-256 is computed during import
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
+        vault.run("import", "--yes", "--full-id", str(vault.source_dir))
 
-        # SHA-256 already present because of sha256 hash import
+        # SHA-256 already present because of --full-id import
         result = vault.run("verify", "--background-hash", capture=True)
         assert result.returncode == 0
         combined = result.stdout + result.stderr

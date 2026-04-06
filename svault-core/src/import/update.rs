@@ -33,8 +33,6 @@ pub struct UpdateOptions {
     pub vault_root: std::path::PathBuf,
     pub dry_run: bool,
     pub yes: bool,
-    /// Mark unmatched files as missing in database.
-    pub clean: bool,
     /// Actually delete files (if they exist).
     pub delete: bool,
 }
@@ -253,26 +251,53 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
     }
 
     // 5. Clean phase (mark unmatched as missing, or delete)
-    if opts.clean && unmatched > 0 {
+    // This is the default behavior - unmatched files are marked as missing
+    if unmatched > 0 {
         let to_clean: Vec<_> = missing_files.iter()
             .filter(|f| !matches.iter().any(|(m, _)| m.file_id == f.id))
             .collect();
 
-        if opts.delete {
+        if opts.dry_run {
+            if opts.delete {
+                eprintln!();
+                eprintln!("{} Files to delete:", style("Dry run:").bold().cyan());
+                for f in &to_clean {
+                    eprintln!("  - {}", style(&f.path).dim());
+                }
+            } else {
+                eprintln!();
+                eprintln!("{} Files to mark as missing:", style("Dry run:").bold().cyan());
+                for f in &to_clean {
+                    eprintln!("  - {}", style(&f.path).dim());
+                }
+            }
+        } else if opts.delete {
             eprintln!();
             eprintln!("{} Permanently deleting {} missing file(s)...", 
                 style("Delete:").bold().red(),
                 style(to_clean.len()).red());
             // Note: actual file deletion would go here
             // For now we just mark as missing in DB
-        }
-
-        for f in to_clean {
-            if let Err(e) = db.update_file_status(f.id, "missing") {
-                eprintln!("{} Failed to mark {} as missing: {}", 
-                    style("Error:").red().bold(), 
-                    style(&f.path),
-                    e);
+            for f in to_clean {
+                if let Err(e) = db.update_file_status(f.id, "missing") {
+                    eprintln!("{} Failed to mark {} as missing: {}", 
+                        style("Error:").red().bold(), 
+                        style(&f.path),
+                        e);
+                }
+            }
+        } else {
+            eprintln!();
+            eprintln!("{} Marking {} unmatched file(s) as missing...", 
+                style("Cleaned:").bold().green(),
+                style(to_clean.len()).green());
+            for f in to_clean {
+                if let Err(e) = db.update_file_status(f.id, "missing") {
+                    eprintln!("{} Failed to mark {} as missing: {}", 
+                        style("Error:").red().bold(), 
+                        style(&f.path),
+                        e);
+                }
             }
         }
     }
