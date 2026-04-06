@@ -265,9 +265,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Convert to CrcEntry for hash stage
     let crc_entries: Vec<pipeline::types::CrcEntry> = copied
         .into_iter()
-        .map(|(_src, dest, size, mtime, crc, raw_id)| {
+        .map(|(src, dest, size, mtime, crc, raw_id)| {
             pipeline::types::CrcEntry {
                 file: pipeline::types::FileEntry { path: dest, size, mtime_ms: mtime },
+                src_path: Some(src),
                 crc32c: crc,
                 raw_unique_id: raw_id,
             }
@@ -277,9 +278,13 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let hash_results = pipeline::hash::compute_hashes(crc_entries, opts.hash, Some(&hash_bar));
     hash_bar.finish_and_clear();
 
-    // Check duplicates
-    let hash_results = pipeline::hash::check_duplicates(
-        hash_results, db, &opts.vault_root, &opts.hash, false)?;
+    // Check duplicates (skip if force mode - will overwrite existing files)
+    let hash_results = if opts.force {
+        hash_results
+    } else {
+        pipeline::hash::check_duplicates(
+            hash_results, db, &opts.vault_root, &opts.hash, false)?
+    };
 
     // ------------------------------------------------------------------
     // Stage E: DB insert
@@ -290,6 +295,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         session_id: &session_id,
         write_manifest: true,
         source_root: Some(&opts.source),
+        force: opts.force,
     };
 
     let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts)?;

@@ -39,6 +39,7 @@ pub fn compute_hashes(
                         }
                         return HashResult {
                             path: abs_path.clone(),
+                            src_path: entry.src_path.clone(),
                             size: entry.file.size,
                             mtime_ms: entry.file.mtime_ms,
                             crc32c: entry.crc32c,
@@ -57,6 +58,7 @@ pub fn compute_hashes(
                         }
                         return HashResult {
                             path: abs_path.clone(),
+                            src_path: entry.src_path.clone(),
                             size: entry.file.size,
                             mtime_ms: entry.file.mtime_ms,
                             crc32c: entry.crc32c,
@@ -75,6 +77,7 @@ pub fn compute_hashes(
 
             HashResult {
                 path: abs_path.clone(),
+                src_path: entry.src_path,
                 size: entry.file.size,
                 mtime_ms: entry.file.mtime_ms,
                 crc32c: entry.crc32c,

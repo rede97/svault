@@ -261,7 +261,8 @@ fn compute_hash(path: &Path, algo: &HashAlgorithm) -> std::io::Result<String> {
     match algo {
         HashAlgorithm::Xxh3_128 => {
             let hash = xxh3_128_file(path)?;
-            Ok(format!("{:x}", hash))
+            // Match the format used in manifest: hex of little-endian bytes
+            Ok(hash.to_bytes().iter().map(|b| format!("{:02x}", b)).collect())
         }
         HashAlgorithm::Sha256 => {
             let hash = sha256_file(path)?;

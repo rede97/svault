@@ -17,6 +17,8 @@ pub struct FileEntry {
 #[derive(Debug, Clone)]
 pub struct CrcEntry {
     pub file: FileEntry,
+    /// Source path (for manifest recording)
+    pub src_path: Option<PathBuf>,
     pub crc32c: u32,
     pub raw_unique_id: Option<String>,
 }
@@ -42,7 +44,10 @@ pub struct LookupResult {
 /// Stage D output: Entry with strong hash computed.
 #[derive(Debug, Clone)]
 pub struct HashResult {
+    /// Vault destination path (where file was copied to)
     pub path: PathBuf,
+    /// Source file path (where file was copied from)
+    pub src_path: Option<PathBuf>,
     pub size: u64,
     pub mtime_ms: i64,
     pub crc32c: u32,

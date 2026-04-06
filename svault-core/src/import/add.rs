@@ -172,6 +172,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         session_id: &session_id,
         write_manifest: false,
         source_root: None,
+        force: false,
     };
 
     let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts)?;

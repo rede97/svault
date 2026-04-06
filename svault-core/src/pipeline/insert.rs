@@ -16,6 +16,8 @@ pub struct InsertOptions<'a> {
     pub write_manifest: bool,
     /// Source root (for manifest, import only)
     pub source_root: Option<&'a Path>,
+    /// Force mode - overwrite existing files
+    pub force: bool,
 }
 
 /// Convert hash bytes to hex string for manifest.
@@ -60,10 +62,12 @@ pub fn batch_insert(
         let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
         let rel_str = rel_path.to_string_lossy().into_owned();
 
-        // Skip if already tracked by path (add command only)
-        if let Ok(Some(_)) = db.get_file_by_path(&rel_str) {
-            summary.skipped += 1;
-            continue;
+        // Skip if already tracked by path (unless force mode)
+        if !opts.force {
+            if let Ok(Some(_)) = db.get_file_by_path(&rel_str) {
+                summary.skipped += 1;
+                continue;
+            }
         }
 
         // Handle errors
@@ -126,8 +130,10 @@ pub fn batch_insert(
 
         // Add to manifest
         if let Some(ref mut m) = manifest {
+            // Use src_path if available, fallback to vault path (for add command)
+            let src_path = r.src_path.clone().unwrap_or_else(|| r.path.clone());
             m.files.push(ImportRecord {
-                src_path: r.path.clone(),
+                src_path,
                 dest_path: rel_path.to_path_buf(),
                 size: r.size,
                 mtime_ms: r.mtime_ms,
@@ -204,6 +210,7 @@ mod tests {
         let results = vec![
             HashResult {
                 path: PathBuf::from("/vault/photo.jpg"),
+                src_path: Some(PathBuf::from("/source/photo.jpg")),
                 size: 1000,
                 mtime_ms: 12345,
                 crc32c: 999,
