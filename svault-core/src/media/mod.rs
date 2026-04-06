@@ -33,10 +33,13 @@ use thiserror::Error;
 mod binding;
 pub mod crc;
 pub mod formats;
+pub mod raw;
+pub mod raw_id;
 pub mod video;
 
 pub use binding::{BindingDetector, BindingKind, MediaBinding};
 pub use formats::{FormatRegistry, MediaFormat};
+pub use raw_id::{extract_raw_id, extract_raw_id_if_raw, is_raw_file, RawId};
 pub use video::{extract_video_metadata, VideoMetadata};
 
 /// Errors that can occur during media operations.

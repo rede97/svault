@@ -50,6 +50,8 @@ pub struct ScanEntry {
     pub mtime_ms: i64,
     pub crc32c: u32,
     pub status: FileStatus,
+    /// RAW unique ID for precise duplicate detection (camera serial + image ID)
+    pub raw_unique_id: Option<String>,
 }
 
 /// Final summary returned to the caller.

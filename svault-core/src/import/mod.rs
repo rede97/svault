@@ -35,6 +35,7 @@ use crate::db::Db;
 use crate::hash::{xxh3_128_file, sha256_file};
 use crate::media::MediaFormat;
 use crate::media::crc::compute_checksum;
+use crate::media::raw_id::{extract_raw_id_if_raw, is_raw_file, get_fingerprint_string};
 use crate::vfs::system::SystemFs;
 use crate::vfs::transfer::transfer_file;
 use crate::vfs::VfsBackend;
@@ -124,6 +125,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         src_path: abs, size: e.size, mtime_ms: e.mtime_ms,
                         crc32c: 0,
                         status: FileStatus::Failed(err),
+                        raw_unique_id: None,
                     };
                 }
                 Ok(v) => v,
@@ -134,12 +136,34 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             
-            let cached = db.lookup_by_crc32c(e.size as i64, crc, ext).unwrap_or(None);
+            // For RAW files, extract unique ID for precise duplicate detection
+            let raw_unique_id = if is_raw_file(ext) {
+                extract_raw_id_if_raw(&abs)
+                    .and_then(|raw_id| get_fingerprint_string(&raw_id))
+            } else {
+                None
+            };
+            
+            let cached = db.lookup_by_crc32c(
+                e.size as i64, 
+                crc, 
+                ext,
+                raw_unique_id.as_deref()
+            ).unwrap_or(None);
+            
             let status = if let Some(ref row) = cached {
+                // For RAW files with unique IDs, if the IDs don't match, it's not a duplicate
+                // (even if CRC matches - could be different photos with same CRC)
+                let is_same_raw_id = match (&raw_unique_id, &row.raw_unique_id) {
+                    (Some(new_id), Some(existing_id)) => new_id == existing_id,
+                    // If we can't compare IDs, fall back to CRC-only behavior
+                    _ => true,
+                };
+                
                 // If the DB says it exists but the actual vault file is gone
                 // (e.g. user manually deleted it), treat it as new so it can be re-imported.
                 let vault_path = opts.vault_root.join(&row.path);
-                if vault_path.exists() {
+                if vault_path.exists() && is_same_raw_id {
                     FileStatus::LikelyCacheDuplicate
                 } else {
                     FileStatus::LikelyNew
@@ -165,6 +189,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             ScanEntry {
                 src_path: abs, size: e.size, mtime_ms: e.mtime_ms, crc32c: crc,
                 status,
+                raw_unique_id,
             }
         })
         .collect();
@@ -213,6 +238,22 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     fs::create_dir_all(&staging_dir)?;
     let staging_path = staging_dir.join(format!("import-{session_id}.txt"));
     write_staging(&staging_path, &opts.source, &session_id, &scan_entries)?;
+    
+    // Record import.pending event
+    let pending_payload = serde_json::json!({
+        "session_id": session_id,
+        "source": opts.source.to_string_lossy().to_string(),
+        "total_files": total,
+        "new_files": likely_new.len(),
+        "duplicate_files": likely_dup,
+        "staging_path": staging_path.to_string_lossy().to_string(),
+    }).to_string();
+    
+    db.append_event(
+        "import.pending", "import", 0, &pending_payload,
+        |_conn| Ok(()),
+    ).map_err(|e| anyhow::anyhow!("failed to record pending event: {e}"))?;
+    
     eprintln!();
     eprintln!("{} {}",
         style("Staging list:").bold(),
@@ -262,7 +303,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     // Pre-resolve destination paths in serial to avoid race conditions
     // when multiple files map to the same destination
-    let mut prepared_entries: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = Vec::new();
+    // Tuple: (src_path, dest_abs, size, mtime_ms, crc32c, raw_unique_id)
+    let mut prepared_entries: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32, Option<String>)> = Vec::new();
     let mut assigned_dests: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
     
 
@@ -288,7 +330,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         
 
         assigned_dests.insert(unique_dest.clone());
-        prepared_entries.push((e.src_path.clone(), unique_dest, e.size, e.mtime_ms, e.crc32c));
+        prepared_entries.push((e.src_path.clone(), unique_dest, e.size, e.mtime_ms, e.crc32c, e.raw_unique_id.clone()));
     }
 
     let copy_errors: Arc<Mutex<HashMap<std::path::PathBuf, String>>> =
@@ -304,9 +346,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     );
     copy_bar.set_prefix("Copying  ");
 
-    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32)> = prepared_entries
+    // Tuple: (src_path, dest_abs, size, mtime_ms, crc32c, raw_unique_id)
+    let copied: Vec<(std::path::PathBuf, std::path::PathBuf, u64, i64, u32, Option<String>)> = prepared_entries
         .into_par_iter()
-        .filter_map(|(src_path, dest_abs, size, mtime_ms, crc32c)| {
+        .filter_map(|(src_path, dest_abs, size, mtime_ms, crc32c, raw_unique_id)| {
             let filename = src_path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -365,7 +408,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         style(vault_rel)));
                     copy_bar.set_message(filename);
                     copy_bar.inc(1);
-                    Some((src_path, dest_abs, size, mtime_ms, crc32c))
+                    Some((src_path, dest_abs, size, mtime_ms, crc32c, raw_unique_id))
                 }
                 Err(err) => {
                     copy_errors.lock().unwrap()
@@ -394,6 +437,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         size: u64,
         mtime_ms: i64,
         crc32c: u32,
+        raw_unique_id: Option<String>,
         hash_bytes: Vec<u8>,
         is_duplicate: bool,
         dup_reason: Option<String>,
@@ -411,7 +455,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     let hashed: Vec<HashResult> = copied
         .into_par_iter()
-        .map(|(src, dest, size, mtime_ms, crc32c)| {
+        .map(|(src, dest, size, mtime_ms, crc32c, raw_unique_id)| {
             let filename = dest.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -423,7 +467,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         Err(e) => {
                             hash_bar.inc(1);
                             return HashResult {
-                                src, dest, size, mtime_ms, crc32c,
+                                src, dest, size, mtime_ms, crc32c, raw_unique_id,
                                 hash_bytes: vec![],
                                 is_duplicate: false,
                                 dup_reason: Some(format!("hash error: {e}")),
@@ -437,7 +481,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                         Err(e) => {
                             hash_bar.inc(1);
                             return HashResult {
-                                src, dest, size, mtime_ms, crc32c,
+                                src, dest, size, mtime_ms, crc32c, raw_unique_id,
                                 hash_bytes: vec![],
                                 is_duplicate: false,
                                 dup_reason: Some(format!("hash error: {e}")),
@@ -447,7 +491,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                 }
             };
             hash_bar.inc(1);
-            HashResult { src, dest, size, mtime_ms, crc32c, hash_bytes, is_duplicate: false, dup_reason: None }
+            HashResult { src, dest, size, mtime_ms, crc32c, raw_unique_id, hash_bytes, is_duplicate: false, dup_reason: None }
         })
         .collect();
     hash_bar.finish_and_clear();
@@ -524,13 +568,14 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             |conn| {
                 conn.execute(
                     "INSERT OR IGNORE INTO files \
-                     (path, size, mtime, crc32c, xxh3_128, sha256, status, imported_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'imported', ?7)",
+                     (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)",
                     rusqlite::params![
                         path_str,
                         r.size as i64,
                         r.mtime_ms,
                         r.crc32c as i64,
+                        r.raw_unique_id.as_deref(),
                         xxh3,
                         sha256,
                         now_ms,
@@ -598,6 +643,22 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     // Delete .pending
     let _ = fs::remove_file(&pending_path);
+
+    // Record import.completed event
+    let completed_payload = serde_json::json!({
+        "session_id": session_id,
+        "source": opts.source.to_string_lossy().to_string(),
+        "total_files": total,
+        "imported": imported_count,
+        "duplicates": dup_count,
+        "failed": fail_count,
+        "manifest_path": manifest_path.to_string_lossy().to_string(),
+    }).to_string();
+    
+    db.append_event(
+        "import.completed", "import", 0, &completed_payload,
+        |_conn| Ok(()),
+    ).map_err(|e| anyhow::anyhow!("failed to record completed event: {e}"))?;
 
     // Print summary
     eprintln!("{} {} file(s) imported", 

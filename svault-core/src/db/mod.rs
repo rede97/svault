@@ -57,6 +57,12 @@ impl Db {
         Ok(db)
     }
 
+    /// Get a reference to the underlying SQLite connection.
+    /// This allows running custom queries.
+    pub fn conn_ref(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Open an in-memory database (used for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
@@ -313,6 +319,7 @@ CREATE TABLE IF NOT EXISTS files (
     group_id             INTEGER REFERENCES media_groups(id),
     role                 TEXT,              -- primary/motion/depth/auxiliary
     crc32c               INTEGER,           -- Format-specific CRC32C (see media/crc.rs)
+    raw_unique_id        TEXT,              -- Camera serial + image ID for RAW files (format: serial:image_id)
     exif_fp              TEXT,              -- EXIF fingerprint for grouping
     status               TEXT    NOT NULL DEFAULT 'imported',
     duplicate_of         INTEGER REFERENCES files(id),

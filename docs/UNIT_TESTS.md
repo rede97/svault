@@ -855,7 +855,7 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 > 
 > CLI 退出码定义：`4` = 目标空间不足
 > 
-> **测试文件**: `test_disk_full.py`
+> **测试文件**: `test_import_disk_full.py`
 
 | ID | 测试场景 | 描述 | 状态 | 测试方法 |
 |----|---------|------|------|----------|
@@ -874,7 +874,7 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 > 测试视频文件的元数据提取功能（`media/video.rs`）
 > 
 > **单元测试**: `src/media/video.rs`
-> **E2E 测试**: `test_video_metadata.py`
+> **E2E 测试**: `test_import_video_metadata.py`
 
 | ID | 测试场景 | 描述 | 状态 | 测试函数 |
 |----|---------|------|------|----------|
@@ -917,7 +917,7 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 | 2026-04-04 | **跨系统集成测试扩展**：详细规划跨系统挂载场景（NFS Linux→macOS、SMB Windows→Linux/macOS），包括测试矩阵、风险分析、环境准备方案（Docker/VM/云）和实施策略 | Kimi |
 | 2026-04-04 | **config 模块单元测试**：添加 24 个单元测试，覆盖配置加载、TOML 解析/序列化、错误处理（未知哈希算法、无效策略、缺少必填项等）| Kimi |
 | 2026-04-04 | **vfs/transfer 模块单元测试**：添加 9 个单元测试，覆盖 fallback 链逻辑（reflink→hardlink→stream_copy）、自动创建父目录、内容完整性、空文件/大文件传输 | Kimi |
-| 2026-04-04 | **EXIF 回退场景 E2E 测试**：添加 `test_exif_fallback.py`，覆盖无 EXIF、部分 EXIF、损坏 EXIF、批量混合导入等场景（11 个测试）| Kimi |
+| 2026-04-04 | **EXIF 回退场景 E2E 测试**：添加 `test_import.py::TestExifFallback`，覆盖无 EXIF、部分 EXIF、损坏 EXIF 等场景 | Kimi |
 | 2026-04-04 | **配置和传输策略 E2E 测试**：添加 `test_config_transfer.py`，覆盖配置加载、传输策略 fallback 链（13 个测试）| Kimi |
 | 2026-04-04 | **多媒体格式 E2E 测试**：添加 `test_media_formats.py`，覆盖 PNG/TIFF/HEIC/DNG/MP4/MOV 格式（19 个测试），支持 ffmpeg 检测 | Kimi |
 | 2026-04-04 | **性能测试和模糊测试计划**：将质量报告中的未完成项添加到测试计划，包括性能基准、cargo-fuzz 模糊测试路线图 | Kimi |
@@ -926,9 +926,9 @@ INTEGRATION_TEST_FS=ext4,xfs cargo test fs::
 | 2026-04-04 | **Live Photo/RAW+JPEG 测试计划**：添加待办测试项到功能规划章节（F1-F6）| Kimi |
 | 2026-04-04 | **空间不足测试计划**：添加磁盘满（ENOSPC）场景的测试设计（D1-D4）| Kimi |
 | 2026-04-04 | **实现 E2E 测试套件**（15 个测试）：
-- `test_disk_full.py`: 空间不足测试（D1,D2,D4）
+- `test_import_disk_full.py`: 空间不足测试（D1,D2,D4）
 - `test_binding.py`: Live Photo/RAW+JPEG/ Burst 测试（F1-F6）
-- `test_video_metadata.py`: 视频元数据提取测试（V1-V3,V6）| Kimi |
+- `test_import_video_metadata.py`: 视频元数据提取测试（V1-V3,V6）| Kimi |
 
 ---
 

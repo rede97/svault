@@ -50,8 +50,9 @@ use rayon::prelude::*;
 use crate::config::{HashAlgorithm, ImportConfig, SyncStrategy};
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
+use crate::media::{extract_raw_id_if_raw, is_raw_file};
+use crate::media::raw_id::get_fingerprint_string;
 use crate::vfs::{transfer::transfer_file, DirEntry, VfsBackend, VfsError};
-
 
 use super::path::resolve_dest_path;
 use super::types::{FileStatus, ImportSummary, ScanEntry};
@@ -220,6 +221,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                         mtime_ms: e.mtime_ms,
                         crc32c: 0,
                         status: FileStatus::Failed(err),
+                        raw_unique_id: None,
                     };
                 }
                 Ok(v) => v,
@@ -231,10 +233,31 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             
-            let cached = db.lookup_by_crc32c(e.size as i64, crc, ext).unwrap_or(None);
+            // For RAW files, extract unique ID for precise duplicate detection
+            // Only works for local filesystem (SystemFs); skip for MTP/other backends
+            let raw_unique_id = if is_raw_file(ext) && opts.src_backend.as_system_fs().is_some() {
+                extract_raw_id_if_raw(&e.path)
+                    .and_then(|raw_id| get_fingerprint_string(&raw_id))
+            } else {
+                None
+            };
+            
+            let cached = db.lookup_by_crc32c(
+                e.size as i64, 
+                crc, 
+                ext,
+                raw_unique_id.as_deref()
+            ).unwrap_or(None);
+            
             let status = if let Some(ref row) = cached {
+                // For RAW files with unique IDs, if the IDs don't match, it's not a duplicate
+                let is_same_raw_id = match (&raw_unique_id, &row.raw_unique_id) {
+                    (Some(new_id), Some(existing_id)) => new_id == existing_id,
+                    _ => true,
+                };
+                
                 let vault_path = opts.vault_root.join(&row.path);
-                if vault_path.exists() {
+                if vault_path.exists() && is_same_raw_id {
                     FileStatus::LikelyCacheDuplicate
                 } else {
                     FileStatus::LikelyNew
@@ -262,6 +285,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
                 mtime_ms: e.mtime_ms,
                 crc32c: crc,
                 status,
+                raw_unique_id,
             }
         })
         .collect();
@@ -594,6 +618,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
             *size,
             *taken_ms,
             Some(*crc),
+            None, // raw_unique_id - not extracted for VFS imports yet
             xxh3_bytes,
             sha256_bytes,
             "imported",

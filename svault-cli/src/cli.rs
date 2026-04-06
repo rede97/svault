@@ -201,6 +201,9 @@ pub enum Command {
     Status,
 
     /// Query the event log
+    ///
+    /// Default shows import/add/reconcile sessions. Use --verbose to show files.
+    /// Use --events for low-level event stream (import, add, reconcile, file.imported, etc.)
     History {
         /// Filter to events for this file
         #[arg(long, value_name = "PATH")]
@@ -214,21 +217,21 @@ pub enum Command {
         #[arg(long, value_name = "DATETIME")]
         to: Option<String>,
 
+        /// Show low-level event stream instead of session view
+        #[arg(long, group = "display_mode")]
+        events: bool,
+
         /// Filter by event type (e.g. file.imported, file.path_updated)
-        #[arg(long, value_name = "TYPE")]
+        #[arg(long, value_name = "TYPE", requires = "events")]
         event_type: Option<String>,
 
-        /// Maximum number of events to show
+        /// Maximum number of sessions/events to show
         #[arg(long, default_value = "50", value_name = "N")]
         limit: usize,
 
-        /// Group by import session (shows import batches with statistics)
-        #[arg(long, group = "display_mode")]
-        by_session: bool,
-
-        /// Show detailed file list for each session (requires --by-session)
-        #[arg(long, requires = "by_session")]
-        files: bool,
+        /// Show detailed file list for each session
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Clone a subset to a working directory

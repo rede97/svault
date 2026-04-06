@@ -88,7 +88,8 @@ CREATE TABLE files (
     group_id             INTEGER REFERENCES media_groups(id),
     role                 TEXT,              -- primary/motion/depth/auxiliary
     crc32c               INTEGER,           -- Format-specific CRC32C (see media/crc.rs)
-    exif_fp              TEXT,              -- EXIF fingerprint for grouping
+    raw_unique_id        TEXT,              -- RAW file unique ID: "serial:image_id" (see media/raw_id.rs)
+    exif_fp              TEXT,              -- EXIF fingerprint for grouping (reserved)
     status               TEXT    NOT NULL DEFAULT 'imported',
     duplicate_of         INTEGER REFERENCES files(id),
     imported_at          INTEGER NOT NULL
@@ -109,10 +110,14 @@ CREATE INDEX idx_files_group           ON files(group_id);
 | JPEG | Head 64KB | 图像数据从早期开始，元数据在头部 |
 | PNG | Tail 64KB | 图像数据在尾部，元数据在头部（可被修改） |
 | MP4/MOV | Head+Tail 128KB | moov atom（元数据）通常在尾部，mdat（媒体数据）在头部 |
-| RAW | Full file | 原始文件珍贵，使用完整内容计算 |
+| RAW | Head+Tail 128KB | 从 EXIF 提取唯一 ID (raw_unique_id) 用于精确去重 |
 | 其他 | Full file | 未知格式使用完整文件确保安全 |
 
-第一次扫描时使用 `size + crc32c + 扩展名` 三元组进行快速比对，避免不同格式文件之间的哈希碰撞。
+**去重策略**：
+
+1. **第一阶段 (CRC32C)**：使用 `size + crc32c + 扩展名` 快速筛选，避免不同格式间的哈希碰撞
+2. **第二阶段 (RAW ID)**：对于 RAW 文件，如果 CRC 匹配，比较 `raw_unique_id`（相机序列号 + 图像 ID）
+3. **第三阶段 (强哈希)**：对于所有文件，使用 XXH3-128 或 SHA-256 确认身份
 
 ### import_sessions
 

@@ -867,6 +867,133 @@ def create_minimal_raw(path: Path, content_marker: str = "") -> None:
     path.write_bytes(tiff_header + ifd + dng_magic + marker_bytes)
 
 
+def create_dng_with_exif(
+    path: Path, 
+    content_marker: str = "",
+    body_serial: str = "",
+    image_unique_id: str = ""
+) -> None:
+    """Create a real minimal DNG file with EXIF metadata for RAW ID testing.
+    
+    Creates a proper TIFF-based DNG with:
+    - Complete TIFF header and IFD structure
+    - 8x8 grayscale image data
+    - EXIF sub-IFD with BodySerialNumber and ImageUniqueID
+    
+    This is a REAL DNG file, not a fake. It uses proper TIFF/DNG structure
+    that both exiftool and Rust's exif crate can read.
+    
+    Args:
+        path: Output file path (should have .dng extension)
+        content_marker: String to embed for uniqueness (unused, kept for API compat)
+        body_serial: Camera body serial number (BodySerialNumber tag, 0xA431)
+        image_unique_id: Image unique ID (ImageUniqueID tag, 0xA420)
+    """
+    import struct
+    
+    # Build DNG file sections
+    sections = []
+    
+    # TIFF Header (8 bytes): II + 42 + IFD offset
+    header = b'II' + struct.pack('<H', 42) + struct.pack('<I', 8)
+    sections.append(header)
+    
+    # Image specs
+    width, height = 8, 8
+    bits_per_sample = 8
+    compression = 1  # Uncompressed
+    photometric = 1  # BlackIsZero
+    samples_per_pixel = 1
+    image_data_size = width * height  # 64 bytes
+    
+    # Calculate offsets
+    main_ifd_size = 2 + 11 * 12 + 4  # count + 11 entries + next pointer
+    strip_offset = 8 + main_ifd_size
+    exif_ifd_offset = strip_offset + image_data_size
+    
+    # Main IFD entries (sorted by tag number as per TIFF spec)
+    main_entries = []
+    def add_entry(tag, type_id, count, value):
+        main_entries.append((tag, struct.pack('<HHII', tag, type_id, count, value)))
+    
+    add_entry(256, 3, 1, width)                    # ImageWidth
+    add_entry(257, 3, 1, height)                   # ImageLength
+    add_entry(258, 3, 1, bits_per_sample << 8)     # BitsPerSample (inline)
+    add_entry(259, 3, 1, compression)              # Compression
+    add_entry(262, 3, 1, photometric)              # PhotometricInterpretation
+    add_entry(273, 4, 1, strip_offset)             # StripOffsets
+    add_entry(277, 3, 1, samples_per_pixel)        # SamplesPerPixel
+    add_entry(278, 3, 1, height)                   # RowsPerStrip
+    add_entry(279, 4, 1, image_data_size)          # StripByteCounts
+    add_entry(34665, 4, 1, exif_ifd_offset)        # ExifIFDPointer
+    add_entry(50706, 1, 4, 0x00000401)             # DNGVersion (1.4.0.0)
+    
+    # Sort by tag number
+    main_entries.sort(key=lambda x: x[0])
+    
+    # Build main IFD
+    main_ifd = struct.pack('<H', len(main_entries))
+    for _, entry_data in main_entries:
+        main_ifd += entry_data
+    main_ifd += struct.pack('<I', 0)  # No next IFD
+    sections.append(main_ifd)
+    
+    # Image data (64 gray pixels)
+    # Use content_marker to make each file unique if needed
+    if content_marker:
+        base_value = sum(ord(c) for c in content_marker) % 256
+    else:
+        base_value = 128
+    image_data = bytes([base_value] * image_data_size)
+    sections.append(image_data)
+    
+    # EXIF IFD
+    exif_entries = []
+    exif_data_offset = exif_ifd_offset + 2 + 2 * 12 + 4  # After EXIF IFD
+    
+    def add_exif_entry(tag, data_bytes):
+        if len(data_bytes) <= 4:
+            # Fit inline with padding
+            value = struct.unpack('<I', data_bytes.ljust(4, b'\x00'))[0]
+            exif_entries.append((tag, struct.pack('<HHII', tag, 2, len(data_bytes), value)))
+        else:
+            # Store offset
+            nonlocal exif_data_offset
+            exif_entries.append((tag, struct.pack('<HHII', tag, 2, len(data_bytes), exif_data_offset)))
+            exif_data_offset += len(data_bytes)
+            return data_bytes
+        return b''
+    
+    exif_data = b''
+    
+    # ImageUniqueID tag = 0xA420 (42016)
+    if image_unique_id:
+        id_bytes = image_unique_id.encode('utf-8') + b'\x00'
+        exif_data += add_exif_entry(0xA420, id_bytes)
+    
+    # BodySerialNumber tag = 0xA431 (42033)
+    if body_serial:
+        serial_bytes = body_serial.encode('utf-8') + b'\x00'
+        exif_data += add_exif_entry(0xA431, serial_bytes)
+    
+    # Sort EXIF entries by tag
+    exif_entries.sort(key=lambda x: x[0])
+    
+    # Build EXIF IFD
+    exif_ifd = struct.pack('<H', len(exif_entries))
+    for _, entry_data in exif_entries:
+        exif_ifd += entry_data
+    exif_ifd += struct.pack('<I', 0)  # No next IFD
+    
+    sections.append(exif_ifd)
+    sections.append(exif_data)
+    
+    # Write file
+    with open(path, 'wb') as f:
+        for section in sections:
+            f.write(section)
+
+
 def create_media_file(
     path: Path,
     format: str,

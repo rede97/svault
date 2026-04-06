@@ -19,6 +19,8 @@ pub struct FileRow {
     pub mtime: i64,
     /// CRC32C of the probed region (head or tail, format-dependent).
     pub crc32c: Option<i64>,
+    /// RAW unique ID (camera serial + image ID) for precise duplicate detection.
+    pub raw_unique_id: Option<String>,
     /// XXH3-128 as raw 16-byte BLOB (None if not yet computed).
     pub xxh3_128: Option<Vec<u8>>,
     /// SHA-256 as raw 32-byte BLOB (None if not yet computed).
@@ -46,19 +48,51 @@ impl Db {
     // Lookup queries
     // -----------------------------------------------------------------------
 
-    /// Look up a file by CRC32C value + size.
+    /// Look up a file by CRC32C value + size + extension.
     /// Returns the first matching row whose `crc32c`, `size` and `extension` match.
-    /// The caller should treat a hit as `likely_duplicate` only.
-    /// Extension check prevents false positives between different formats with same size+CRC.
-    pub fn lookup_by_crc32c(&self, size: i64, crc32c: u32, ext: &str) -> Result<Option<FileRow>> {
-        // Use LIKE for extension matching (case-insensitive, simple pattern)
+    /// For RAW files, also checks `raw_unique_id` if available for precise matching.
+    pub fn lookup_by_crc32c(
+        &self,
+        size: i64,
+        crc32c: u32,
+        ext: &str,
+        raw_unique_id: Option<&str>,
+    ) -> Result<Option<FileRow>> {
         let ext_pattern = format!("%.{}", ext.to_lowercase());
-        self.conn.query_row(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
-             FROM files WHERE size = ?1 AND crc32c = ?2 AND lower(path) LIKE ?3 LIMIT 1",
+
+        // Query all matching CRC+size+ext rows
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
+             FROM files WHERE size = ?1 AND crc32c = ?2 AND lower(path) LIKE ?3"
+        )?;
+
+        let rows = stmt.query_map(
             params![size, crc32c as i64, ext_pattern],
             file_row_from_row,
-        ).optional()
+        )?;
+
+        // Find the best match
+        for row in rows {
+            let row = row?;
+
+            // If we have a RAW unique ID, prefer exact match
+            if let Some(search_id) = raw_unique_id {
+                if let Some(ref row_id) = row.raw_unique_id {
+                    if row_id == search_id {
+                        return Ok(Some(row));
+                    }
+                    // Different RAW ID, skip this row (not a duplicate)
+                    continue;
+                }
+                // Existing row has no RAW ID, but we have one
+                // Return it - caller may decide to do stronger comparison
+            }
+
+            // No RAW ID to compare, return first CRC match
+            return Ok(Some(row));
+        }
+
+        Ok(None)
     }
 
     /// Look up a file by its strong hash (XXH3-128 or SHA-256, stored as BLOBs).
@@ -68,7 +102,7 @@ impl Db {
             HashAlgorithm::Sha256 => "sha256",
         };
         let sql = format!(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files WHERE {col} = ?1 LIMIT 1"
         );
         self.conn.query_row(&sql, params![hash_bytes], file_row_from_row).optional()
@@ -87,6 +121,7 @@ impl Db {
         size: i64,
         mtime: i64,
         crc32c: Option<u32>,
+        raw_unique_id: Option<&str>,
         xxh3_128: Option<&[u8]>,
         sha256: Option<&[u8]>,
         status: &str,
@@ -94,13 +129,14 @@ impl Db {
     ) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO files \
-             (path, size, mtime, crc32c, xxh3_128, sha256, status, imported_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 path,
                 size,
                 mtime,
                 crc32c.map(|v| v as i64),
+                raw_unique_id,
                 xxh3_128,
                 sha256,
                 status,
@@ -117,7 +153,7 @@ impl Db {
     /// Get all files in the vault.
     pub fn get_all_files(&self) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files ORDER BY path"
         )?;
         let rows = stmt.query_map([], file_row_from_row)?;
@@ -127,7 +163,7 @@ impl Db {
     /// Get a file by its path.
     pub fn get_file_by_path(&self, path: &str) -> Result<Option<FileRow>> {
         self.conn.query_row(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files WHERE path = ?1 LIMIT 1",
             params![path],
             file_row_from_row,
@@ -137,7 +173,7 @@ impl Db {
     /// Get files imported since a given timestamp (inclusive).
     pub fn get_files_imported_since(&self, since_ms: i64) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files WHERE imported_at >= ?1 ORDER BY imported_at"
         )?;
         let rows = stmt.query_map(params![since_ms], file_row_from_row)?;
@@ -153,7 +189,7 @@ impl Db {
     /// Get files that have xxh3_128 but are missing sha256 (background hash candidates).
     pub fn get_files_pending_sha256(&self, limit: Option<usize>) -> Result<Vec<FileRow>> {
         let sql = format!(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files \
              WHERE sha256 IS NULL AND xxh3_128 IS NOT NULL \
              ORDER BY imported_at \
@@ -169,7 +205,7 @@ impl Db {
     /// Get all imported files whose path no longer exists on disk.
     pub fn get_missing_files(&self, vault_root: &std::path::Path) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, size, mtime, crc32c, xxh3_128, sha256, status \
+            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files WHERE status = 'imported' ORDER BY path"
         )?;
         let rows = stmt.query_map([], file_row_from_row)?;
@@ -213,8 +249,9 @@ fn file_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
         size: row.get(2)?,
         mtime: row.get(3)?,
         crc32c: row.get(4)?,
-        xxh3_128: row.get(5)?,
-        sha256: row.get(6)?,
-        status: row.get(7)?,
+        raw_unique_id: row.get(5)?,
+        xxh3_128: row.get(6)?,
+        sha256: row.get(7)?,
+        status: row.get(8)?,
     })
 }

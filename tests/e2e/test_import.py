@@ -352,3 +352,97 @@ class TestExistingFixtures:
         
         row = assert_file_imported(vault, "samsung_photo.jpg")
         assert "Samsung" in row["path"]
+
+
+# ========== EXIF Fallback Tests (merged from test_exif_fallback.py) ==========
+
+class TestExifFallback:
+    """Tests for EXIF fallback scenarios (missing or incomplete EXIF metadata).
+    
+    中文场景说明：
+    - 无 EXIF 照片：使用文件修改时间(mtime)作为拍摄时间，设备显示为"Unknown"
+    - 部分 EXIF：有设备信息但无日期，或反之
+    - 无效 EXIF：日期格式错误，损坏的 EXIF 数据
+    """
+    
+    def test_no_exif_uses_mtime_for_date(self, vault: VaultEnv) -> None:
+        """Photo without EXIF should use file mtime for path organization."""
+        import os
+        
+        # Set specific mtime
+        target_time = time.mktime(time.strptime("2024:06:15 14:30:00", "%Y:%m:%d %H:%M:%S"))
+        copy_fixture(vault, "no_exif.jpg")
+        
+        # Adjust mtime after copying
+        test_file = vault.source_dir / "no_exif.jpg"
+        test_file.touch()
+        os.utime(test_file, (target_time, target_time))
+        
+        vault.import_dir(vault.source_dir)
+        
+        rows = vault.db_files()
+        assert len(rows) == 1
+        
+        # Path should contain date from mtime
+        assert "2024" in rows[0]["path"]
+        assert "Unknown" in rows[0]["path"]
+    
+    def test_no_exif_device_is_unknown(self, vault: VaultEnv) -> None:
+        """Photo without EXIF should have device = 'Unknown'."""
+        copy_fixture(vault, "no_exif.jpg")
+        
+        vault.import_dir(vault.source_dir)
+        
+        rows = vault.db_files()
+        assert len(rows) == 1
+        assert "Unknown" in rows[0]["path"]
+    
+    def test_corrupted_exif_fallback_to_mtime(self, vault: VaultEnv) -> None:
+        """Corrupted EXIF should fallback to mtime, not crash."""
+        import os
+        target_time = time.mktime(time.strptime("2024:09:01 08:00:00", "%Y:%m:%d %H:%M:%S"))
+        
+        test_file = vault.source_dir / "corrupted_exif.jpg"
+        
+        # Create JPEG with invalid EXIF
+        jpeg_header = b'\xff\xd8\xff\xe1\x00\x10Exif\x00\x00'
+        corrupted_data = b'CORRUPTED_DATA_NOT_VALID_EXIF'
+        image_data = b'\xff\xd9'
+        
+        test_file.write_bytes(jpeg_header + corrupted_data + image_data)
+        os.utime(test_file, (target_time, target_time))
+        
+        result = vault.import_dir(vault.source_dir)
+        assert result.returncode == 0
+        
+        rows = vault.db_files()
+        assert len(rows) == 1
+        assert "Unknown" in rows[0]["path"]
+    
+    def test_partial_exif_device_only_no_date(self, vault: VaultEnv) -> None:
+        """Photo with device but no date should use mtime for date."""
+        from conftest import EXIFTOOL_AVAILABLE
+        
+        if not EXIFTOOL_AVAILABLE:
+            pytest.skip("exiftool not available")
+        
+        import os
+        import subprocess
+        
+        target_time = time.mktime(time.strptime("2024:08:10 16:00:00", "%Y:%m:%d %H:%M:%S"))
+        
+        test_file = vault.source_dir / "device_only.jpg"
+        create_minimal_jpeg(test_file, "content")
+        os.utime(test_file, (target_time, target_time))
+        
+        subprocess.run([
+            "exiftool", "-overwrite_original", "-P",
+            "-Make=TestCamera", "-Model=TestModel",
+            str(test_file)
+        ], capture_output=True)
+        
+        vault.import_dir(vault.source_dir)
+        
+        rows = vault.db_files()
+        assert len(rows) == 1
+        assert "2024" in rows[0]["path"]

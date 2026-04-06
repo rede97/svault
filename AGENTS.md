@@ -72,6 +72,37 @@ cargo run -p svault-cli -- import <source-dir>
 - 更新 [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) 添加新测试记录
 - Python E2E 测试用于验证端到端场景
 
+#### E2E 测试执行规范
+
+```bash
+# 运行所有 E2E 测试（使用 RAMDisk）
+cd tests/e2e && bash run.sh
+
+# 运行特定测试（使用 -k 参数）
+cd tests/e2e && bash run.sh -k "test_raw"
+
+# 需要 root 的测试（如跨文件系统测试）
+sudo bash run.sh -k "test_cross_fs"
+```
+
+#### 测试固件规范
+
+- **禁止**使用 `piexif` 等 Python EXIF 库
+- **必须使用** `exiftool` 写入 EXIF 数据（确保与真实相机文件一致）
+- 示例：
+  ```python
+  def create_dng_with_exif(path: Path, serial: str = "ABC123", image_id: str = "IMG001"):
+      # 先创建基础 DNG 文件
+      create_minimal_raw(path)
+      # 使用 exiftool 写入 EXIF
+      subprocess.run([
+          "exiftool", "-overwrite_original",
+          f"-BodySerialNumber={serial}",
+          f"-ImageUniqueID={image_id}",
+          str(path)
+      ], check=True)
+  ```
+
 ### ⚠️ 重要：必须在 RAMDisk 中测试
 
 **永远不要**在项目目录中运行 `svault init` 或 `svault import`！

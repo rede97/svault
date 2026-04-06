@@ -94,8 +94,9 @@ impl CrcStrategy {
             Mov | Mp4 => CrcStrategy::HeadTail(64 * 1024, 64 * 1024),
             Avi | Mkv => CrcStrategy::Head(64 * 1024),
 
-            // RAW formats: full file - these are precious
-            Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => CrcStrategy::Full,
+            // RAW formats: head + tail (128KB total)
+            // RAW files are large; head+tail captures embedded JPEG preview and metadata
+            Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => CrcStrategy::HeadTail(64 * 1024, 64 * 1024),
 
             // Unknown: full file to be safe
             Unknown(_) => CrcStrategy::Full,

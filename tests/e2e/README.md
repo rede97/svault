@@ -89,8 +89,8 @@ uv pip install -e "."
 | `test_import_force.py` | 强制导入与重复文件 | `force` |
 | `test_import_ignore.py` | Vault 自我保护扫描过滤 | `ignore` |
 | `test_recheck.py` | 一致性校验工作流 | `recheck` |
-| `test_conflict.py` | 文件名冲突处理 | `conflict` |
-| `test_dedup.py` | 三层去重系统 | `dedup` |
+| `test_import_conflict.py` | 文件名冲突处理 | `conflict` |
+| `test_import_dedup.py` | 三层去重系统 | `dedup` |
 | `test_chaos.py` | 边界/异常场景 | `chaos`, `slow` |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
 | `test_verify.py` | 完整性验证（哈希匹配、损坏检测） | `verify` |

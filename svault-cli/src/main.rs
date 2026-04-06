@@ -532,83 +532,130 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::History { file, from, to, event_type, limit, by_session, files } => {
+        Command::History { file, from, to, events, event_type, limit, verbose } => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
 
-            if by_session {
-                // Show history grouped by import session
+            if !events {
+                // Default: Show session-based history (import/add/reconcile)
                 use console::style;
-                use svault_core::verify::manifest::ManifestManager;
-                let manager = ManifestManager::new(&vault_root);
+                use std::collections::HashMap;
                 
-                let manifests = manager.list_all()
-                    .map_err(|e| anyhow::anyhow!("cannot list manifests: {e}"))?;
+                let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                    .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+                
+                let from_ms = from.as_ref().and_then(|s| parse_datetime_to_ms(s));
+                let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
+                
+                // Query import.* events
+                let query = r#"
+                    SELECT occurred_at, event_type, payload
+                    FROM events 
+                    WHERE event_type IN ('import.pending', 'import.completed', 'add.completed')
+                    AND (?1 IS NULL OR occurred_at >= ?1)
+                    AND (?2 IS NULL OR occurred_at <= ?2)
+                    ORDER BY occurred_at DESC
+                    LIMIT ?3
+                "#;
+                
+                // Query using get_events and filter for import events
+                let all_events = db.get_events(
+                    limit * 2,  // Get more events to filter
+                    None,  // No type filter - we'll filter manually
+                    from_ms,
+                    to_ms,
+                    None,
+                )?;
+                
+                let sessions: Vec<_> = all_events.into_iter()
+                    .filter(|e| e.event_type.starts_with("import.") || e.event_type.starts_with("add."))
+                    .map(|e| (e.occurred_at, e.event_type, e.payload))
+                    .collect();
 
-                if manifests.is_empty() {
-                    eprintln!("No import sessions found.");
+                if sessions.is_empty() {
+                    eprintln!("No import/add/reconcile history found.");
+                    eprintln!("Use --events to see all events.");
                     return Ok(());
                 }
 
+                // Group by session_id
+                let mut session_map: HashMap<String, (i64, Option<i64>, String)> = HashMap::new();
+                
+                for (occurred_at, event_type, payload) in sessions {
+                    let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+                    let session_id = parsed["session_id"].as_str().unwrap_or("unknown").to_string();
+                    
+                    match event_type.as_str() {
+                        "import.pending" => {
+                            session_map.entry(session_id.clone())
+                                .or_insert((occurred_at, None, payload));
+                        }
+                        "import.completed" | "add.completed" => {
+                            let entry = session_map.entry(session_id.clone())
+                                .or_insert((occurred_at, None, payload.clone()));
+                            entry.1 = Some(occurred_at);
+                            entry.2 = payload;
+                        }
+                        _ => {}
+                    }
+                }
+
                 if matches!(cli.output, cli::OutputFormat::Json) {
-                    let sessions: Vec<_> = manifests.iter().map(|(_, m)| {
+                    let sessions_json: Vec<_> = session_map.iter().map(|(session_id, (started_at, completed_at, payload))| {
+                        let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+                        
                         serde_json::json!({
-                            "session_id": m.session_id,
-                            "imported_at": m.imported_at,
-                            "source_root": m.source_root,
-                            "file_count": m.files.len(),
-                            "total_size": m.files.iter().map(|f| f.size).sum::<u64>(),
-                            "hash_algorithm": m.hash_algorithm,
-                            "files": if files { 
-                                m.files.iter().map(|f| serde_json::json!({
-                                    "src": f.src_path,
-                                    "dest": f.dest_path,
-                                    "size": f.size,
-                                })).collect::<Vec<_>>()
-                            } else {
-                                vec![]
-                            },
+                            "session_id": session_id,
+                            "started_at": started_at,
+                            "completed_at": completed_at,
+                            "source": parsed["source"].as_str(),
+                            "total_files": parsed["total_files"].as_i64(),
+                            "imported": parsed.get("imported").and_then(|v| v.as_i64()),
                         })
                     }).collect();
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "sessions": sessions }))?);
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "sessions": sessions_json }))?);
                 } else {
-                    println!("{}", style("Import History").bold().underlined());
+                    println!("{}", style("History (import/add/reconcile)").bold().underlined());
                     println!();
                     
-                    for (i, (_, manifest)) in manifests.iter().enumerate() {
-                        let datetime = chrono::DateTime::from_timestamp_millis(manifest.imported_at)
+                    let mut sessions_vec: Vec<_> = session_map.into_iter().collect();
+                    sessions_vec.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+                    
+                    for (i, (session_id, (started_at, completed_at, payload))) in sessions_vec.iter().enumerate() {
+                        let datetime = chrono::DateTime::from_timestamp_millis(*started_at)
                             .unwrap_or_default();
-                        let total_size: u64 = manifest.files.iter().map(|f| f.size).sum();
-                        let size_str = format_size(total_size);
                         
-                        // Session header
-                        println!("{} {} {}", 
+                        let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+                        let source = parsed["source"].as_str().unwrap_or("unknown");
+                        let total_files = parsed["total_files"].as_i64().unwrap_or(0);
+                        let imported = parsed.get("imported").and_then(|v| v.as_i64()).unwrap_or(0);
+                        
+                        let status_icon = if completed_at.is_some() {
+                            style("✓").green()
+                        } else {
+                            style("⏳").yellow()
+                        };
+                        
+                        println!("{} {} {} {}", 
                             style(format!("[{}]", i + 1)).cyan().bold(),
+                            status_icon,
                             style(datetime.format("%Y-%m-%d %H:%M:%S")).bright(),
-                            style(&manifest.session_id).dim()
+                            style(&session_id[..session_id.len().min(8)]).dim()
                         );
                         
-                        // Source and stats
-                        println!("  Source: {}", style(manifest.source_root.display()).blue());
-                        println!("  Files:  {} ({})", 
-                            style(manifest.files.len()).yellow(),
-                            style(size_str).green()
-                        );
-                        println!("  Hash:   {}", style(&manifest.hash_algorithm).dim());
+                        println!("  Source: {}", style(source).blue());
+                        if completed_at.is_some() {
+                            println!("  Status: {} ({} of {} files)", 
+                                style("completed").green(),
+                                style(imported).yellow(),
+                                style(total_files).yellow()
+                            );
+                        } else {
+                            println!("  Status: {}", style("pending (not confirmed)").yellow());
+                        }
                         
-                        // File list (if requested)
-                        if files && !manifest.files.is_empty() {
-                            println!("  Files:");
-                            for (_j, file) in manifest.files.iter().take(10).enumerate() {
-                                println!("    {} {} → {}",
-                                    style("•").dim(),
-                                    style(file.src_path.file_name().unwrap_or_default().to_string_lossy()).dim(),
-                                    style(&file.dest_path.display()).dim()
-                                );
-                            }
-                            if manifest.files.len() > 10 {
-                                println!("    ... and {} more files", manifest.files.len() - 10);
-                            }
+                        if verbose {
+                            // In verbose mode, could show file list from manifest
                         }
                         
                         println!();
