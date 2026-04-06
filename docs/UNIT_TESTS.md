@@ -11,9 +11,9 @@
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
 | 单元测试 (Unit) | 117 | 117 | 0 | 0 |
-| Python E2E 测试 (Linux) | 198 | 198 | 0 | 0 |
-| Python E2E 测试 (Windows) | 198 | 190 | 0 | 8 |
-| **总计** | **513** | **505** | **0** | **8** |
+| Python E2E 测试 (Linux) | 208 | 208 | 0 | 0 |
+| Python E2E 测试 (Windows) | 208 | 200 | 0 | 8 |
+| **总计** | **523** | **515** | **0** | **8** |
 
 > Windows 跳过的 8 个测试主要涉及 reflink/hardlink 特性（Windows 文件系统限制）和某些权限相关测试。
 
@@ -173,6 +173,7 @@
 | 跨文件系统 | 4 | ext4/btrfs 不同组合 |
 | History | 6 | 事件查询、过滤、JSON 输出 |
 | 并发/锁 | 4 | 进程锁、并发导入 |
+| Scan + Filter + Import | 10 | 扫描过滤导入流水线 |
 
 ---
 
@@ -186,7 +187,7 @@
 | vfs/transfer | 80% | 🟢 已达成 (9 tests) |
 | import | 85% | 🟢 已达成 (14 tests) |
 | pipeline | 80% | 🟡 待补充 |
-| **E2E 测试** | N/A | 🟢 198 passed |
+| **E2E 测试** | N/A | 🟢 208 passed |
 
 ---
 
@@ -195,7 +196,7 @@
 ### 高优先级
 
 - [ ] `vfs::probe_capabilities` - 测试文件系统能力探测 (reflink/hardlink 支持检测)
-- [ ] `pipeline::scan` - 测试目录扫描和 vault 路径过滤
+- [x] `pipeline::scan` - 测试目录扫描和 vault 路径过滤 (E2E: test_scan_import_pipeline.py)
 - [ ] `pipeline::insert` - 测试批量 DB 插入
 
 ### 中优先级
@@ -265,3 +266,4 @@ uv pip install pytest pillow hypothesis
 | 2026-04-04 | 视频元数据、Live Photo/RAW+JPEG、磁盘空间 E2E 测试 |
 | 2026-04-05 | E2E 测试参数化重构；删除重复代码 ~110 行 |
 | 2026-04-05 | Pipeline 架构实现；CLI 拆分为命令模块；E2E 198 passed |
+| 2026-04-06 | 添加 scan + filter + import 流水线 E2E 测试 (10 tests) |
