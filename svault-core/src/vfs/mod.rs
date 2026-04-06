@@ -64,6 +64,7 @@ pub use transfer::transfer_file;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 /// The transfer strategies available between two VFS backends, ordered from
 /// most to least efficient. The transfer engine picks the best strategy that
@@ -204,28 +205,6 @@ pub trait VfsBackend: Send + Sync {
     /// Lists directory entries one level deep (non-recursive).
     fn list(&self, dir: &Path) -> VfsResult<Vec<DirEntry>>;
 
-    /// Recursively walks `dir`, returning all files whose extension
-    /// (lowercase, no leading dot) is in `extensions`.
-    /// If `extensions` is empty, all files are returned.
-    /// Directories and symlinks are never included in the result.
-    ///
-    /// The default implementation recurses via [`VfsBackend::list`].
-    /// Backends may override this with a more efficient native walk.
-    fn walk(&self, dir: &Path, extensions: &[&str]) -> VfsResult<Vec<DirEntry>> {
-        let mut result = Vec::new();
-        let mut stack = vec![dir.to_path_buf()];
-        while let Some(current) = stack.pop() {
-            for entry in self.list(&current)? {
-                if entry.is_dir {
-                    stack.push(entry.path.clone());
-                } else if vfs_ext_matches(&entry.path, extensions) {
-                    result.push(entry);
-                }
-            }
-        }
-        Ok(result)
-    }
-
     /// Opens the file at `path` for reading and returns a boxed reader.
     fn open_read(&self, path: &Path) -> VfsResult<Box<dyn Read>>;
 
@@ -263,4 +242,41 @@ pub trait VfsBackend: Send + Sync {
     fn as_system_fs(&self) -> Option<&system::SystemFs> {
         None
     }
+
+    /// Stream directory entries via channel.
+    ///
+    /// This is the preferred API for directory traversal. It returns a receiver
+    /// that yields entries as they are discovered, allowing for streaming
+    /// processing without loading all entries into memory at once.
+    ///
+    /// # Arguments
+    /// * `dir` - The directory to walk (relative to VFS root)
+    /// * `extensions` - File extensions to include (empty = all files)
+    ///
+    /// # Returns
+    /// A receiver that yields `DirEntry` results. The channel closes when
+    /// scanning completes or an unrecoverable error occurs.
+    ///
+    /// # Implementation Notes
+    /// - Local filesystem (SystemFs): Uses parallel directory traversal via
+    ///   background thread, streaming entries immediately as discovered.
+    /// - MTP (MtpFs): Must collect all entries first (single-threaded due to
+    ///   USB pipe limitation), then stream via channel for API consistency.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let rx = backend.walk_stream(Path::new(""), &["jpg", "png"])?;
+    /// for entry_result in rx {
+    ///     match entry_result {
+    ///         Ok(entry) => println!("Found: {}", entry.path.display()),
+    ///         Err(e) => eprintln!("Error: {}", e),
+    ///     }
+    /// }
+    /// ```
+    fn walk_stream(
+        &self,
+        dir: &Path,
+        extensions: &[&str],
+    ) -> VfsResult<mpsc::Receiver<VfsResult<DirEntry>>>;
 }

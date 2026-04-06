@@ -66,9 +66,11 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
         style(missing_count).cyan()
     );
 
-    // 2. Scan vault disk for all files
+    // 2. Scan vault disk for all files (streaming)
     let fs = SystemFs::open(&opts.root)?;
-    let disk_entries = fs.walk(Path::new(""), &[])?;
+    let disk_entries: Vec<_> = fs.walk_stream(Path::new(""), &[])?.into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
     let scanned = disk_entries.len();
 
     if scanned == 0 {

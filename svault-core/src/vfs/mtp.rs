@@ -84,7 +84,8 @@ use std::{
     collections::HashMap,
     io::{self, Read},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
+    thread,
 };
 
 use mtp_rs::{
@@ -533,6 +534,23 @@ Technical details: {}",
     pub fn storage_names(&self) -> Vec<&str> {
         self.storages.keys().map(|s| s.as_str()).collect()
     }
+
+    /// Internal recursive walk for MTP - collects all entries.
+    /// This is needed because MTP must walk single-threaded before streaming.
+    fn walk_internal(&self, dir: &Path, extensions: &[&str]) -> VfsResult<Vec<DirEntry>> {
+        let mut result = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            for entry in self.list(&current)? {
+                if entry.is_dir {
+                    stack.push(entry.path.clone());
+                } else if super::vfs_ext_matches(&entry.path, extensions) {
+                    result.push(entry);
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
 impl VfsBackend for MtpFs {
@@ -648,6 +666,28 @@ impl VfsBackend for MtpFs {
         Err(VfsError::Unsupported(
             "MTP directory creation not yet implemented"
         ))
+    }
+
+    fn walk_stream(
+        &self,
+        dir: &Path,
+        extensions: &[&str],
+    ) -> VfsResult<mpsc::Receiver<VfsResult<DirEntry>>> {
+        // MTP limitation: must collect all entries first (single-threaded)
+        // Then stream via channel for API consistency with SystemFs
+        let entries = self.walk_internal(dir, extensions)?;
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn thread to stream collected entries
+        thread::spawn(move || {
+            for entry in entries {
+                if tx.send(Ok(entry)).is_err() {
+                    break; // Receiver dropped
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 

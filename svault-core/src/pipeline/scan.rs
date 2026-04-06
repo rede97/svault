@@ -1,41 +1,75 @@
 //! Stage A: Directory scanning.
 
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::pipeline::types::FileEntry;
 use crate::vfs::system::SystemFs;
-use crate::vfs::VfsBackend;
+use crate::vfs::{DirEntry, VfsBackend};
 
-/// Scan a directory for files with given extensions.
+/// Stream directory entries from a VFS backend.
 ///
-/// Returns entries with absolute paths (root.join(relative_path)).
-/// Paths are sorted for deterministic order.
+/// This is the preferred API for directory scanning. It returns a receiver
+/// that yields `FileEntry` as files are discovered, enabling streaming
+/// processing without loading all entries into memory.
 ///
-/// # Example
+/// # Arguments
+/// * `root` - Root directory to scan
+/// * `exts` - File extensions to include (empty = all files)
+///
+/// # Returns
+/// Receiver that yields `FileEntry` results as they are discovered.
+/// The channel closes when scanning completes.
+///
+/// # Examples
+///
 /// ```ignore
-/// let entries = scan_files(Path::new("/photos"), &["jpg", "png"])?;
-/// for e in entries {
-///     println!("{}: {} bytes", e.path.display(), e.size);
+/// let rx = scan_stream(Path::new("/photos"), &["jpg", "png"])?;
+/// for entry_result in rx {
+///     match entry_result {
+///         Ok(entry) => println!("{}: {} bytes", entry.path.display(), entry.size),
+///         Err(e) => eprintln!("Error: {}", e),
+///     }
 /// }
 /// ```
-pub fn scan_files(root: &Path, exts: &[&str]) -> anyhow::Result<Vec<FileEntry>> {
+pub fn scan_stream(
+    root: &Path,
+    exts: &[&str],
+) -> anyhow::Result<mpsc::Receiver<anyhow::Result<FileEntry>>> {
     let fs = SystemFs::open(root)?;
-    let vfs_entries = fs.walk(Path::new(""), exts)?;
+    let root = root.to_path_buf();
+    let exts: Vec<String> = exts.iter().map(|s| s.to_string()).collect();
 
-    let mut result: Vec<FileEntry> = vfs_entries
-        .into_iter()
-        .map(|e| FileEntry {
-            // Convert to absolute path
-            path: root.join(&e.path),
-            size: e.size,
-            mtime_ms: e.mtime_ms,
-        })
-        .collect();
+    // Get VFS stream
+    let vfs_rx = fs.walk_stream(Path::new(""), &exts.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
 
-    // Sort by path for deterministic order
-    result.sort_by(|a, b| a.path.cmp(&b.path));
+    let (tx, rx) = mpsc::channel();
 
-    Ok(result)
+    // Convert VFS DirEntry to pipeline FileEntry in background thread
+    thread::spawn(move || {
+        for vfs_result in vfs_rx {
+            let result = vfs_result
+                .map(|dir_entry| dir_entry_to_file_entry(&root, dir_entry))
+                .map_err(|e| anyhow::anyhow!(e));
+
+            if tx.send(result).is_err() {
+                break; // Receiver dropped
+            }
+        }
+    });
+
+    Ok(rx)
+}
+
+/// Convert a VFS DirEntry to a pipeline FileEntry.
+fn dir_entry_to_file_entry(root: &Path, entry: DirEntry) -> FileEntry {
+    FileEntry {
+        // Convert to absolute path
+        path: root.join(&entry.path),
+        size: entry.size,
+        mtime_ms: entry.mtime_ms,
+    }
 }
 
 #[cfg(test)]
@@ -44,32 +78,61 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    // =========================================================================
+    // scan_stream tests
+    // =========================================================================
+
     #[test]
-    fn test_scan_files_basic() {
+    fn test_scan_stream_basic() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
-        // Create test files
         fs::write(root.join("a.jpg"), "content a").unwrap();
         fs::write(root.join("b.png"), "content b").unwrap();
         fs::write(root.join("c.txt"), "content c").unwrap();
 
-        let entries = scan_files(root, &["jpg", "png"]).unwrap();
+        let rx = scan_stream(root, &["jpg", "png"]).unwrap();
+        let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
 
         assert_eq!(entries.len(), 2);
-        assert!(entries[0].path.ends_with("a.jpg"));
-        assert!(entries[1].path.ends_with("b.png"));
+        // Note: stream order is not deterministic
+        let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        assert!(paths.iter().any(|p| p.ends_with("a.jpg")));
+        assert!(paths.iter().any(|p| p.ends_with("b.png")));
     }
 
     #[test]
-    fn test_scan_files_empty_dir() {
+    fn test_scan_stream_empty_dir() {
         let tmp = TempDir::new().unwrap();
-        let entries = scan_files(tmp.path(), &["jpg"]).unwrap();
+        let rx = scan_stream(tmp.path(), &["jpg"]).unwrap();
+        let entries: Vec<_> = rx.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
         assert!(entries.is_empty());
     }
 
     #[test]
-    fn test_scan_files_all_extensions() {
+    fn test_scan_stream_nested_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create nested structure
+        fs::create_dir(root.join("subdir1")).unwrap();
+        fs::create_dir(root.join("subdir2")).unwrap();
+        fs::write(root.join("subdir1/a.jpg"), "a").unwrap();
+        fs::write(root.join("subdir2/b.jpg"), "b").unwrap();
+        fs::write(root.join("c.jpg"), "c").unwrap();
+
+        let rx = scan_stream(root, &["jpg"]).unwrap();
+        let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
+
+        assert_eq!(entries.len(), 3);
+        let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        assert!(paths.iter().any(|p| p.ends_with("subdir1/a.jpg")));
+        assert!(paths.iter().any(|p| p.ends_with("subdir2/b.jpg")));
+        assert!(paths.iter().any(|p| p.ends_with("c.jpg")));
+    }
+
+    #[test]
+    fn test_scan_stream_all_extensions() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -77,8 +140,9 @@ mod tests {
         fs::write(root.join("b.png"), "b").unwrap();
         fs::write(root.join("c.txt"), "c").unwrap();
 
-        // Empty extension list = all files
-        let entries = scan_files(root, &[]).unwrap();
+        let rx = scan_stream(root, &[]).unwrap();
+        let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
+
         assert_eq!(entries.len(), 3);
     }
 }

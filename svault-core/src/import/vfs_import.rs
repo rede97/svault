@@ -131,7 +131,7 @@ fn crc32c_from_backend(
 pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> {
     let session_id = session_id_now();
 
-    // Stage A: Scan source
+    // Stage A: Scan source (streaming)
     let exts: Vec<&str> = opts
         .import_config
         .allowed_extensions
@@ -139,7 +139,10 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
         .map(|s| s.as_str())
         .collect();
 
-    let mut dir_entries = opts.src_backend.walk(opts.src_path, &exts)?;
+    let mut dir_entries: Vec<_> = opts.src_backend.walk_stream(opts.src_path, &exts)?
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
     if opts.src_backend.as_system_fs().is_some() {
         let vault_canon = std::fs::canonicalize(opts.vault_root)
             .unwrap_or_else(|_| opts.vault_root.to_path_buf());

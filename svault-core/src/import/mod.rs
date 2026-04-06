@@ -47,38 +47,50 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .unwrap_or_else(|_| opts.vault_root.clone());
 
     // ------------------------------------------------------------------
-    // Stage A: Scan directory
+    // Stage A+B: Stream scan + CRC (parallel)
     // ------------------------------------------------------------------
     let exts: Vec<&str> = opts.import_config.allowed_extensions
         .iter().map(|s| s.as_str()).collect();
 
-    let scan_entries = pipeline::scan::scan_files(&source_canon, &exts)?;
+    // Stream scan files (parallel traversal)
+    let scan_rx = pipeline::scan::scan_stream(&source_canon, &exts)?;
 
-    // Filter out vault paths
-    let scan_entries: Vec<_> = scan_entries
-        .into_iter()
-        .filter(|e| !e.path.starts_with(&vault_canon))
-        .collect();
+    // Filter out vault paths in streaming fashion
+    let (filter_tx, filter_rx) = std::sync::mpsc::channel();
+    let vault_canon_filter = vault_canon.clone();
+    std::thread::spawn(move || {
+        for entry_result in scan_rx {
+            match entry_result {
+                Ok(entry) if !entry.path.starts_with(&vault_canon_filter) => {
+                    let _ = filter_tx.send(Ok(entry));
+                }
+                Ok(_) => {} // Skip vault paths
+                Err(e) => {
+                    let _ = filter_tx.send(Err(e));
+                }
+            }
+        }
+    });
 
-    let total = scan_entries.len();
-    if total == 0 {
-        eprintln!("{} No files found in source directory", 
-            style("Warning:").yellow().bold());
-        return Ok(ImportSummary { total: 0, ..Default::default() });
-    }
-
-    // ------------------------------------------------------------------
-    // Stage B: CRC32C fingerprint (parallel)
-    // ------------------------------------------------------------------
-    let scan_bar = ProgressBar::new(total as u64);
+    // Set up progress bar with spinner (unknown total during streaming)
+    let scan_bar = ProgressBar::new_spinner();
     scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.blue} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
+        ProgressStyle::with_template("{prefix:.bold.blue} {spinner} {pos} files scanned")
+            .unwrap(),
     );
     scan_bar.set_prefix("Scanning");
 
-    let crc_results = pipeline::crc::compute_crcs(scan_entries, Some(&scan_bar));
+    // Stream CRC computation (batched + parallel)
+    let crc_rx = pipeline::crc::compute_crcs_stream(filter_rx, Some(scan_bar.clone()));
+
+    // Collect all CRC results
+    let mut crc_results = Vec::new();
+    let mut total = 0usize;
+    for result in crc_rx {
+        total += 1;
+        scan_bar.set_position(total as u64);
+        crc_results.push(result);
+    }
     scan_bar.finish_and_clear();
 
     let (crc_entries, crc_errors) = pipeline::crc::split_results(crc_results);

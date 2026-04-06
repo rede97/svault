@@ -142,6 +142,17 @@ mod tests {
             self.created_dirs.lock().unwrap().push(path.to_path_buf());
             Ok(())
         }
+
+        fn walk_stream(
+            &self,
+            _dir: &Path,
+            _extensions: &[&str],
+        ) -> super::super::VfsResult<std::sync::mpsc::Receiver<super::super::VfsResult<super::super::DirEntry>>> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            // Mock backend returns empty stream
+            drop(tx);
+            Ok(rx)
+        }
     }
 
     #[test]

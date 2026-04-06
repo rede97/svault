@@ -10,9 +10,11 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
 };
 
-use super::{vfs_ext_matches, DirEntry, FsCapabilities, VfsBackend, VfsError, VfsResult};
+use super::{DirEntry, FsCapabilities, VfsBackend, VfsError, VfsResult};
 use jwalk;
 
 /// Local filesystem backend. Probes capabilities for `root` at construction.
@@ -75,52 +77,6 @@ impl VfsBackend for SystemFs {
         Ok(entries)
     }
 
-    fn walk(&self, dir: &Path, extensions: &[&str]) -> VfsResult<Vec<DirEntry>> {
-        let full = self.root.join(dir);
-        let exts: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
-        let exts_ref: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
-        let mut result = Vec::new();
-        for entry in jwalk::WalkDir::new(&full)
-            .skip_hidden(false)
-            .process_read_dir(|_depth, _path, _state, children| {
-                children.iter_mut().for_each(|child_result| {
-                    if let Ok(child) = child_result
-                        && child.file_name == std::ffi::OsStr::new(".svault")
-                    {
-                        child.read_children_path = None;
-                    }
-                });
-            })
-        {
-            let entry = entry.map_err(|e| VfsError::Io(std::io::Error::other(e)))?;
-            if entry.file_type().is_dir() {
-                continue;
-            }
-            // Get absolute path from jwalk, then make it relative to vfs root
-            let abs_path = entry.path();
-            let path = abs_path.strip_prefix(&self.root)
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|_| abs_path.to_path_buf());
-            if !vfs_ext_matches(&path, &exts_ref) {
-                continue;
-            }
-            let meta = entry.metadata().map_err(|e| VfsError::Io(std::io::Error::other(e)))?;
-            let mtime_ms = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
-            result.push(DirEntry {
-                path,
-                size: meta.len(),
-                mtime_ms,
-                is_dir: false,
-            });
-        }
-        Ok(result)
-    }
-
     fn open_read(&self, path: &Path) -> VfsResult<Box<dyn Read>> {
         let f = fs::File::open(self.root.join(path)).map_err(VfsError::Io)?;
         Ok(Box::new(f))
@@ -163,6 +119,104 @@ impl VfsBackend for SystemFs {
 
     fn as_system_fs(&self) -> Option<&SystemFs> {
         Some(self)
+    }
+
+    fn walk_stream(
+        &self,
+        dir: &Path,
+        extensions: &[&str],
+    ) -> VfsResult<mpsc::Receiver<VfsResult<DirEntry>>> {
+        let full_root = self.root.join(dir);
+        let exts: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
+
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn background thread for parallel directory traversal
+        thread::spawn(move || {
+            walk_stream_recursive(&full_root, &full_root, &exts, &tx);
+        });
+
+        Ok(rx)
+    }
+}
+
+/// Recursively walk directory and stream entries via channel.
+/// Uses jwalk for parallel directory traversal.
+fn walk_stream_recursive(
+    root: &Path,
+    current: &Path,
+    exts: &[String],
+    tx: &mpsc::Sender<VfsResult<DirEntry>>,
+) {
+    // Use jwalk for parallel traversal
+    for entry_result in jwalk::WalkDir::new(current)
+        .skip_hidden(false)
+        .process_read_dir(|_depth, _path, _state, children| {
+            children.iter_mut().for_each(|child_result| {
+                if let Ok(child) = child_result
+                    && child.file_name == std::ffi::OsStr::new(".svault")
+                {
+                    child.read_children_path = None;
+                }
+            });
+        })
+    {
+        match entry_result {
+            Ok(entry) => {
+                if entry.file_type().is_dir() {
+                    continue;
+                }
+
+                // Get absolute path from jwalk, then make it relative to vfs root
+                let abs_path = entry.path();
+                let path = match abs_path.strip_prefix(root) {
+                    Ok(p) => p.to_path_buf(),
+                    Err(_) => abs_path.to_path_buf(),
+                };
+
+                // Check extension filter
+                if !exts.is_empty() {
+                    let ext_matches = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| exts.iter().any(|ext| ext.eq_ignore_ascii_case(e)))
+                        .unwrap_or(false);
+                    if !ext_matches {
+                        continue;
+                    }
+                }
+
+                // Get metadata
+                match entry.metadata() {
+                    Ok(meta) => {
+                        let mtime_ms = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
+
+                        let dir_entry = DirEntry {
+                            path,
+                            size: meta.len(),
+                            mtime_ms,
+                            is_dir: false,
+                        };
+
+                        if tx.send(Ok(dir_entry)).is_err() {
+                            // Receiver dropped, stop walking
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(VfsError::Io(std::io::Error::other(e))));
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(VfsError::Io(std::io::Error::other(e))));
+            }
+        }
     }
 }
 

@@ -42,10 +42,30 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         .collect();
 
     // ------------------------------------------------------------------
-    // Stage A: Scan
+    // Stage A+B: Stream scan + CRC (parallel)
     // ------------------------------------------------------------------
-    let entries = pipeline::scan::scan_files(&opts.path, &exts)?;
-    let total = entries.len();
+    let scan_rx = pipeline::scan::scan_stream(&opts.path, &exts)?;
+
+    // Set up progress bar with spinner
+    let scan_bar = ProgressBar::new_spinner();
+    scan_bar.set_style(
+        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files scanned")
+            .unwrap(),
+    );
+    scan_bar.set_prefix("Scanning");
+
+    // Stream CRC computation
+    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, Some(scan_bar.clone()));
+
+    // Collect all CRC results
+    let mut crc_results = Vec::new();
+    let mut total = 0usize;
+    for result in crc_rx {
+        total += 1;
+        scan_bar.set_position(total as u64);
+        crc_results.push(result);
+    }
+    scan_bar.finish_and_clear();
 
     if total == 0 {
         eprintln!(
@@ -57,25 +77,11 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     }
 
     eprintln!(
-        "{} Scanning {} files in {}",
+        "{} Scanned {} files in {}",
         style("Adding:").bold().cyan(),
         style(total).cyan(),
         style(opts.path.display())
     );
-
-    // ------------------------------------------------------------------
-    // Stage B: CRC32C
-    // ------------------------------------------------------------------
-    let scan_bar = ProgressBar::new(total as u64);
-    scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    scan_bar.set_prefix("Scanning");
-
-    let crc_results = pipeline::crc::compute_crcs(entries, Some(&scan_bar));
-    scan_bar.finish_and_clear();
 
     let (crc_entries, crc_errors) = pipeline::crc::split_results(crc_results);
 
