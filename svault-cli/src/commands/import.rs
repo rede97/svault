@@ -1,21 +1,30 @@
+use std::io::{self, BufRead};
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
 use svault_core::config::SyncStrategy;
 use svault_core::context::VaultContext;
-use svault_core::import::{run as import_run, ImportOptions};
+use svault_core::import::{run as import_run, run_with_file_list, ImportOptions};
 
 pub fn run(
     output: OutputFormat,
     dry_run: bool,
     yes: bool,
     source: PathBuf,
+    files_from: Option<PathBuf>,
     target: Option<PathBuf>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
     let source_str = source.to_string_lossy();
+    
+    // Handle files-from mode (including stdin)
+    if let Some(files_from_path) = files_from {
+        return run_files_from_import(
+            output, dry_run, yes, source, files_from_path, target, strategy, force, show_dup,
+        );
+    }
     
     if source_str.starts_with("mtp://") {
         // MTP import via VFS
@@ -31,6 +40,105 @@ pub fn run(
         // Local filesystem import
         run_local_import(output, dry_run, yes, source, target, strategy, force, show_dup)
     }
+}
+
+/// Import from scan output format.
+/// 
+/// Parses output from `svault scan`: SCAN:<source> new:file1 dup:file2 ...
+/// Only imports files marked as "new" (relative paths joined with source).
+fn run_files_from_import(
+    output: OutputFormat,
+    dry_run: bool,
+    yes: bool,
+    source: PathBuf,
+    files_from: PathBuf,
+    target: Option<PathBuf>,
+    strategy: Vec<svault_core::config::TransferStrategyArg>,
+    force: bool,
+    show_dup: bool,
+) -> anyhow::Result<()> {
+    // Read scan output from stdin or file
+    let input: Vec<String> = if files_from.as_os_str() == "-" {
+        io::stdin()
+            .lock()
+            .lines()
+            .filter_map(|line| line.ok())
+            .filter(|line| !line.is_empty())
+            .collect()
+    } else {
+        let file = std::fs::File::open(&files_from)
+            .map_err(|e| anyhow::anyhow!("cannot open file list '{}': {}", files_from.display(), e))?;
+        io::BufReader::new(file)
+            .lines()
+            .filter_map(|line| line.ok())
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
+
+    // Parse scan output format and extract relative paths
+    let mut rel_paths: Vec<PathBuf> = Vec::new();
+    
+    for line in input {
+        // Parse SCAN:prefix new:file1 dup:file2 ...
+        // Skip the SCAN: prefix and extract new: entries
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        
+        for part in parts {
+            if part.starts_with("new:") {
+                // Extract relative path after "new:"
+                let rel_path = &part[4..];
+                // Unescape \ -> space and \: -> :
+                let unescaped = rel_path.replace("\\ ", " ").replace("\\:", ":");
+                if !unescaped.is_empty() {
+                    rel_paths.push(PathBuf::from(unescaped));
+                }
+            }
+            // Skip dup: and fail: entries
+        }
+    }
+
+    if rel_paths.is_empty() {
+        return Err(anyhow::anyhow!("no new files to import (all files are duplicates or failed)"));
+    }
+
+    // Convert relative paths to absolute paths by joining with source
+    let source_canon = std::fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
+    let paths: Vec<PathBuf> = rel_paths.into_iter()
+        .map(|rel| source_canon.join(rel))
+        .collect();
+
+    let ctx = VaultContext::open(target, &source)?;
+    let hash_algo = ctx.default_hash();
+    
+    let opts = ImportOptions {
+        source: source_canon,
+        vault_root: ctx.vault_root().to_path_buf(),
+        hash: hash_algo,
+        strategy: SyncStrategy(strategy),
+        dry_run,
+        yes,
+        import_config: ctx.config().import.clone(),
+        force,
+        show_dup,
+        files_from: None,
+    };
+    
+    let summary = run_with_file_list(opts, ctx.db(), paths)?;
+    
+    if matches!(output, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::json!({
+                "total": summary.total,
+                "imported": summary.imported,
+                "duplicate": summary.duplicate,
+                "failed": summary.failed,
+                "all_cache_hit": summary.all_cache_hit,
+                "manifest": summary.manifest_path.map(|p| p.display().to_string()),
+            })
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "mtp")]
@@ -110,6 +218,7 @@ fn run_local_import(
         import_config: ctx.config().import.clone(),
         force,
         show_dup,
+        files_from: None,
     };
     let summary = import_run(opts, ctx.db())?;
     if matches!(output, OutputFormat::Json) {

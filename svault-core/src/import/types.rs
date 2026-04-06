@@ -25,6 +25,9 @@ pub struct ImportOptions {
     pub force: bool,
     /// Show duplicate files that were skipped during import.
     pub show_dup: bool,
+    /// Optional file containing list of paths to import (one per line).
+    /// If provided, source is treated as the base directory and only these files are imported.
+    pub files_from: Option<PathBuf>,
 }
 
 /// Per-file status after Stage B.

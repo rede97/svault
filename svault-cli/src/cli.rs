@@ -36,12 +36,32 @@ pub enum Command {
     /// Initialize a new vault
     Init,
 
+    /// Scan directory and output file status for import pipeline
+    ///
+    /// Output format: SCAN:<source_path> [status:filename ...]
+    /// Status: new=will import, dup=duplicate, fail=error
+    Scan {
+        /// Source directory to scan
+        #[arg(value_name = "SOURCE")]
+        source: std::path::PathBuf,
+
+        /// Show duplicate files during scanning
+        #[arg(long)]
+        show_dup: bool,
+    },
+
     /// Import media files from a source directory
     Import {
         /// Source directory or mount point to import from.
         /// Must not be located inside the vault root — use `svault add` for that.
+        /// Use "-" to read file list from stdin (requires --files-from).
         #[arg(value_name = "SOURCE")]
         source: std::path::PathBuf,
+
+        /// Read file list from a text file (one path per line) instead of scanning.
+        /// When source is "-", reads from stdin.
+        #[arg(long, value_name = "PATH")]
+        files_from: Option<std::path::PathBuf>,
 
         /// Vault sub-directory to import into. Discovers the vault root by
         /// walking up from this path. Defaults to the current working directory.

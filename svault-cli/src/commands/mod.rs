@@ -9,6 +9,7 @@ pub mod init;
 pub mod mtp;
 pub mod recheck;
 pub mod reconcile;
+pub mod scan;
 pub mod status;
 pub mod sync;
 pub mod verify;

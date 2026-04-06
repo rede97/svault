@@ -160,27 +160,32 @@ class TestVerifyHashAlgorithms:
     
     def test_verify_with_sha256(self, vault: VaultEnv) -> None:
         """使用 SHA-256 算法验证"""
+        # Configure vault to use sha256
+        vault.set_hash_algorithm("sha256")
         copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir, hash="secure")
+        vault.import_dir(vault.source_dir)
         
-        result = vault.run("verify", "-H", "secure", capture=True)
+        result = vault.run("verify", capture=True)
         assert result.returncode == 0
     
     def test_verify_with_xxh3_128(self, vault: VaultEnv) -> None:
         """使用 XXH3-128 算法验证"""
+        # Default hash is xxh3_128
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
         
-        result = vault.run("verify", "-H", "fast", capture=True)
+        result = vault.run("verify", capture=True)
         assert result.returncode == 0
         combined = result.stdout + result.stderr
         assert "OK" in combined or "0" in combined
     
     def test_database_hash_matches_actual_file(self, vault: VaultEnv) -> None:
         """数据库中存储的哈希与实际文件匹配"""
+        # Use sha256 hash for this test
+        vault.set_hash_algorithm("sha256")
         f = vault.source_dir / "test.jpg"
         create_minimal_jpeg(f, "TEST_DATA_HASH_CHECK")
-        vault.import_dir(vault.source_dir, hash="secure")
+        vault.import_dir(vault.source_dir)
         
         files = vault.db_files()
         assert len(files) == 1
@@ -192,6 +197,7 @@ class TestVerifyHashAlgorithms:
         if isinstance(db_hash, bytes):
             db_hash = db_hash.hex()
         
+        assert db_hash is not None, "SHA-256 hash should be computed"
         assert actual_hash == db_hash.lower()
 
 
@@ -320,7 +326,7 @@ class TestSourceVerification:
         create_minimal_jpeg(f, "SOURCE_V1")
         
         source_hash_v1 = compute_file_hash(f)
-        vault.import_dir(vault.source_dir, hash="secure")
+        vault.import_dir(vault.source_dir)
         
         files = vault.db_files()
         vault_file = vault.vault_dir / files[0]["path"]
@@ -421,7 +427,7 @@ class TestVerificationEdgeCases:
             fp.write(b"X" * (1024 * 1024 - f.stat().st_size))
         
         source_hash = compute_file_hash(f)
-        vault.import_dir(vault.source_dir, hash="secure")
+        vault.import_dir(vault.source_dir)
         
         files = vault.db_files()
         assert len(files) == 1

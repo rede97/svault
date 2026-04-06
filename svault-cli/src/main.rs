@@ -31,13 +31,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     
     match cli.command {
         Command::Init => commands::init::run(),
+        Command::Scan { source, show_dup } => {
+            commands::scan::run(output, source, show_dup)
+        }
         Command::Import {
             source,
+            files_from,
             target,
             strategy,
             force,
             show_dup,
-        } => commands::import::run(output, dry_run, yes, source, target, strategy, force, show_dup),
+        } => commands::import::run(output, dry_run, yes, source, files_from, target, strategy, force, show_dup),
         Command::Recheck {
             source,
             target,

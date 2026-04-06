@@ -258,6 +258,7 @@ class VaultEnv:
         check: bool = True,
         capture: bool = True,
         cwd: Path | None = None,
+        input: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run svault command.
         
@@ -266,6 +267,7 @@ class VaultEnv:
             check: If True, raise CalledProcessError on non-zero exit
             capture: If True, capture stdout/stderr
             cwd: Working directory (defaults to vault_dir)
+            input: String to pass to stdin (for piping)
         
         Returns:
             CompletedProcess with stdout, stderr, returncode
@@ -278,6 +280,8 @@ class VaultEnv:
         }
         if capture:
             kwargs["capture_output"] = True
+        if input is not None:
+            kwargs["input"] = input
         
         # On Windows, set encoding to handle console output properly
         if IS_WINDOWS:
@@ -304,7 +308,7 @@ class VaultEnv:
         yes: bool = True,
         output_json: bool = True,
         check: bool = True,
-        hash: str | None = None,
+        hash: str | None = None,  # Deprecated: now uses config default_hash only
         strategy: str | None = None,
         force: bool = False,
     ) -> subprocess.CompletedProcess[str]:
@@ -312,6 +316,8 @@ class VaultEnv:
         
         Note: Uses absolute path to work around a bug in svault's walk function
         which returns absolute paths instead of relative paths.
+        
+        Note: hash parameter is deprecated and ignored. Use config file instead.
         """
         args = []
         if output_json:
@@ -319,8 +325,7 @@ class VaultEnv:
         args.append("import")
         if yes:
             args.append("--yes")
-        if hash:
-            args.extend(["-H", hash])
+        # hash parameter is deprecated - now uses config default_hash only
         if strategy:
             args.extend(["--strategy", strategy])
         if force:
@@ -334,6 +339,27 @@ class VaultEnv:
     def status(self, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Get vault status."""
         return self.run("status", check=check)
+    
+    def set_hash_algorithm(self, algo: str) -> None:
+        """Set the hash algorithm in svault.toml config.
+        
+        Args:
+            algo: Hash algorithm ("xxh3_128", "sha256", etc.)
+        """
+        config_path = self.vault_dir / "svault.toml"
+        if config_path.exists():
+            content = config_path.read_text()
+            # Replace existing hash setting
+            if 'hash = ' in content:
+                import re
+                content = re.sub(r'hash = "[^"]*"', f'hash = "{algo}"', content)
+            else:
+                # Add to [global] section
+                content = content.replace(
+                    "[global]",
+                    f'[global]\nhash = "{algo}"'
+                )
+            config_path.write_text(content)
     
     def db_query(self, query: str) -> list[dict[str, Any]]:
         """Execute SQL query against vault database.
