@@ -34,24 +34,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Import {
             source,
             target,
-            hash,
             strategy,
             force,
             show_dup,
-        } => commands::import::run(output, dry_run, yes, source, target, hash, strategy, force, show_dup),
+        } => commands::import::run(output, dry_run, yes, source, target, strategy, force, show_dup),
         Command::Recheck {
             source,
             target,
             session,
-            hash,
-        } => commands::recheck::run(source, target, session, hash),
-        Command::Add { path, hash } => commands::add::run(path, hash),
+        } => commands::recheck::run(source, target, session),
+        Command::Add { path } => commands::add::run(path),
         Command::Sync { .. } => commands::sync::run(),
         Command::Reconcile { target, clean, delete } => {
             commands::reconcile::run(dry_run, yes, target, clean, delete)
         }
         Command::Verify {
-            hash,
             file,
             recent,
             upgrade_links,
@@ -59,7 +56,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             background_hash_limit,
         } => commands::verify::run(
             output,
-            hash,
             file,
             recent,
             upgrade_links,

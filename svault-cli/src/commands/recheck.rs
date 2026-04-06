@@ -9,7 +9,6 @@ pub fn run(
     source: Option<PathBuf>,
     target: Option<PathBuf>,
     session: Option<String>,
-    hash: Option<HashAlgorithm>,
 ) -> anyhow::Result<()> {
     let ctx = VaultContext::open(target, &std::env::current_dir()?)?;
 
@@ -22,15 +21,12 @@ pub fn run(
             .ok_or_else(|| anyhow::anyhow!("No import manifests found"))?
     };
 
-    // Use hash algorithm from manifest, or CLI arg, or vault default
-    let hash_algo = hash.unwrap_or_else(|| {
-        // Parse the algorithm recorded in the manifest
-        match manifest.hash_algorithm.as_str() {
-            "xxh3_128" => HashAlgorithm::Xxh3_128,
-            "sha256" => HashAlgorithm::Sha256,
-            _ => ctx.default_hash(), // Fallback to vault default for unknown values
-        }
-    });
+    // Use hash algorithm from manifest, or vault default
+    let hash_algo = match manifest.hash_algorithm.as_str() {
+        "xxh3_128" => HashAlgorithm::Xxh3_128,
+        "sha256" => HashAlgorithm::Sha256,
+        _ => ctx.default_hash(), // Fallback to vault default for unknown values
+    };
 
     // Validate source path if explicitly provided
     if let Some(provided_source) = source {

@@ -10,7 +10,6 @@ use svault_core::verify::{verify_all, verify_recent, verify_single, VerifyResult
 
 pub fn run(
     output: OutputFormat,
-    hash: Option<HashAlgorithm>,
     file: Option<PathBuf>,
     recent: Option<u64>,
     upgrade_links: bool,
@@ -18,7 +17,7 @@ pub fn run(
     background_hash_limit: Option<usize>,
 ) -> anyhow::Result<()> {
     let ctx = VaultContext::open_cwd()?;
-    let algo = hash.unwrap_or_else(|| ctx.default_hash());
+    let algo = ctx.default_hash();
 
     if background_hash {
         let opts = background_hash::BackgroundHashOptions {

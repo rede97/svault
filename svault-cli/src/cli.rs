@@ -1,4 +1,4 @@
-use svault_core::config::{HashAlgorithm, TransferStrategyArg};
+use svault_core::config::TransferStrategyArg;
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Svault — content-addressed multimedia archive.
@@ -48,11 +48,6 @@ pub enum Command {
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
 
-        /// Hash algorithm for collision resolution.
-        /// Priority: this flag > svault.toml config > default (xxh3_128).
-        #[arg(short = 'H', long, value_enum)]
-        hash: Option<HashAlgorithm>,
-
         /// File transfer strategy: reflink, hardlink, copy.
         /// Can be combined with commas (e.g. --strategy reflink,hardlink).
         /// Defaults to reflink; copy is always the final fallback.
@@ -89,23 +84,14 @@ pub enum Command {
         #[arg(long, value_name = "SESSION_ID")]
         session: Option<String>,
 
-        /// Hash algorithm for the comparison.
-        #[arg(short = 'H', long, value_enum)]
-        hash: Option<HashAlgorithm>,
     },
 
-    
     /// Register files already inside the vault
     Add {
         /// Directory inside the vault whose files should be registered.
         /// Must be located under the vault root.
         #[arg(value_name = "PATH")]
         path: std::path::PathBuf,
-
-        /// Hash algorithm to use for add.
-        /// Defaults to `global.hash` in svault.toml (fast if unset).
-        #[arg(short = 'H', long, value_enum)]
-        hash: Option<HashAlgorithm>,
     },
 
 
@@ -128,10 +114,6 @@ pub enum Command {
         #[arg(long, default_value = "norm", value_enum)]
         verify: SyncVerifyScope,
 
-        /// Hash algorithm used for verification and collision resolution.
-        /// Overrides the default set in svault.toml (`global.hash`).
-        #[arg(short = 'H', long, value_enum)]
-        hash: Option<HashAlgorithm>,
     },
 
     /// Update database paths for moved files
@@ -154,11 +136,6 @@ pub enum Command {
 
     /// Verify archive integrity
     Verify {
-        /// Hash algorithm to use for verification.
-        /// Defaults to `global.hash` in svault.toml (fast if unset).
-        #[arg(short = 'H', long, value_enum)]
-        hash: Option<HashAlgorithm>,
-
         /// Verify only this file
         #[arg(long, value_name = "PATH")]
         file: Option<std::path::PathBuf>,

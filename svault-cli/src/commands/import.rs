@@ -11,7 +11,6 @@ pub fn run(
     yes: bool,
     source: PathBuf,
     target: Option<PathBuf>,
-    hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
     show_dup: bool,
@@ -22,7 +21,7 @@ pub fn run(
         // MTP import via VFS
         #[cfg(feature = "mtp")]
         {
-            run_mtp_import(output, dry_run, yes, &source_str, target, hash, strategy, force, show_dup)
+            run_mtp_import(output, dry_run, yes, &source_str, target, strategy, force, show_dup)
         }
         #[cfg(not(feature = "mtp"))]
         {
@@ -30,7 +29,7 @@ pub fn run(
         }
     } else {
         // Local filesystem import
-        run_local_import(output, dry_run, yes, source, target, hash, strategy, force, show_dup)
+        run_local_import(output, dry_run, yes, source, target, strategy, force, show_dup)
     }
 }
 
@@ -41,7 +40,6 @@ fn run_mtp_import(
     yes: bool,
     source_str: &str,
     target: Option<PathBuf>,
-    hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
     show_dup: bool,
@@ -50,7 +48,7 @@ fn run_mtp_import(
     use svault_core::vfs::manager::VfsManager;
 
     let ctx = VaultContext::open(target, &std::env::current_dir()?)?;
-    let hash_algo = hash.unwrap_or_else(|| ctx.default_hash());
+    let hash_algo = ctx.default_hash();
 
     let manager = VfsManager::new();
     let (backend, mtp_path) = manager
@@ -96,13 +94,12 @@ fn run_local_import(
     yes: bool,
     source: PathBuf,
     target: Option<PathBuf>,
-    hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
     let ctx = VaultContext::open(target, &source)?;
-    let hash_algo = hash.unwrap_or_else(|| ctx.default_hash());
+    let hash_algo = ctx.default_hash();
     let opts = ImportOptions {
         source,
         vault_root: ctx.vault_root().to_path_buf(),
