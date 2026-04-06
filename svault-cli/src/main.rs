@@ -380,7 +380,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Sync { .. } => todo!("sync"),
-        Command::Reconcile { target } => {
+        Command::Reconcile { target, clean, delete } => {
             let cwd = std::env::current_dir()?;
             let scan_root = target.unwrap_or_else(|| cwd.clone());
             let vault_root = find_vault_root(cli.vault, &scan_root)?;
@@ -392,6 +392,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 vault_root,
                 dry_run: cli.dry_run,
                 yes: cli.yes,
+                clean,
+                delete,
             };
             svault_core::import::reconcile::run_reconcile(opts, &db)?;
             Ok(())
@@ -530,50 +532,133 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::History { file, from, to, event_type, limit } => {
+        Command::History { file, from, to, event_type, limit, by_session, files } => {
             let vault_root = find_vault_root(cli.vault, &std::env::current_dir()?)?;
             let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
-            let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
-                .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
 
-            let from_ms = from.as_ref().and_then(|s| parse_datetime_to_ms(s));
-            let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
-            let file_path = file.as_ref().map(|p| p.to_string_lossy().to_string());
+            if by_session {
+                // Show history grouped by import session
+                use console::style;
+                use svault_core::verify::manifest::ManifestManager;
+                let manager = ManifestManager::new(&vault_root);
+                
+                let manifests = manager.list_all()
+                    .map_err(|e| anyhow::anyhow!("cannot list manifests: {e}"))?;
 
-            let events = db.get_events(
-                limit,
-                event_type.as_deref(),
-                from_ms,
-                to_ms,
-                file_path.as_deref(),
-            )?;
-
-            if matches!(cli.output, cli::OutputFormat::Json) {
-                let json = serde_json::json!({
-                    "events": events.iter().map(|e| serde_json::json!({
-                        "seq": e.seq,
-                        "occurred_at": e.occurred_at,
-                        "event_type": e.event_type,
-                        "entity_type": e.entity_type,
-                        "entity_id": e.entity_id,
-                        "payload": e.payload,
-                        "prev_hash": e.prev_hash,
-                        "self_hash": e.self_hash,
-                    })).collect::<Vec<_>>(),
-                });
-                println!("{}", serde_json::to_string_pretty(&json)?);
-            } else {
-                if events.is_empty() {
-                    println!("No events found.");
+                if manifests.is_empty() {
+                    println!("No import sessions found.");
                     return Ok(());
                 }
-                println!("{:>6}  {:<22}  {:<20}  payload", "seq", "time", "event");
-                for e in events {
-                    let datetime = chrono::DateTime::from_timestamp_millis(e.occurred_at).unwrap_or_default();
-                    println!("{:>6}  {:<22}  {:<20}  {}", e.seq, datetime.format("%Y-%m-%d %H:%M:%S"), e.event_type, e.payload);
+
+                if matches!(cli.output, cli::OutputFormat::Json) {
+                    let sessions: Vec<_> = manifests.iter().map(|(_, m)| {
+                        serde_json::json!({
+                            "session_id": m.session_id,
+                            "imported_at": m.imported_at,
+                            "source_root": m.source_root,
+                            "file_count": m.files.len(),
+                            "total_size": m.files.iter().map(|f| f.size).sum::<u64>(),
+                            "hash_algorithm": m.hash_algorithm,
+                            "files": if files { 
+                                m.files.iter().map(|f| serde_json::json!({
+                                    "src": f.src_path,
+                                    "dest": f.dest_path,
+                                    "size": f.size,
+                                })).collect::<Vec<_>>()
+                            } else {
+                                vec![]
+                            },
+                        })
+                    }).collect();
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "sessions": sessions }))?);
+                } else {
+                    println!("{}", style("Import History").bold().underlined());
+                    println!();
+                    
+                    for (i, (_, manifest)) in manifests.iter().enumerate() {
+                        let datetime = chrono::DateTime::from_timestamp_millis(manifest.imported_at)
+                            .unwrap_or_default();
+                        let total_size: u64 = manifest.files.iter().map(|f| f.size).sum();
+                        let size_str = format_size(total_size);
+                        
+                        // Session header
+                        println!("{} {} {}", 
+                            style(format!("[{}]", i + 1)).cyan().bold(),
+                            style(datetime.format("%Y-%m-%d %H:%M:%S")).bright(),
+                            style(&manifest.session_id).dim()
+                        );
+                        
+                        // Source and stats
+                        println!("  Source: {}", style(manifest.source_root.display()).blue());
+                        println!("  Files:  {} ({})", 
+                            style(manifest.files.len()).yellow(),
+                            style(size_str).green()
+                        );
+                        println!("  Hash:   {}", style(&manifest.hash_algorithm).dim());
+                        
+                        // File list (if requested)
+                        if files && !manifest.files.is_empty() {
+                            println!("  Files:");
+                            for (_j, file) in manifest.files.iter().take(10).enumerate() {
+                                println!("    {} {} → {}",
+                                    style("•").dim(),
+                                    style(file.src_path.file_name().unwrap_or_default().to_string_lossy()).dim(),
+                                    style(&file.dest_path.display()).dim()
+                                );
+                            }
+                            if manifest.files.len() > 10 {
+                                println!("    ... and {} more files", manifest.files.len() - 10);
+                            }
+                        }
+                        
+                        println!();
+                    }
                 }
+                Ok(())
+            } else {
+                // Original event-based history
+                let db = db::Db::open(&vault_root.join(".svault").join("vault.db"))
+                    .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+
+                let from_ms = from.as_ref().and_then(|s| parse_datetime_to_ms(s));
+                let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
+                let file_path = file.as_ref().map(|p| p.to_string_lossy().to_string());
+
+                let events = db.get_events(
+                    limit,
+                    event_type.as_deref(),
+                    from_ms,
+                    to_ms,
+                    file_path.as_deref(),
+                )?;
+
+                if matches!(cli.output, cli::OutputFormat::Json) {
+                    let json = serde_json::json!({
+                        "events": events.iter().map(|e| serde_json::json!({
+                            "seq": e.seq,
+                            "occurred_at": e.occurred_at,
+                            "event_type": e.event_type,
+                            "entity_type": e.entity_type,
+                            "entity_id": e.entity_id,
+                            "payload": e.payload,
+                            "prev_hash": e.prev_hash,
+                            "self_hash": e.self_hash,
+                        })).collect::<Vec<_>>(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                } else {
+                    if events.is_empty() {
+                        println!("No events found.");
+                        return Ok(());
+                    }
+                    println!("{:>6}  {:<22}  {:<20}  payload", "seq", "time", "event");
+                    for e in events {
+                        let datetime = chrono::DateTime::from_timestamp_millis(e.occurred_at).unwrap_or_default();
+                        println!("{:>6}  {:<22}  {:<20}  {}", e.seq, datetime.format("%Y-%m-%d %H:%M:%S"), e.event_type, e.payload);
+                    }
+                }
+                Ok(())
             }
-            Ok(())
         }
 
         Command::Clone { .. } => {
@@ -825,5 +910,20 @@ fn main() {
     if let Err(e) = run(cli) {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Format byte size to human-readable string.
+fn format_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    if size == 0 {
+        return "0 B".to_string();
+    }
+    let exp = (size as f64).log(1024.0).min(UNITS.len() as f64 - 1.0) as usize;
+    let value = size as f64 / 1024_f64.powi(exp as i32);
+    if exp == 0 {
+        format!("{} {}", size, UNITS[0])
+    } else {
+        format!("{:.2} {}", value, UNITS[exp])
     }
 }

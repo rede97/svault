@@ -99,3 +99,66 @@ class TestReconcileCommand:
         assert result.returncode == 0
         assert "OK" in result.stdout or "verified successfully" in result.stderr
         assert "Missing" not in result.stdout
+
+    def test_reconcile_clean_missing_files(self, vault: VaultEnv) -> None:
+        """Import a file, delete it from vault, then reconcile --clean should mark it missing."""
+        src_file = vault.source_dir / "photo.jpg"
+        create_minimal_jpeg(src_file, "DELETE_ME_12345")
+        vault.import_dir(vault.source_dir)
+
+        # Delete file from vault (simulate external deletion)
+        vault_files = vault.get_vault_files("*.jpg")
+        assert len(vault_files) == 1
+        vault_files[0].unlink()
+
+        # Reconcile with --clean --yes
+        result = vault.run("reconcile", "--clean", "--yes", f"--target={vault.vault_dir}")
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "Cleaned:" in combined or "marked as missing" in combined.lower()
+
+        # DB status should be 'missing'
+        rows = vault.db_query("SELECT status FROM files WHERE path LIKE '%.jpg%'")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "missing"
+
+    def test_reconcile_clean_dry_run_no_changes(self, vault: VaultEnv) -> None:
+        """reconcile --clean without --yes should not modify the database."""
+        src_file = vault.source_dir / "photo.jpg"
+        create_minimal_jpeg(src_file, "CLEAN_TEST_12345")
+        vault.import_dir(vault.source_dir)
+
+        # Delete file from vault
+        vault_files = vault.get_vault_files("*.jpg")
+        vault_files[0].unlink()
+
+        original_status = vault.db_files()[0]["status"]
+
+        # Run --clean without --yes (dry-run mode for clean)
+        result = vault.run("reconcile", "--clean", f"--target={vault.vault_dir}")
+        assert result.returncode == 0
+        combined = result.stderr + result.stdout
+        assert "Files to mark as missing:" in combined
+
+        # DB should be unchanged
+        rows = vault.db_files()
+        assert rows[0]["status"] == original_status
+
+    def test_reconcile_no_clean_leaves_unmatched(self, vault: VaultEnv) -> None:
+        """Without --clean, unmatched files should remain as 'imported'."""
+        src_file = vault.source_dir / "photo.jpg"
+        create_minimal_jpeg(src_file, "UNMATCHED_12345")
+        vault.import_dir(vault.source_dir)
+
+        # Delete file from vault
+        vault_files = vault.get_vault_files("*.jpg")
+        vault_files[0].unlink()
+
+        # Reconcile without --clean
+        result = vault.run("reconcile", "--yes", f"--target={vault.vault_dir}")
+        assert result.returncode == 0
+
+        # DB status should still be 'imported' (not cleaned)
+        rows = vault.db_query("SELECT status FROM files WHERE path LIKE '%.jpg%'")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "imported"

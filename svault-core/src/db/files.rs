@@ -188,6 +188,15 @@ impl Db {
         )?;
         Ok(())
     }
+
+    /// Update the status of a file by its ID.
+    pub fn update_file_status(&self, id: i64, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE files SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

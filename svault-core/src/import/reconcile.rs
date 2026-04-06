@@ -34,6 +34,10 @@ pub struct ReconcileOptions {
     pub vault_root: std::path::PathBuf,
     pub dry_run: bool,
     pub yes: bool,
+    /// Mark unmatched files as missing in database.
+    pub clean: bool,
+    /// Actually delete files (if they exist).
+    pub delete: bool,
 }
 
 /// A single reconciliation match.
@@ -208,6 +212,64 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
         }
     }
 
+    // 5. Clean unmatched files (if requested)
+    let mut cleaned = 0;
+    let mut deleted = 0;
+    if opts.clean && unmatched > 0 {
+        // Get list of unmatched files
+        let matched_ids: std::collections::HashSet<i64> = matches.iter().map(|m| m.file_id).collect();
+        let unmatched_files: Vec<_> = missing_files
+            .into_iter()
+            .filter(|f| !matched_ids.contains(&f.id))
+            .collect();
+
+        if !unmatched_files.is_empty() {
+            eprintln!();
+            if opts.delete {
+                eprintln!("{}", style("Files to delete:").bold().red());
+            } else {
+                eprintln!("{}", style("Files to mark as missing:").bold().yellow());
+            }
+            for f in &unmatched_files {
+                eprintln!("  {} {}", style("-").red(), style(&f.path).dim());
+            }
+
+            let should_proceed = if opts.dry_run {
+                false
+            } else if opts.yes {
+                true
+            } else {
+                eprint!("{}", style("Proceed? [y/N] ").bold());
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+            };
+
+            if should_proceed {
+                for f in unmatched_files {
+                    // Delete file if requested (and it somehow exists)
+                    if opts.delete {
+                        let full_path = opts.vault_root.join(&f.path);
+                        if full_path.exists() {
+                            if let Err(e) = fs::remove_file(&full_path) {
+                                eprintln!("  {} Failed to delete {}: {}", style("Error").red(), f.path, e);
+                                continue;
+                            }
+                            deleted += 1;
+                        }
+                    }
+
+                    // Update status to 'missing'
+                    if let Err(e) = db.update_file_status(f.id, "missing") {
+                        eprintln!("  {} Failed to update status for {}: {}", style("Error").red(), f.path, e);
+                        continue;
+                    }
+                    cleaned += 1;
+                }
+            }
+        }
+    }
+
     eprintln!();
     eprintln!("{}", style("Summary:").bold());
     eprintln!("  Scanned:    {}", style(scanned).cyan());
@@ -216,6 +278,12 @@ pub fn run_reconcile(opts: ReconcileOptions, db: &Db) -> anyhow::Result<Reconcil
     eprintln!("  Unmatched:  {}", style(unmatched));
     if !opts.dry_run {
         eprintln!("  Updated:    {}", style(updated).green());
+        if opts.clean {
+            eprintln!("  Cleaned:    {}", style(cleaned).yellow());
+            if opts.delete {
+                eprintln!("  Deleted:    {}", style(deleted).red());
+            }
+        }
     }
 
     Ok(ReconcileSummary {

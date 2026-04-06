@@ -153,6 +153,16 @@ pub enum Command {
         /// Defaults to the current working directory (same discovery rules as import).
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
+
+        /// Clean up files that cannot be reconciled (mark as missing in database).
+        /// Files that are not found on disk and cannot be matched will be marked.
+        #[arg(long, group = "clean_mode")]
+        clean: bool,
+
+        /// Actually delete files from vault (requires --clean).
+        /// WARNING: This permanently removes files from the vault!
+        #[arg(long, requires = "clean_mode")]
+        delete: bool,
     },
 
     /// Verify archive integrity
@@ -211,6 +221,14 @@ pub enum Command {
         /// Maximum number of events to show
         #[arg(long, default_value = "50", value_name = "N")]
         limit: usize,
+
+        /// Group by import session (shows import batches with statistics)
+        #[arg(long, group = "display_mode")]
+        by_session: bool,
+
+        /// Show detailed file list for each session (requires --by-session)
+        #[arg(long, requires = "by_session")]
+        files: bool,
     },
 
     /// Clone a subset to a working directory

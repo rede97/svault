@@ -128,3 +128,52 @@ class TestHistoryFilters:
         )
         assert result.returncode == 0
         assert "No events found" in result.stdout or "events" in result.stdout
+
+
+class TestHistoryBySession:
+    """History --by-session tests."""
+
+    def test_history_by_session_shows_import_batches(self, vault: VaultEnv) -> None:
+        """History --by-session should group imports by session."""
+        copy_fixture(vault, "apple_with_exif.jpg")
+        copy_fixture(vault, "samsung_photo.jpg")
+        vault.import_dir(vault.source_dir)
+
+        result = vault.run("history", "--by-session", capture=True)
+        assert result.returncode == 0
+        assert "Import History" in result.stdout
+        assert "Source:" in result.stdout
+        assert "Files:" in result.stdout
+
+    def test_history_by_session_json_output(self, vault: VaultEnv) -> None:
+        """History --by-session --output=json should return valid JSON."""
+        copy_fixture(vault, "apple_with_exif.jpg")
+        vault.import_dir(vault.source_dir)
+
+        result = vault.run("history", "--by-session", "--output=json", capture=True)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "sessions" in data
+        assert len(data["sessions"]) >= 1
+        session = data["sessions"][0]
+        assert "session_id" in session
+        assert "imported_at" in session
+        assert "file_count" in session
+        assert "total_size" in session
+        assert "source_root" in session
+
+    def test_history_by_session_with_files(self, vault: VaultEnv) -> None:
+        """History --by-session --files should show file list."""
+        copy_fixture(vault, "apple_with_exif.jpg")
+        vault.import_dir(vault.source_dir)
+
+        result = vault.run("history", "--by-session", "--files", capture=True)
+        assert result.returncode == 0
+        # Should show file details in output
+        assert "→" in result.stdout or ".jpg" in result.stdout
+
+    def test_history_by_session_empty_vault(self, vault: VaultEnv) -> None:
+        """History --by-session on empty vault should show no sessions."""
+        result = vault.run("history", "--by-session", capture=True)
+        assert result.returncode == 0
+        assert "No import sessions found" in result.stdout
