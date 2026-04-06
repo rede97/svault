@@ -175,7 +175,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         force: false,
     };
 
-    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts)?;
+    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, None)?;
 
     // Print summary
     eprintln!(

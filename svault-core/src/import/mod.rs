@@ -25,7 +25,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use console::style;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::db::Db;
@@ -37,6 +37,37 @@ use exif::read_exif_date_device;
 use path::resolve_dest_path;
 use utils::session_id_now;
 
+/// Check if a file is a duplicate via DB lookup.
+/// Returns FileStatus::LikelyCacheDuplicate if found in vault, otherwise LikelyNew.
+fn check_duplicate(entry: &pipeline::types::CrcEntry, db: &Db, vault_root: &Path) -> pipeline::types::FileStatus {
+    let ext = entry.file.path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    
+    let cached = match db.lookup_by_crc32c(
+        entry.file.size as i64,
+        entry.crc32c,
+        ext,
+        entry.raw_unique_id.as_deref(),
+    ) {
+        Ok(c) => c,
+        Err(_) => return pipeline::types::FileStatus::LikelyNew,
+    };
+    
+    if let Some(row) = cached {
+        let is_same_raw_id = match (&entry.raw_unique_id, &row.raw_unique_id) {
+            (Some(new_id), Some(existing_id)) => new_id == existing_id,
+            _ => true,
+        };
+        let vault_path = vault_root.join(&row.path);
+        if vault_path.exists() && is_same_raw_id {
+            return pipeline::types::FileStatus::LikelyCacheDuplicate;
+        }
+    }
+    
+    pipeline::types::FileStatus::LikelyNew
+}
+
 /// Run the full import pipeline (Stages A–E).
 pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     let session_id = session_id_now();
@@ -46,95 +77,101 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         .unwrap_or_else(|_| opts.vault_root.clone());
 
     // ------------------------------------------------------------------
-    // Stage A+B: Stream scan + CRC (parallel)
+    // Stage A+B+C: Scan + CRC + Lookup (parallel pipeline with real-time output)
     // ------------------------------------------------------------------
     let exts: Vec<&str> = opts.import_config.allowed_extensions
         .iter().map(|s| s.as_str()).collect();
 
-    // Stream scan files (parallel traversal)
+    // Stage A: Walk (parallel) → Stage B: CRC (parallel via channel)
     let scan_rx = pipeline::scan::scan_stream(&source_canon, &exts)?;
-
-    // Set up progress bar with spinner (unknown total during streaming)
-    let scan_bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stderr());
+    
+    // Progress bar for scanning phase
+    let scan_bar = ProgressBar::new_spinner();
     scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.blue} {spinner} {pos} files ({per_sec})")
+        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files ({per_sec})")
             .unwrap(),
     );
     scan_bar.set_prefix("Scanning");
 
-    // Stream CRC computation (batched + parallel)
     let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, Some(scan_bar.clone()));
 
-    // Collect CRC results and filter out vault paths
-    let mut crc_results = Vec::new();
-    let mut total = 0usize;
-    let mut scanned = 0usize;
+    // Stage C: Lookup (serial from channel) with real-time output
+    let mut lookup_results = Vec::new();
+    let mut total_files = 0usize;
+    
     for result in crc_rx {
-        scanned += 1;
-        scan_bar.set_position(scanned as u64);
+        total_files += 1;
+        scan_bar.inc(1);
         
-        // Filter out vault paths and show errors in real-time
-        // Check if the file path is within the vault directory
-        let is_in_vault = result.file.path.ancestors().any(|p| p == vault_canon);
-        match &result.crc {
-            Ok(_) if is_in_vault => {
-                continue; // Skip vault paths
-            }
+        // Skip vault paths
+        if result.file.path.ancestors().any(|p| p == vault_canon) {
+            continue;
+        }
+        
+        // Handle CRC errors
+        let crc = match result.crc {
+            Ok(c) => c,
             Err(e) => {
                 scan_bar.println(format!("  {} {} - {}", 
                     style("Error").red(), 
                     style(&result.file.path.display()),
                     e));
+                continue;
+            }
+        };
+        
+        // Build CrcEntry
+        let ext = result.file.path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let raw_unique_id = if crate::media::raw_id::is_raw_file(ext) {
+            crate::media::raw_id::extract_raw_id_if_raw(&result.file.path)
+                .and_then(|raw_id| crate::media::raw_id::get_fingerprint_string(&raw_id))
+        } else {
+            None
+        };
+        
+        let entry = pipeline::types::CrcEntry {
+            file: pipeline::types::FileEntry {
+                path: result.file.path.clone(),
+                size: result.file.size,
+                mtime_ms: result.file.mtime_ms,
+            },
+            src_path: None,
+            crc32c: crc,
+            raw_unique_id,
+        };
+        
+        // Immediate DB lookup and real-time output
+        let rel_path = entry.file.path.strip_prefix(&source_canon)
+            .unwrap_or(&entry.file.path);
+        let status = check_duplicate(&entry, db, &opts.vault_root);
+        
+        match status {
+            pipeline::types::FileStatus::LikelyCacheDuplicate if opts.show_dup => {
+                scan_bar.println(format!("  {} {}",
+                    style("Duplicate").yellow(),
+                    style(rel_path.display())));
+            }
+            pipeline::types::FileStatus::LikelyNew => {
+                scan_bar.println(format!("  {} {}",
+                    style("Found").green(),
+                    style(rel_path.display())));
             }
             _ => {}
         }
         
-        total += 1;
-        crc_results.push(result);
+        lookup_results.push(pipeline::types::LookupResult { entry, status });
     }
     scan_bar.finish_and_clear();
 
-    let (crc_entries, crc_errors) = pipeline::crc::split_results(crc_results);
-
-    // ------------------------------------------------------------------
-    // Lookup: DB duplicate check
-    // ------------------------------------------------------------------
-    let lookup_bar = ProgressBar::with_draw_target(
-        Some(crc_entries.len() as u64),
-        ProgressDrawTarget::stderr()
-    );
-    lookup_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos}/{len} files")
-            .unwrap(),
-    );
-    lookup_bar.set_prefix("Checking");
-
-    let lookup_results = pipeline::lookup::lookup_duplicates(crc_entries, db, &opts.vault_root)?;
-
-    // Report results in real-time using progress bar
-    for (i, r) in lookup_results.iter().enumerate() {
-        lookup_bar.set_position((i + 1) as u64);
-        let rel_path = r.entry.file.path.strip_prefix(&source_canon)
-            .unwrap_or(&r.entry.file.path);
-        match r.status {
-            pipeline::types::FileStatus::LikelyNew => {
-                lookup_bar.println(format!("  {} {}",
-                    style("Found").green(),
-                    style(rel_path.display())));
-            }
-            pipeline::types::FileStatus::LikelyCacheDuplicate if opts.show_dup => {
-                lookup_bar.println(format!("  {} {}",
-                    style("Duplicate").yellow(),
-                    style(rel_path.display())));
-            }
-            _ => {}
-        }
+    if lookup_results.is_empty() {
+        eprintln!("\nNo files found to import.");
+        return Ok(ImportSummary::default());
     }
-    lookup_bar.finish_and_clear();
 
     let (new_files, dup_files) = pipeline::lookup::filter_new(lookup_results, opts.force);
     let likely_dup = dup_files.len();
-    let failed_b = crc_errors.len();
 
     // Pre-flight summary
     eprintln!();
@@ -147,10 +184,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
             style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
             style("already in vault (cache hit)"));
     }
-    if failed_b > 0 {
-        eprintln!("  {}",
-            style(format!("Errors:           {:>6}", failed_b)).red());
-    }
+
 
     // Show duplicate files if --show-dup is enabled (for non-TTY environments)
     if opts.show_dup && !dup_files.is_empty() {
@@ -167,11 +201,11 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // Early exit if no new files
     if new_files.is_empty() {
         eprintln!();
-        eprintln!("All {} files matched cache (no new files detected).", total);
+        eprintln!("All {} files matched cache (no new files detected).", total_files);
         return Ok(ImportSummary {
-            total,
+            total: total_files,
             duplicate: likely_dup,
-            failed: failed_b,
+            failed: 0,
             all_cache_hit: true,
             ..Default::default()
         });
@@ -190,13 +224,13 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         std::io::stdin().read_line(&mut line)?;
         if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
             eprintln!("{}", style("Aborted.").yellow());
-            return Ok(ImportSummary { total, duplicate: likely_dup, ..Default::default() });
+            return Ok(ImportSummary { total: total_files, duplicate: likely_dup, ..Default::default() });
         }
     }
 
     if opts.dry_run {
         eprintln!("\n(dry-run: no files copied)");
-        return Ok(ImportSummary { total, duplicate: likely_dup, ..Default::default() });
+        return Ok(ImportSummary { total: total_files, duplicate: likely_dup, ..Default::default() });
     }
 
     // ------------------------------------------------------------------
@@ -317,6 +351,14 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     // ------------------------------------------------------------------
     // Stage E: DB insert
     // ------------------------------------------------------------------
+    let insert_bar = ProgressBar::new(hash_results.len() as u64);
+    insert_bar.set_style(
+        ProgressStyle::with_template("{prefix:.bold.magenta} [{bar:40}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("=> "),
+    );
+    insert_bar.set_prefix("Inserting");
+
     let insert_opts = pipeline::insert::InsertOptions {
         vault_root: &opts.vault_root,
         hash_algo: &opts.hash,
@@ -326,7 +368,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         force: opts.force,
     };
 
-    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts)?;
+    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, Some(&insert_bar))?;
+    insert_bar.finish_and_clear();
 
     // Print summary
     eprintln!("{} {} file(s) imported",
@@ -342,10 +385,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
     }
 
     Ok(ImportSummary {
-        total,
+        total: total_files,
         imported: summary.added,
         duplicate: summary.duplicate + likely_dup,
-        failed: summary.failed + failed_b + copy_errors.lock().unwrap().len(),
+        failed: summary.failed + copy_errors.lock().unwrap().len(),
         manifest_path: None, // Set by insert stage
         all_cache_hit: false,
     })

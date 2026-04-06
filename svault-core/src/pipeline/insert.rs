@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use indicatif::ProgressBar;
+
 use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::pipeline::types::{HashResult, PipelineSummary};
@@ -54,6 +56,7 @@ pub fn batch_insert(
     results: Vec<HashResult>,
     db: &Db,
     opts: InsertOptions,
+    progress: Option<&ProgressBar>,
 ) -> anyhow::Result<PipelineSummary> {
     let mut summary = PipelineSummary::new(results.len());
     let now_ms = crate::import::utils::unix_now_ms();
@@ -70,6 +73,11 @@ pub fn batch_insert(
     };
 
     for r in results {
+        // Update progress bar
+        if let Some(pb) = progress {
+            pb.inc(1);
+        }
+        
         // Compute relative path from vault root
         let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
         let rel_str = rel_path.to_string_lossy().into_owned();
@@ -209,7 +217,7 @@ mod tests {
             force: false,
         };
 
-        let summary = batch_insert(results, &db, opts).unwrap();
+        let summary = batch_insert(results, &db, opts, None).unwrap();
         
         assert_eq!(summary.total, 0);
         assert_eq!(summary.added, 0);
@@ -243,7 +251,7 @@ mod tests {
             force: false,
         };
 
-        let summary = batch_insert(results, &db, opts).unwrap();
+        let summary = batch_insert(results, &db, opts, None).unwrap();
         
         assert_eq!(summary.duplicate, 1);
         assert_eq!(summary.added, 0);
