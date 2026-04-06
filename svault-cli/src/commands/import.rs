@@ -14,6 +14,7 @@ pub fn run(
     hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    show_dup: bool,
 ) -> anyhow::Result<()> {
     let source_str = source.to_string_lossy();
     
@@ -21,7 +22,7 @@ pub fn run(
         // MTP import via VFS
         #[cfg(feature = "mtp")]
         {
-            run_mtp_import(output, dry_run, yes, &source_str, target, hash, strategy, force)
+            run_mtp_import(output, dry_run, yes, &source_str, target, hash, strategy, force, show_dup)
         }
         #[cfg(not(feature = "mtp"))]
         {
@@ -29,7 +30,7 @@ pub fn run(
         }
     } else {
         // Local filesystem import
-        run_local_import(output, dry_run, yes, source, target, hash, strategy, force)
+        run_local_import(output, dry_run, yes, source, target, hash, strategy, force, show_dup)
     }
 }
 
@@ -43,6 +44,7 @@ fn run_mtp_import(
     hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    show_dup: bool,
 ) -> anyhow::Result<()> {
     use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
     use svault_core::vfs::manager::VfsManager;
@@ -66,6 +68,7 @@ fn run_mtp_import(
         source_name: source_str.to_string(),
         strategy: SyncStrategy(strategy),
         force,
+        show_dup,
         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
     };
 
@@ -96,6 +99,7 @@ fn run_local_import(
     hash: Option<svault_core::config::HashAlgorithm>,
     strategy: Vec<svault_core::config::TransferStrategyArg>,
     force: bool,
+    show_dup: bool,
 ) -> anyhow::Result<()> {
     let ctx = VaultContext::open(target, &source)?;
     let hash_algo = hash.unwrap_or_else(|| ctx.default_hash());
@@ -108,6 +112,7 @@ fn run_local_import(
         yes,
         import_config: ctx.config().import.clone(),
         force,
+        show_dup,
     };
     let summary = import_run(opts, ctx.db())?;
     if matches!(output, OutputFormat::Json) {

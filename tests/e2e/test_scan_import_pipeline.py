@@ -298,28 +298,53 @@ class TestScanFilterImportPipeline:
         assert len(rows) == 2
 
 
-class TestImportShowDupFilter:
-    """Test import --show-dup flag for duplicate filtering visibility."""
+class TestImportShowDup:
+    """Test import --show-dup flag for duplicate file visibility."""
 
-    def test_import_with_show_dup(self, vault: VaultEnv) -> None:
-        """Test --show-dup flag shows duplicate files during import."""
+    def test_import_show_dup_lists_duplicate_files(self, vault: VaultEnv) -> None:
+        """Test that --show-dup lists specific duplicate files."""
         # Create and import first batch
-        create_minimal_jpeg(vault.source_dir / "photo.jpg", "dup_content")
+        create_minimal_jpeg(vault.source_dir / "photo1.jpg", "content_1")
+        create_minimal_jpeg(vault.source_dir / "photo2.jpg", "content_2")
+        result1 = vault.import_dir(vault.source_dir)
+        assert result1.returncode == 0
+        
+        # Create identical files in new source (all duplicates)
+        new_source = vault.output_dir / "new_source"
+        new_source.mkdir()
+        create_minimal_jpeg(new_source / "photo1.jpg", "content_1")  # dup
+        create_minimal_jpeg(new_source / "photo2.jpg", "content_2")  # dup
+        
+        # Import with --show-dup
+        result2 = vault.run("import", "--yes", "--show-dup", str(new_source))
+        assert result2.returncode == 0
+        
+        # Should list duplicate files
+        combined = result2.stdout + result2.stderr
+        assert "Duplicate files:" in combined
+        assert "photo1.jpg" in combined
+        assert "photo2.jpg" in combined
+
+    def test_import_without_show_dup_hides_duplicate_list(self, vault: VaultEnv) -> None:
+        """Test that without --show-dup, duplicate files are not listed."""
+        # Create and import first batch
+        create_minimal_jpeg(vault.source_dir / "photo.jpg", "content")
         result1 = vault.import_dir(vault.source_dir)
         assert result1.returncode == 0
         
         # Create identical file in new source
         new_source = vault.output_dir / "new_source"
         new_source.mkdir()
-        create_minimal_jpeg(new_source / "photo.jpg", "dup_content")
+        create_minimal_jpeg(new_source / "photo.jpg", "content")
         
-        # Import with --show-dup
-        result2 = vault.run("import", "--yes", "--show-dup", str(new_source))
+        # Import without --show-dup
+        result2 = vault.run("import", "--yes", str(new_source))
         assert result2.returncode == 0
         
-        # Should report duplicate
+        # Should show summary but not list duplicate files
         combined = result2.stdout + result2.stderr
-        assert "duplicate" in combined.lower() or "cache" in combined.lower()
+        assert "Likely duplicate:" in combined
+        assert "Duplicate files:" not in combined
 
 
 class TestScanImportDirectoryStructure:

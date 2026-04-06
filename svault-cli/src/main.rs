@@ -37,8 +37,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             hash,
             strategy,
             force,
-            ..
-        } => commands::import::run(output, dry_run, yes, source, target, hash, strategy, force),
+            show_dup,
+        } => commands::import::run(output, dry_run, yes, source, target, hash, strategy, force, show_dup),
         Command::Recheck {
             source,
             target,

@@ -80,6 +80,8 @@ pub struct VfsImportOptions<'a> {
     pub strategy: SyncStrategy,
     /// Force import even if the file is a confirmed duplicate.
     pub force: bool,
+    /// Show duplicate files that were skipped during import.
+    pub show_dup: bool,
     /// CRC32 fingerprint buffer size in bytes (default: 64KB)
     /// Larger values = more accurate dedup but slower scan
     pub crc_buffer_size: usize,
@@ -99,6 +101,7 @@ impl<'a> VfsImportOptions<'a> {
             source_name: String::new(),
             strategy: SyncStrategy::default(),
             force: false,
+            show_dup: false,
             crc_buffer_size: 64 * 1024, // 64KB default
         }
     }

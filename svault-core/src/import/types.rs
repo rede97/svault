@@ -23,6 +23,8 @@ pub struct ImportOptions {
     pub import_config: ImportConfig,
     /// Force import even if the file is a confirmed duplicate.
     pub force: bool,
+    /// Show duplicate files that were skipped during import.
+    pub show_dup: bool,
 }
 
 /// Per-file status after Stage B.

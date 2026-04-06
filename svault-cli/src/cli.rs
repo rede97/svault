@@ -63,6 +63,10 @@ pub enum Command {
         /// Use this to intentionally re-import an identical file.
         #[arg(long)]
         force: bool,
+
+        /// Show duplicate files that were skipped during import.
+        #[arg(long)]
+        show_dup: bool,
     },
 
     /// Re-check a previous import against its manifest.
