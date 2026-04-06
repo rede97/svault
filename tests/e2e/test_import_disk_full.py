@@ -36,6 +36,29 @@ class SmallLoopbackFs:
         self.mount_point: Path | None = None
         self._mounted = False
     
+    def _cleanup_previous(self, base_dir: Path) -> None:
+        """清理可能残留的旧挂载和镜像。"""
+        img_path = base_dir / f"small_disk_{self.size_mb}m.img"
+        mount_point = base_dir / "small_disk"
+        
+        # 尝试卸载残留挂载
+        if mount_point.exists():
+            subprocess.run(["umount", str(mount_point)], check=False, capture_output=True)
+            subprocess.run(["sudo", "-n", "umount", str(mount_point)], check=False, capture_output=True)
+        
+        # 释放关联的 loopback 设备
+        if img_path.exists():
+            result = subprocess.run(["losetup", "-j", str(img_path)], capture_output=True, text=True)
+            for line in result.stdout.strip().split("\n"):
+                if ":" in line:
+                    loop_dev = line.split(":")[0]
+                    subprocess.run(["sudo", "-n", "losetup", "-d", loop_dev], check=False, capture_output=True)
+            # 删除旧镜像
+            try:
+                img_path.unlink()
+            except OSError:
+                subprocess.run(["sudo", "-n", "rm", "-f", str(img_path)], check=False, capture_output=True)
+    
     def create(self, base_dir: Path) -> Path:
         """创建并挂载小容量文件系统。
         
@@ -47,6 +70,10 @@ class SmallLoopbackFs:
         """
         self.img_path = base_dir / f"small_disk_{self.size_mb}m.img"
         self.mount_point = base_dir / "small_disk"
+        
+        # 先清理可能残留的旧资源
+        self._cleanup_previous(base_dir)
+        
         self.mount_point.mkdir(parents=True, exist_ok=True)
         
         # 创建镜像文件
@@ -115,7 +142,43 @@ class SmallLoopbackFs:
                 )
             except Exception:
                 pass
+            # 也尝试 sudo umount
+            try:
+                subprocess.run(
+                    ["sudo", "-n", "umount", str(self.mount_point)],
+                    check=False,
+                    capture_output=True,
+                )
+            except Exception:
+                pass
             self._mounted = False
+        
+        # 释放 loopback 设备并删除镜像
+        if self.img_path and self.img_path.exists():
+            try:
+                result = subprocess.run(
+                    ["losetup", "-j", str(self.img_path)],
+                    capture_output=True, text=True,
+                )
+                for line in result.stdout.strip().split("\n"):
+                    if ":" in line:
+                        loop_dev = line.split(":")[0]
+                        subprocess.run(
+                            ["sudo", "-n", "losetup", "-d", loop_dev],
+                            check=False, capture_output=True,
+                        )
+            except Exception:
+                pass
+            try:
+                self.img_path.unlink()
+            except OSError:
+                try:
+                    subprocess.run(
+                        ["sudo", "-n", "rm", "-f", str(self.img_path)],
+                        check=False, capture_output=True,
+                    )
+                except Exception:
+                    pass
 
 
 @pytest.fixture
