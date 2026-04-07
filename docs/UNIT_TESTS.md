@@ -156,16 +156,30 @@
 
 端到端测试位于 `tests/e2e/`，使用 `pytest` + RAMDisk 隔离测试环境。
 
-### Import E2E 测试分工（6个文件，64个用例）
+### Import E2E 测试分工（5个核心文件 + 环境专用文件）
 
-| 文件 | 用例数 | 职责范围 |
-|------|--------|----------|
-| `test_import.py` | 20 | 常规导入、CLI 行为（JSON模式、--show-dup） |
-| `test_import_recovery.py` | 16 | 中断恢复、幂等性、增量导入 |
-| `test_import_interruption.py` | 12 | **仅信号中断**（strace inject SIGTERM/SIGKILL） |
-| `test_import_dedup.py` | 9 | 去重检测（内容相同=duplicate） |
-| `test_import_conflict.py` | 3 | 冲突处理（同名不同内容=重命名） |
-| `test_chaos.py` | 4 | 边界情况（空目录、损坏文件、截断JPEG） |
+**核心行为文件（5个，68个用例）：**
+
+| 文件 | 用例数 | 职责范围 | 一句话说明 |
+|------|--------|----------|------------|
+| `test_import.py` | 20 | 常规导入、EXIF、CLI 语义 | 主流程 + 交互行为 |
+| `test_import_recovery.py` | 16 | 幂等性、增量导入、恢复 | 重试与恢复策略 |
+| `test_import_interruption.py` | 12 | **信号中断**（strace inject） | 故障注入与一致性 |
+| `test_import_dedup.py` | 16 | 去重 + 冲突（已合并 conflict） | 身份判定矩阵 |
+| `test_chaos.py` | 4 | 边界情况 | 异常输入与边缘场景 |
+
+**环境专用文件（保持独立，不合并）：**
+
+| 文件 | 职责 | 独立原因 |
+|------|------|----------|
+| `test_import_disk_full.py` | ENOSPC 处理 | 依赖磁盘容量控制 |
+| `test_import_cross_fs.py` | ext4/btrfs 差异 | 依赖多文件系统环境 |
+| `test_import_video_metadata.py` | 视频元数据提取 | 独立复杂度，避免主文件膨胀 |
+| `test_scan_import_pipeline.py` | scan -> filter -> import 流水线 | 独立接口测试 |
+| `test_config_transfer.py` | 传输策略配置 | 配置域，非 import 主行为 |
+
+**合并历史：**
+- 2026-04-08: `test_import_conflict.py` → `test_import_dedup.py`（5个用例迁移）
 
 ### 其他核心场景
 
@@ -276,4 +290,4 @@ uv pip install pytest pillow hypothesis
 | 2026-04-05 | E2E 测试参数化重构；删除重复代码 ~110 行 |
 | 2026-04-05 | Pipeline 架构实现；CLI 拆分为命令模块；E2E 198 passed |
 | 2026-04-06 | 添加 scan + filter + import 流水线 E2E 测试 (10 tests) |
-| 2026-04-08 | Import E2E 测试整理：删除重复用例 8 个，文件职责明确分工 |
+| 2026-04-08 | Import E2E 测试整理：删除重复用例 7 个，conflict 合并至 dedup，明确 5+5 文件分工 |
