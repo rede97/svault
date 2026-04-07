@@ -529,3 +529,115 @@ class TestImportInteractiveBehavior:
         # The prompt should appear in output (if command didn't hang)
         # Note: In practice this may not appear due to buffering,
         # but the key assertion is that no import happened
+
+
+# ========== Import --show-dup Tests ==========
+
+class TestImportShowDup:
+    """Tests for import --show-dup flag behavior.
+    
+    These tests verify that:
+    - --show-dup displays duplicate files during import
+    - Without --show-dup, duplicates are not listed (but still handled correctly)
+    - Duplicate detection and skipping works correctly in both cases
+    """
+
+    def test_show_dup_displays_duplicates_in_human_mode(
+        self, vault: VaultEnv, source_factory: callable
+    ) -> None:
+        """--show-dup must display duplicate files in human mode output.
+        
+        Rules locked:
+        - First import: file is imported
+        - Second import with --show-dup: duplicate is displayed
+        - Duplicate is not re-imported
+        """
+        # Create and import first file
+        source_factory(
+            "photo.jpg",
+            exif_date="2024:01:01 12:00:00",
+            exif_make="Apple",
+        )
+
+        # First import - should succeed
+        r1 = vault.import_dir(vault.source_dir)
+        assert r1.returncode == 0
+        data1 = json.loads(r1.stdout)
+        assert data1["imported"] == 1
+
+        # Verify file is in vault
+        files = vault.get_vault_files("photo.jpg")
+        assert len(files) == 1
+
+        # Second import with --show-dup - should show duplicate
+        r2 = vault.run(
+            "import",
+            "--yes",
+            "--show-dup",
+            str(vault.source_dir),
+        )
+        assert r2.returncode == 0
+
+        # Output should contain duplicate indication (human mode)
+        combined_output = r2.stdout + r2.stderr
+        assert "Duplicate" in combined_output, \
+            f"--show-dup should display 'Duplicate': {combined_output}"
+
+        # Verify no new files imported (check database)
+        rows = vault.db_files()
+        assert len(rows) == 1, "Should still have only 1 file in database"
+
+        # Vault should still have only 1 file
+        files = vault.get_vault_files("photo.jpg")
+        assert len(files) == 1, "Vault should not have duplicate files"
+
+    def test_import_without_show_dup_does_not_list_duplicates(
+        self, vault: VaultEnv, source_factory: callable
+    ) -> None:
+        """Without --show-dup, duplicates should not be listed (but still skipped).
+        
+        Rules locked:
+        - First import: file is imported
+        - Second import without --show-dup: duplicate is NOT displayed line by line
+        - Duplicate is still correctly skipped (no new import)
+        """
+        # Create and import first file
+        source_factory(
+            "photo.jpg",
+            exif_date="2024:01:01 12:00:00",
+            exif_make="Apple",
+        )
+
+        # First import - should succeed
+        r1 = vault.import_dir(vault.source_dir)
+        assert r1.returncode == 0
+        data1 = json.loads(r1.stdout)
+        assert data1["imported"] == 1
+
+        # Verify file is in vault
+        files = vault.get_vault_files("photo.jpg")
+        assert len(files) == 1
+
+        # Second import WITHOUT --show-dup
+        r2 = vault.run(
+            "import",
+            "--yes",
+            str(vault.source_dir),
+            # No --show-dup flag
+        )
+        assert r2.returncode == 0
+
+        # Output should NOT contain "Duplicate" line by line listing
+        combined_output = r2.stdout + r2.stderr
+        # With --show-dup, we would see "  Duplicate <filepath>" in output
+        # Without it, we should NOT see that pattern
+        assert "  Duplicate " not in combined_output, \
+            f"Without --show-dup should not list duplicates line by line: {combined_output}"
+
+        # Verify no new files imported (check database)
+        rows = vault.db_files()
+        assert len(rows) == 1, "Should still have only 1 file in database"
+
+        # Vault should still have only 1 file (not duplicated)
+        files = vault.get_vault_files("photo.jpg")
+        assert len(files) == 1, "Vault should not have duplicate files"
