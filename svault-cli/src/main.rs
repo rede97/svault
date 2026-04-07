@@ -18,6 +18,7 @@
 
 pub mod cli;
 pub mod commands;
+pub mod reporting;
 
 use clap::Parser;
 use cli::{Cli, Command, DbCommand, MtpCommand};

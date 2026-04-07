@@ -2,9 +2,11 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
+use crate::reporting::create_reporter;
 use svault_core::config::SyncStrategy;
 use svault_core::context::VaultContext;
 use svault_core::import::{run as import_run, run_with_file_list, ImportOptions};
+use svault_core::reporting::NoopReporter;
 
 pub fn run(
     output: OutputFormat,
@@ -124,7 +126,8 @@ fn run_files_from_import(
         files_from: None,
     };
     
-    let summary = run_with_file_list(opts, ctx.db(), paths)?;
+    let reporter = create_reporter(&output);
+    let summary = run_with_file_list(opts, ctx.db(), paths, reporter.as_ref())?;
     
     if matches!(output, OutputFormat::Json) {
         println!(
@@ -179,7 +182,8 @@ fn run_mtp_import(
         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
     };
 
-    let summary = run_vfs_import(opts, ctx.db())?;
+    // TODO: Task 3 - pass real reporter to vfs_import
+    let summary = run_vfs_import(opts, ctx.db(), &NoopReporter)?;
 
     if matches!(output, OutputFormat::Json) {
         println!(
@@ -221,7 +225,8 @@ fn run_local_import(
         show_dup,
         files_from: None,
     };
-    let summary = import_run(opts, ctx.db())?;
+    let reporter = create_reporter(&output);
+    let summary = import_run(opts, ctx.db(), reporter.as_ref())?;
     if matches!(output, OutputFormat::Json) {
         println!(
             "{}",

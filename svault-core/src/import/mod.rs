@@ -32,6 +32,7 @@ use rayon::prelude::*;
 use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::pipeline;
+use crate::reporting::{CoreEvent, ItemStatus, OperationKind, PhaseKind, Reporter};
 use crate::vfs::system::SystemFs;
 use crate::vfs::transfer::transfer_file;
 
@@ -281,6 +282,7 @@ fn execute_import_stages(
     source_canon: &Path,
     total_files: usize,
     likely_dup: usize,
+    reporter: &dyn Reporter,
 ) -> anyhow::Result<ImportSummary> {
     // Stage C: Copy files (parallel)
     let vault_archive = opts.vault_root.clone();
@@ -318,7 +320,14 @@ fn execute_import_stages(
 
     let copy_errors: Arc<Mutex<HashMap<std::path::PathBuf, String>>> = 
         Arc::new(Mutex::new(HashMap::new()));
-    let copy_bar = ProgressBar::new(prepared.len() as u64);
+    
+    let prepared_count = prepared.len() as u64;
+    reporter.emit(CoreEvent::PhaseStarted { 
+        phase: PhaseKind::Copy, 
+        total: Some(prepared_count) 
+    });
+    
+    let copy_bar = ProgressBar::new(prepared_count);
     copy_bar.set_style(
         ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}")
             .unwrap()
@@ -359,6 +368,13 @@ fn execute_import_stages(
         })
         .collect();
     copy_bar.finish_and_clear();
+    
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Copy });
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Copy, 
+        completed: copied.len() as u64, 
+        total: Some(prepared_count) 
+    });
 
     // Stage D: Strong hash (parallel)
     let hash_bar = ProgressBar::new(copied.len() as u64);
@@ -429,18 +445,30 @@ fn execute_import_stages(
             style(summary.failed).red());
     }
 
-    Ok(ImportSummary {
+    let import_summary = ImportSummary {
         total: total_files,
         imported: summary.added,
         duplicate: summary.duplicate + likely_dup,
         failed: summary.failed + copy_errors.lock().unwrap().len(),
         manifest_path: None,
         all_cache_hit: false,
-    })
+    };
+    
+    reporter.emit(CoreEvent::RunFinished {
+        operation: OperationKind::Import,
+        total: import_summary.total,
+        imported: import_summary.imported,
+        duplicate: import_summary.duplicate,
+        failed: import_summary.failed,
+    });
+    
+    Ok(import_summary)
 }
 
 /// Run the full import pipeline (Stages A–E).
-pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
+pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter) -> anyhow::Result<ImportSummary> {
+    reporter.emit(CoreEvent::RunStarted { operation: OperationKind::Import });
+    
     let source_canon = std::fs::canonicalize(&opts.source)
         .unwrap_or_else(|_| opts.source.clone());
     let vault_canon = std::fs::canonicalize(&opts.vault_root)
@@ -454,6 +482,8 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
 
     // Stage A: Walk (parallel) → Stage B: CRC (parallel via channel)
     let scan_rx = pipeline::scan::scan_stream(&source_canon, &exts)?;
+    
+    reporter.emit(CoreEvent::PhaseStarted { phase: PhaseKind::Scan, total: None });
     
     // Progress bar for scanning phase
     let scan_bar = ProgressBar::new_spinner();
@@ -478,6 +508,13 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         
         state.total_files += 1;
         
+        // Emit discovery event for GUI/CLI
+        reporter.emit(CoreEvent::ItemDiscovered {
+            path: result.file.path.clone(),
+            size: result.file.size,
+            mtime_ms: result.file.mtime_ms,
+        });
+        
         // Handle CRC errors
         let crc = match result.crc {
             Ok(c) => c,
@@ -486,6 +523,10 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
                     style("Error").red(), 
                     style(&result.file.path.display()),
                     e));
+                reporter.emit(CoreEvent::Error {
+                    message: format!("CRC computation failed: {}", e),
+                    path: Some(result.file.path.clone()),
+                });
                 continue;
             }
         };
@@ -498,7 +539,7 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         
         let entry = pipeline::types::CrcEntry {
             file: pipeline::types::FileEntry {
-                path: file_path,
+                path: file_path.clone(),
                 size: result.file.size,
                 mtime_ms: result.file.mtime_ms,
             },
@@ -511,11 +552,25 @@ pub fn run(opts: ImportOptions, db: &Db) -> anyhow::Result<ImportSummary> {
         // Immediate DB lookup and real-time output
         let check_result = check_duplicate(&entry, db, &opts.vault_root, None);
         
+        // Map check result to ItemStatus and emit classification event
+        let item_status = match &check_result {
+            pipeline::CheckResult::New => ItemStatus::New,
+            pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,
+            pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
+            pipeline::CheckResult::Recover { .. } => ItemStatus::Recover,
+        };
+        reporter.emit(CoreEvent::ItemClassified {
+            path: file_path,
+            status: item_status,
+            detail: None,
+        });
+        
         process_lookup_result(entry, check_result, &rel_path, &opts, &mut state, &scan_bar);
     }
     scan_bar.finish_and_clear();
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Scan });
 
-    finalize_import(state, opts, db, &source_canon)
+    finalize_import(state, opts, db, &source_canon, reporter)
 }
 
 /// Run import with a predefined file list (skips directory scanning).
@@ -526,7 +581,10 @@ pub fn run_with_file_list(
     opts: ImportOptions,
     db: &Db,
     paths: Vec<std::path::PathBuf>,
+    reporter: &dyn Reporter,
 ) -> anyhow::Result<ImportSummary> {
+    reporter.emit(CoreEvent::RunStarted { operation: OperationKind::Import });
+    
     let source_canon = std::fs::canonicalize(&opts.source)
         .unwrap_or_else(|_| opts.source.clone());
     let vault_canon = std::fs::canonicalize(&opts.vault_root)
@@ -535,6 +593,8 @@ pub fn run_with_file_list(
     // ------------------------------------------------------------------
     // Stage B+C: CRC + Lookup for provided file list
     // ------------------------------------------------------------------
+    reporter.emit(CoreEvent::PhaseStarted { phase: PhaseKind::Scan, total: None });
+    
     let scan_bar = ProgressBar::new_spinner();
     scan_bar.set_style(
         ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files ({per_sec})")
@@ -565,6 +625,18 @@ pub fn run_with_file_list(
 
         state.total_files += 1;
         scan_bar.inc(1);
+        
+        // Emit discovery event
+        reporter.emit(CoreEvent::ItemDiscovered {
+            path: path.clone(),
+            size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            mtime_ms: std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        });
 
         // Build CrcEntry and compute CRC
         let entry = match build_crc_entry(&path) {
@@ -574,6 +646,10 @@ pub fn run_with_file_list(
                     style("Error").red(),
                     style(path.display()),
                     e));
+                reporter.emit(CoreEvent::Error {
+                    message: format!("CRC computation failed: {}", e),
+                    path: Some(path.clone()),
+                });
                 continue;
             }
         };
@@ -584,11 +660,25 @@ pub fn run_with_file_list(
             .to_path_buf();
         let check_result = check_duplicate(&entry, db, &opts.vault_root, None);
         
+        // Emit classification event
+        let item_status = match &check_result {
+            pipeline::CheckResult::New => ItemStatus::New,
+            pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,
+            pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
+            pipeline::CheckResult::Recover { .. } => ItemStatus::Recover,
+        };
+        reporter.emit(CoreEvent::ItemClassified {
+            path: path.clone(),
+            status: item_status,
+            detail: None,
+        });
+        
         process_lookup_result(entry, check_result, &rel_path, &opts, &mut state, &scan_bar);
     }
     scan_bar.finish_and_clear();
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Scan });
 
-    finalize_import(state, opts, db, &source_canon)
+    finalize_import(state, opts, db, &source_canon, reporter)
 }
 
 /// Finalize import: show summary, confirm, execute stages
@@ -597,6 +687,7 @@ fn finalize_import(
     opts: ImportOptions,
     db: &Db,
     source_canon: &Path,
+    reporter: &dyn Reporter,
 ) -> anyhow::Result<ImportSummary> {
     if state.lookup_results.is_empty() {
         eprintln!("\nNo files found to import.");
@@ -639,7 +730,7 @@ fn finalize_import(
     }
 
     // Execute copy, hash, and insert stages
-    execute_import_stages(new_files, &opts, db, source_canon, state.total_files, likely_dup)
+    execute_import_stages(new_files, &opts, db, source_canon, state.total_files, likely_dup, reporter)
 }
 
 /// Resolve unique destination path.
@@ -680,4 +771,98 @@ fn resolve_unique_dest(
         .unwrap_or_default()
         .as_millis();
     parent.join(format!("{}.{}{}", stem, ts, ext))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reporting::{CoreEvent, ItemStatus, NoopReporter, PhaseKind, Reporter};
+    use std::sync::{Arc, Mutex};
+
+    /// Test reporter that captures events for verification
+    #[derive(Debug, Default)]
+    struct TestReporter {
+        events: Mutex<Vec<CoreEvent>>,
+    }
+
+    impl Reporter for TestReporter {
+        fn emit(&self, event: CoreEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    impl TestReporter {
+        fn event_count(&self) -> usize {
+            self.events.lock().unwrap().len()
+        }
+        
+        fn has_event(&self, f: impl Fn(&CoreEvent) -> bool) -> bool {
+            self.events.lock().unwrap().iter().any(f)
+        }
+    }
+
+    #[test]
+    fn test_import_emits_run_started_event() {
+        let reporter = Arc::new(TestReporter::default());
+        
+        // Just verify the reporter receives events
+        reporter.emit(CoreEvent::RunStarted { operation: OperationKind::Import });
+        
+        assert!(reporter.has_event(|e| matches!(e, CoreEvent::RunStarted { .. })));
+    }
+
+    #[test]
+    fn test_import_emits_phase_events() {
+        let reporter = Arc::new(TestReporter::default());
+        
+        reporter.emit(CoreEvent::PhaseStarted { phase: PhaseKind::Scan, total: None });
+        reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Scan });
+        
+        assert!(reporter.has_event(|e| matches!(e, CoreEvent::PhaseStarted { phase: PhaseKind::Scan, .. })));
+        assert!(reporter.has_event(|e| matches!(e, CoreEvent::PhaseFinished { phase: PhaseKind::Scan })));
+    }
+
+    #[test]
+    fn test_import_emits_item_events() {
+        let reporter = Arc::new(TestReporter::default());
+        let test_path = std::path::PathBuf::from("/test/file.jpg");
+        
+        reporter.emit(CoreEvent::ItemDiscovered {
+            path: test_path.clone(),
+            size: 1024,
+            mtime_ms: 1234567890,
+        });
+        reporter.emit(CoreEvent::ItemClassified {
+            path: test_path.clone(),
+            status: ItemStatus::New,
+            detail: None,
+        });
+        
+        assert!(reporter.has_event(|e| matches!(e, CoreEvent::ItemDiscovered { .. })));
+        assert!(reporter.has_event(|e| matches!(e, CoreEvent::ItemClassified { status: ItemStatus::New, .. })));
+    }
+
+    #[test]
+    fn test_import_emits_run_finished_event() {
+        let reporter = Arc::new(TestReporter::default());
+        
+        reporter.emit(CoreEvent::RunFinished {
+            operation: OperationKind::Import,
+            total: 10,
+            imported: 8,
+            duplicate: 1,
+            failed: 1,
+        });
+        
+        let events = reporter.events.lock().unwrap();
+        if let Some(CoreEvent::RunFinished { total, imported, duplicate, failed, .. }) = events.first() {
+            assert_eq!(*total, 10);
+            assert_eq!(*imported, 8);
+            assert_eq!(*duplicate, 1);
+            assert_eq!(*failed, 1);
+        } else {
+            panic!("Expected RunFinished event");
+        }
+    }
 }

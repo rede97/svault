@@ -52,6 +52,7 @@ use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::media::{extract_raw_id_if_raw, is_raw_file};
 use crate::media::raw_id::get_fingerprint_string;
+use crate::reporting::{CoreEvent, ItemStatus, OperationKind, PhaseKind, Reporter};
 use crate::vfs::{transfer::transfer_file, DirEntry, VfsBackend, VfsError};
 
 use super::path::resolve_dest_path;
@@ -129,7 +130,8 @@ fn crc32c_from_backend(
 }
 
 /// Run import from a VFS backend.
-pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> {
+pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) -> Result<ImportSummary> {
+    reporter.emit(CoreEvent::RunStarted { operation: OperationKind::ImportVfs });
     let session_id = session_id_now();
 
     // Stage A: Scan source (streaming)
@@ -696,14 +698,24 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db) -> Result<ImportSummary> 
     eprintln!();
     eprintln!("{} {}", style("Manifest:").bold(), manifest_path.display());
 
-    Ok(ImportSummary {
+    let summary = ImportSummary {
         total,
         imported,
         duplicate: likely_dup,
         failed: failed_b + copy_errors.lock().unwrap().len(),
         manifest_path: Some(manifest_path),
         all_cache_hit: false,
-    })
+    };
+    
+    reporter.emit(CoreEvent::RunFinished {
+        operation: OperationKind::ImportVfs,
+        total: summary.total,
+        imported: summary.imported,
+        duplicate: summary.duplicate,
+        failed: summary.failed,
+    });
+    
+    Ok(summary)
 }
 
 /// Resolve unique destination path by checking for conflicts and applying rename template.
