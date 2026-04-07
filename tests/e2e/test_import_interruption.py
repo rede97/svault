@@ -296,17 +296,6 @@ class TestFileDeletionDuringImport:
         assert len(files) == 1
         assert "keep" in files[0]["path"]
     
-    def test_import_with_empty_source_after_deletion(self, vault: VaultEnv) -> None:
-        """所有源文件在导入前被删除的处理"""
-        f = vault.source_dir / "temp.jpg"
-        create_minimal_jpeg(f, "TEMP")
-        f.unlink()
-        
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-        assert len(vault.db_files()) == 0
-
-
 class TestFileModificationDuringImport:
     """导入过程中文件被修改的检测"""
     
@@ -336,43 +325,6 @@ class TestFileModificationDuringImport:
         assert result.returncode in [0, 1]
 
 
-class TestNewFilesDuringImport:
-    """导入过程中新文件的处理"""
-    
-    def test_new_files_in_next_import(self, vault: VaultEnv) -> None:
-        """新文件在下次导入时被处理"""
-        f1 = vault.source_dir / "first.jpg"
-        create_minimal_jpeg(f1, "FIRST_BATCH")
-        
-        vault.import_dir(vault.source_dir)
-        assert len(vault.db_files()) == 1
-        
-        f2 = vault.source_dir / "second.jpg"
-        create_minimal_jpeg(f2, "SECOND_BATCH")
-        
-        vault.import_dir(vault.source_dir)
-        assert len(vault.db_files()) == 2
-
-
-class TestImportIdempotency:
-    """导入幂等性测试 - 多次导入不重复"""
-    
-    def test_reimport_no_duplication(self, vault: VaultEnv) -> None:
-        """重复导入相同文件不产生重复"""
-        for i in range(5):
-            f = vault.source_dir / f"file_{i}.jpg"
-            create_minimal_jpeg(f, f"UNIQUE_{i}")
-        
-        vault.import_dir(vault.source_dir)
-        count1 = len(vault.db_files())
-        assert count1 == 5
-        
-        vault.import_dir(vault.source_dir)
-        count2 = len(vault.db_files())
-        
-        assert count2 == 5, f"Expected 5 files, got {count2} (duplicates created!)"
-
-
 # =============================================================================
 # Level 3: Fallback and Error Handling
 # =============================================================================
@@ -395,18 +347,6 @@ class TestFallbackAndCorruptedFiles:
             assert len(files) >= 1, "至少可读文件应被导入"
         finally:
             f2.chmod(0o644)
-
-    def test_import_corrupted_source(self, vault: VaultEnv) -> None:
-        """导入损坏的源文件"""
-        f1 = vault.source_dir / "good.jpg"
-        create_minimal_jpeg(f1, "GOOD")
-
-        f2 = vault.source_dir / "bad.jpg"
-        f2.write_bytes(b'\xff\xd8\xff\xe0' + b'incomplete')
-
-        result = vault.import_dir(vault.source_dir, check=False)
-        files = vault.db_files()
-        assert len(files) >= 1
 
     def test_fake_jpeg_fallback(self, vault: VaultEnv) -> None:
         """假 JPEG 文件 fallback 测试"""

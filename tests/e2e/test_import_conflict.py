@@ -107,21 +107,4 @@ class TestFilenameConflict:
             for f in files:
                 assert cam not in f["path"], f"Path should not contain {cam}"
     
-    def test_same_name_same_content_is_duplicate_not_conflict(self, vault: VaultEnv) -> None:
-        """Same filename AND same content should be treated as duplicate, not conflict."""
-        copy_fixture(vault, "camera_a/DSC0001.jpg", subdir="cam1")
-        # Copy same file to cam2 (same content)
-        import shutil
-        src = vault.source_dir / "cam1" / "DSC0001.jpg"
-        (vault.source_dir / "cam2").mkdir(exist_ok=True)
-        shutil.copy2(src, vault.source_dir / "cam2" / "DSC0001.jpg")
-        
-        vault.import_dir(vault.source_dir)
-        
-        # Only one should be imported (first), second is duplicate
-        files = vault.db_files()
-        assert len(files) == 1
-        assert Path(files[0]["path"]).name == "DSC0001.jpg"
-
-
 from pathlib import Path

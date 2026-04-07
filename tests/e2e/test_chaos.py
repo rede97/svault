@@ -70,30 +70,6 @@ class TestChaosScenarios:
         assert len(files) == 1
         assert "apple_with_exif.jpg" in files[0]["path"]
     
-    def test_renamed_before_import(self, vault: VaultEnv) -> None:
-        """File renamed before import - should still detect as duplicate if content same."""
-        # First import
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        
-        # Clear source
-        for f in vault.source_dir.rglob("*"):
-            if f.is_file():
-                f.unlink()
-        
-        # Copy same fixture with different name
-        copy_fixture(vault, "apple_with_exif.jpg")
-        (vault.source_dir / "apple_with_exif.jpg").rename(
-            vault.source_dir / "renamed_before_import.jpg"
-        )
-        
-        # Second import
-        vault.import_dir(vault.source_dir)
-        
-        # Should be detected as duplicate (not in DB)
-        files = vault.db_files()
-        assert len(files) == 1  # Still only one
-    
     def test_empty_directory(self, vault: VaultEnv) -> None:
         """Import empty directory."""
         result = vault.import_dir(vault.source_dir)
@@ -114,48 +90,4 @@ class TestChaosScenarios:
         assert len(files) == 0
 
 
-class TestRepeatedImport:
-    """Test repeated import scenarios."""
-    
-    def test_second_import_all_duplicates(self, vault: VaultEnv) -> None:
-        """Second import of same directory should mark all as duplicates."""
-        # Copy multiple fixtures
-        for fixture in ["apple_with_exif.jpg", "samsung_photo.jpg", "no_exif.jpg"]:
-            try:
-                copy_fixture(vault, fixture)
-            except Exception:
-                pass  # Some fixtures may not exist
-        
-        # Also create a test file
-        create_minimal_jpeg(vault.source_dir / "test.jpg")
-        
-        # First import
-        result1 = vault.import_dir(vault.source_dir)
-        initial_count = len(vault.db_files())
-        assert initial_count > 0
-        
-        # Second import of same directory
-        result2 = vault.import_dir(vault.source_dir)
-        
-        # Should still have same count (no new files)
-        final_count = len(vault.db_files())
-        assert final_count == initial_count
-    
-    def test_import_with_new_and_existing_files(self, vault: VaultEnv) -> None:
-        """Import mix of new and already-imported files."""
-        # First batch
-        f1 = vault.source_dir / "batch1.jpg"
-        create_minimal_jpeg(f1, "batch1")
-        
-        vault.import_dir(vault.source_dir)
-        assert len(vault.db_files()) == 1
-        
-        # Second batch: one old, one new
-        f2 = vault.source_dir / "batch2.jpg"
-        create_minimal_jpeg(f2, "batch2")
-        
-        vault.import_dir(vault.source_dir)
-        
-        # Should have both
-        files = vault.db_files()
-        assert len(files) == 2
+

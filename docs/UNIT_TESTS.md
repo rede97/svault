@@ -11,7 +11,7 @@
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
 | 单元测试 (Unit) | 129 | 129 | 0 | 3 (MTP 需物理设备) |
-| Python E2E 测试 (Linux) | 241 | — | — | — |
+| Python E2E 测试 (Linux) | 242 | — | — | — |
 | **总计** | — | — | — | — |
 
 > **注意：** 
@@ -156,13 +156,21 @@
 
 端到端测试位于 `tests/e2e/`，使用 `pytest` + RAMDisk 隔离测试环境。
 
-### 核心场景覆盖
+### Import E2E 测试分工（6个文件，64个用例）
+
+| 文件 | 用例数 | 职责范围 |
+|------|--------|----------|
+| `test_import.py` | 20 | 常规导入、CLI 行为（JSON模式、--show-dup） |
+| `test_import_recovery.py` | 16 | 中断恢复、幂等性、增量导入 |
+| `test_import_interruption.py` | 12 | **仅信号中断**（strace inject SIGTERM/SIGKILL） |
+| `test_import_dedup.py` | 9 | 去重检测（内容相同=duplicate） |
+| `test_import_conflict.py` | 3 | 冲突处理（同名不同内容=重命名） |
+| `test_chaos.py` | 4 | 边界情况（空目录、损坏文件、截断JPEG） |
+
+### 其他核心场景
 
 | 类别 | 数量 | 描述 |
 |------|------|------|
-| 常规导入 | 20+ | EXIF 日期提取、设备检测、路径模板 |
-| 去重检测 | 15+ | 重复文件、同名不同内容、强制导入 |
-| Chaos 测试 | 8 | 重命名、移动、截断文件、并发修改 |
 | Recheck | 6 | 基于 manifest 的源/vault 一致性校验 |
 | Add/Reconcile | 6 | 注册已有文件、恢复移动的文件 |
 | Verify | 12 | 完整性验证、bit flip 检测、hardlink 升级 |
@@ -268,3 +276,4 @@ uv pip install pytest pillow hypothesis
 | 2026-04-05 | E2E 测试参数化重构；删除重复代码 ~110 行 |
 | 2026-04-05 | Pipeline 架构实现；CLI 拆分为命令模块；E2E 198 passed |
 | 2026-04-06 | 添加 scan + filter + import 流水线 E2E 测试 (10 tests) |
+| 2026-04-08 | Import E2E 测试整理：删除重复用例 8 个，文件职责明确分工 |

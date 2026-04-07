@@ -71,6 +71,26 @@ class TestDeduplication:
         # Should be detected as duplicate
         assert_file_duplicate(vault, "renamed.jpg")
     
+    def test_same_name_same_content_is_duplicate_not_conflict(self, vault: VaultEnv) -> None:
+        """Same filename AND same content should be treated as duplicate, not conflict.
+        
+        Authority: This is the canonical test for "same name + same content = duplicate".
+        Moved from test_import_conflict.py to consolidate deduplication tests.
+        """
+        # Create same file in two different subdirs (same content, same name)
+        for subdir in ["cam1", "cam2"]:
+            (vault.source_dir / subdir).mkdir(exist_ok=True)
+            f = vault.source_dir / subdir / "DSC0001.jpg"
+            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+            f.write_bytes(header + b'same_content_in_both_cameras')
+        
+        vault.import_dir(vault.source_dir)
+        
+        # Only one should be imported (first), second is duplicate
+        files = vault.db_files()
+        assert len(files) == 1
+        assert Path(files[0]["path"]).name == "DSC0001.jpg"
+    
     def test_different_content_same_name(self, vault: VaultEnv) -> None:
         """Files with same name but different content are conflicts, not duplicates."""
         # Create two files with same name in different subdirs
