@@ -43,8 +43,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::config::{ImportConfig, SyncStrategy};
@@ -52,7 +50,7 @@ use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::media::{extract_raw_id_if_raw, is_raw_file};
 use crate::media::raw_id::get_fingerprint_string;
-use crate::reporting::{CoreEvent, ItemStatus, OperationKind, PhaseKind, Reporter};
+use crate::reporting::{CoreEvent, Interactor, OperationKind, PhaseKind, Reporter};
 use crate::vfs::{transfer::transfer_file, DirEntry, VfsBackend, VfsError};
 
 use super::path::resolve_dest_path;
@@ -130,7 +128,7 @@ fn crc32c_from_backend(
 }
 
 /// Run import from a VFS backend.
-pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) -> Result<ImportSummary> {
+pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter, interactor: &dyn Interactor) -> Result<ImportSummary> {
     reporter.emit(CoreEvent::RunStarted { operation: OperationKind::ImportVfs });
     let session_id = session_id_now();
 
@@ -160,10 +158,10 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
     let total = dir_entries.len();
 
     if total == 0 {
-        eprintln!(
-            "{} No files found in source",
-            style("Warning:").yellow().bold()
-        );
+        reporter.emit(CoreEvent::Warning {
+            message: "No files found in source".to_string(),
+            path: None,
+        });
         return Ok(ImportSummary {
             total: 0,
             ..Default::default()
@@ -175,13 +173,7 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
     // MTP uses single-thread to avoid USB contention
     let parallel = opts.src_backend.is_parallel_capable();
     
-    let scan_bar = ProgressBar::new(total as u64);
-    scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.blue} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    scan_bar.set_prefix("Scanning");
+    reporter.emit(CoreEvent::PhaseStarted { phase: PhaseKind::Scan, total: Some(total as u64) });
 
     let crcs: Vec<(DirEntry, Result<u32, String>)> = if parallel {
         dir_entries
@@ -189,7 +181,6 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
             .map(|e| {
                 let result = crc32c_from_backend(opts.src_backend, &e, opts.crc_buffer_size)
                     .map_err(|e| e.to_string());
-                scan_bar.inc(1);
                 (e, result)
             })
             .collect()
@@ -199,20 +190,13 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
             .map(|e| {
                 let result = crc32c_from_backend(opts.src_backend, &e, opts.crc_buffer_size)
                     .map_err(|e| e.to_string());
-                scan_bar.inc(1);
                 (e, result)
             })
             .collect()
     };
-    scan_bar.finish_and_clear();
-
-    // Display
-    eprintln!(
-        "{} {} files from {}",
-        style("Scanning").bold().cyan(),
-        style(total).cyan(),
-        style(&opts.source_name)
-    );
+    
+    reporter.emit(CoreEvent::PhaseProgress { phase: PhaseKind::Scan, completed: total as u64, total: Some(total as u64) });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Scan });
 
     let scan_entries: Vec<ScanEntry> = crcs
         .into_iter()
@@ -226,7 +210,10 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
 
             let crc = match crc_result {
                 Err(err) => {
-                    eprintln!("  {} {}", style("Error").red(), style(&rel_path));
+                    reporter.emit(CoreEvent::Error {
+                        message: format!("CRC failed: {}", err),
+                        path: Some(e.path.clone()),
+                    });
                     return ScanEntry {
                         src_path: e.path,
                         size: e.size,
@@ -279,7 +266,11 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
             };
 
             if let FileStatus::LikelyNew = status {
-                eprintln!("  {} {}", style("Found").green(), style(&rel_path));
+                reporter.emit(CoreEvent::ItemClassified {
+                    path: e.path.clone(),
+                    status: crate::reporting::ItemStatus::New,
+                    detail: Some(format!("Found: {}", rel_path)),
+                });
             }
 
             ScanEntry {
@@ -307,33 +298,13 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
         .filter(|e| matches!(e.status, FileStatus::Failed(_)))
         .count();
 
-    eprintln!();
-    eprintln!("{}", style("Pre-flight:").bold());
-    eprintln!(
-        "  {}  {}",
-        style(format!("Likely new:       {:>6}", likely_new.len())).green(),
-        style("will be imported")
-    );
-    eprintln!(
-        "  {}  {}",
-        style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
-        style("already in vault (cache hit)")
-    );
-    if failed_b > 0 {
-        eprintln!(
-            "  {}",
-            style(format!("Errors:           {:>6}", failed_b)).red()
-        );
-    }
+    // Summary info is now reported via RunFinished at the end
 
     if likely_new.is_empty() {
-        eprintln!();
-        eprintln!(
-            "All {} files matched cache (no new files detected).",
-            total
-        );
-        eprintln!("To verify duplicates, run:",);
-        eprintln!("  {} <source>", style("svault recheck").cyan());
+        reporter.emit(CoreEvent::Warning {
+            message: format!("All {} files matched cache (no new files detected). Run 'svault recheck' to verify.", total),
+            path: None,
+        });
         return Ok(ImportSummary {
             total,
             duplicate: likely_dup,
@@ -364,20 +335,12 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
 
     write_staging_vfs(&staging_path, &opts.source_name, &session_id, &entries_for_staging)?;
 
-    eprintln!();
-    eprintln!(
-        "{} {}",
-        style("Staging list:").bold(),
-        style(staging_path.display())
-    );
-
     if !opts.yes && !opts.dry_run {
-        eprint!("{}", style("Proceed with import? [y/N] ").bold());
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
-            eprintln!("{}", style("Aborted. Staging list kept at:").yellow());
-            eprintln!("  {}", staging_path.display());
+        if !interactor.confirm("Proceed with import?") {
+            reporter.emit(CoreEvent::Warning {
+                message: format!("Aborted. Staging list kept at: {}", staging_path.display()),
+                path: None,
+            });
             return Ok(ImportSummary {
                 total,
                 duplicate: likely_dup,
@@ -395,7 +358,10 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
     write_pending_vfs(&pending_path, &opts.source_name, &session_id, &entries_for_staging)?;
 
     if opts.dry_run {
-        eprintln!("\n(dry-run: no files copied)");
+        reporter.emit(CoreEvent::Warning {
+            message: "(dry-run: no files copied)".to_string(),
+            path: None,
+        });
         return Ok(ImportSummary {
             total,
             duplicate: likely_dup,
@@ -456,13 +422,10 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
         Arc::new(std::sync::atomic::AtomicBool::new(false));
     let disconnect_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    let copy_bar = ProgressBar::new(prepared_entries.len() as u64);
-    copy_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    copy_bar.set_prefix("Copying  ");
+    reporter.emit(CoreEvent::PhaseStarted { 
+        phase: PhaseKind::Copy, 
+        total: Some(prepared_entries.len() as u64) 
+    });
 
     let transfer_strategies = opts.strategy.to_transfer_strategies();
 
@@ -472,13 +435,6 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
         if disconnected.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        
-        let filename = src_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        copy_bar.set_message(filename.clone());
 
         // Create parent dirs and copy
         if let Some(parent) = dest_path.parent()
@@ -486,14 +442,12 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
         {
             let mut errors = copy_errors.lock().unwrap();
             errors.insert(src_path.clone(), err.to_string());
-            copy_bar.inc(1);
             return None;
         }
 
         // Use VFS transfer engine
         match transfer_file(opts.src_backend, &src_path, &dst_fs, &dest_path, &transfer_strategies) {
             Ok(_) => {
-                copy_bar.inc(1);
                 Some((src_path, dest_path, size, taken_ms, crc))
             }
             Err(err) => {
@@ -505,32 +459,43 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
                    err_str.contains("LIBUSB_ERROR_NO_DEVICE") {
                     disconnected.store(true, std::sync::atomic::Ordering::Relaxed);
                     *disconnect_error.lock().unwrap() = Some(err_str);
-                    copy_bar.inc(1);
                     return None;
                 }
                 
                 // Regular error - just log it
                 let mut errors = copy_errors.lock().unwrap();
                 errors.insert(src_path, err_str);
-                copy_bar.inc(1);
                 None
             }
         }
     };
 
+    let prepared_count = prepared_entries.len();
     let copied: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32)> = if parallel {
         prepared_entries.into_par_iter().filter_map(copy_op).collect()
     } else {
         prepared_entries.into_iter().filter_map(copy_op).collect()
     };
     
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Copy, 
+        completed: copied.len() as u64, 
+        total: Some(prepared_count as u64) 
+    });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Copy });
+
     // Check if disconnected
     if disconnected.load(std::sync::atomic::Ordering::Relaxed) {
-        copy_bar.finish_and_clear();
         if let Some(err_str) = disconnect_error.lock().unwrap().take() {
-            eprintln!("\n{}\n", style(&err_str).red().bold());
+            reporter.emit(CoreEvent::Error {
+                message: err_str,
+                path: None,
+            });
         }
-        eprintln!("{}", style("Import aborted due to device disconnection.").yellow());
+        reporter.emit(CoreEvent::Error {
+            message: "Import aborted due to device disconnection.".to_string(),
+            path: None,
+        });
         
         // Save pending file with remaining items
         let pending_entries: Vec<_> = scan_entries.iter()
@@ -549,43 +514,36 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
                 .join(".svault")
                 .join(format!("import-{session_id}-interrupted.pending"));
             if write_pending_vfs(&pending_path, &opts.source_name, &session_id, &pending_entries).is_ok() {
-                eprintln!("{}", style(format!("Unimported files saved to: {}", pending_path.display())));
+                reporter.emit(CoreEvent::Warning {
+                    message: format!("Unimported files saved to: {}", pending_path.display()),
+                    path: None,
+                });
             }
         }
         
         return Err(anyhow::anyhow!("MTP device disconnected during import"));
     }
 
-    copy_bar.finish_and_clear();
-
     // Report copy errors
     let copy_errs = copy_errors.lock().unwrap();
-    if !copy_errs.is_empty() {
-        eprintln!("\n{}", style("Copy errors:").red().bold());
-        for (src, err) in copy_errs.iter() {
-            eprintln!("  {} {} - {}", style("✗").red(), src.display(), err);
-        }
+    for (src, err) in copy_errs.iter() {
+        reporter.emit(CoreEvent::Error {
+            message: format!("Copy failed: {}", err),
+            path: Some(src.clone()),
+        });
     }
     drop(copy_errs);
 
     // Stage D: Hash verification
-    let verify_bar = ProgressBar::new(copied.len() as u64);
-    verify_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    verify_bar.set_prefix("Verifying");
+    let copied_count = copied.len();
+    reporter.emit(CoreEvent::PhaseStarted { 
+        phase: PhaseKind::Fingerprint, 
+        total: Some(copied_count as u64) 
+    });
 
     let verified: Vec<(std::path::PathBuf, std::path::PathBuf, i64, i64, u32, Vec<u8>, Option<Vec<u8>>)> = copied
         .into_par_iter()
         .filter_map(|(src, dest, size, taken_ms, crc)| {
-            let filename = src
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            verify_bar.set_message(filename);
-
             // Always compute XXH3-128; optionally compute SHA-256 for full_id mode
             let xxh3_result = xxh3_128_file(&dest).map(|h| h.to_bytes().to_vec());
             
@@ -603,7 +561,6 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
                 Err(e) => Err(e),
             };
 
-            verify_bar.inc(1);
             match hash_result {
                 Ok((xxh3, sha256)) => Some((src, dest, size, taken_ms, crc, xxh3, sha256)),
                 Err(_) => None,
@@ -611,9 +568,19 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
         })
         .collect();
 
-    verify_bar.finish_and_clear();
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Fingerprint, 
+        completed: verified.len() as u64, 
+        total: Some(copied_count as u64) 
+    });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Fingerprint });
 
     // Stage E: DB insert and manifest
+    reporter.emit(CoreEvent::PhaseStarted { 
+        phase: PhaseKind::Insert, 
+        total: Some(verified.len() as u64) 
+    });
+    
     let imported_at = chrono::Utc::now().timestamp_millis();
     for (_src, dest, size, taken_ms, crc, xxh3, sha256) in verified.iter() {
         let relpath = dest.strip_prefix(opts.vault_root).unwrap_or(dest);
@@ -677,26 +644,12 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter) 
     // Cleanup staging
     let _ = std::fs::remove_file(&staging_path);
 
-    // Summary
-    eprintln!();
-    eprintln!("{}", style("Import complete:").bold().green());
-    eprintln!(
-        "  {} {}",
-        style(imported).green().bold(),
-        style("files imported")
-    );
-    eprintln!(
-        "  {} {}",
-        style(likely_dup).yellow(),
-        style("duplicates skipped")
-    );
-    eprintln!(
-        "  {} {}",
-        style(failed_b + copy_errors.lock().unwrap().len()).red(),
-        style("failed")
-    );
-    eprintln!();
-    eprintln!("{} {}", style("Manifest:").bold(), manifest_path.display());
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Insert, 
+        completed: imported as u64, 
+        total: Some(verified.len() as u64) 
+    });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Insert });
 
     let summary = ImportSummary {
         total,

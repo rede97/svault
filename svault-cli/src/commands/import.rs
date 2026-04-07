@@ -2,11 +2,12 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
-use crate::reporting::create_reporter;
+use crate::reporting::{create_reporter, TerminalInteractor};
 use svault_core::config::SyncStrategy;
 use svault_core::context::VaultContext;
 use svault_core::import::{run as import_run, run_with_file_list, ImportOptions};
-use svault_core::reporting::NoopReporter;
+use svault_core::reporting::{Interactor, YesInteractor};
+// Note: NoopReporter no longer needed - all import paths use real reporter
 
 pub fn run(
     output: OutputFormat,
@@ -127,7 +128,15 @@ fn run_files_from_import(
     };
     
     let reporter = create_reporter(&output);
-    let summary = run_with_file_list(opts, ctx.db(), paths, reporter.as_ref())?;
+    
+    // JSON mode never prompts; --yes also skips prompt
+    let interactor: Box<dyn Interactor> = if matches!(output, OutputFormat::Json) || yes {
+        Box::new(YesInteractor)
+    } else {
+        Box::new(TerminalInteractor)
+    };
+    
+    let summary = run_with_file_list(opts, ctx.db(), paths, reporter.as_ref(), interactor.as_ref())?;
     
     if matches!(output, OutputFormat::Json) {
         println!(
@@ -182,8 +191,16 @@ fn run_mtp_import(
         crc_buffer_size: 64 * 1024, // 64KB for MTP (good balance)
     };
 
-    // TODO: Task 3 - pass real reporter to vfs_import
-    let summary = run_vfs_import(opts, ctx.db(), &NoopReporter)?;
+    let reporter = create_reporter(&output);
+    
+    // JSON mode never prompts; --yes also skips prompt
+    let interactor: Box<dyn Interactor> = if matches!(output, OutputFormat::Json) || yes {
+        Box::new(YesInteractor)
+    } else {
+        Box::new(TerminalInteractor)
+    };
+    
+    let summary = run_vfs_import(opts, ctx.db(), reporter.as_ref(), interactor.as_ref())?;
 
     if matches!(output, OutputFormat::Json) {
         println!(
@@ -226,7 +243,15 @@ fn run_local_import(
         files_from: None,
     };
     let reporter = create_reporter(&output);
-    let summary = import_run(opts, ctx.db(), reporter.as_ref())?;
+    
+    // JSON mode never prompts; --yes also skips prompt
+    let interactor: Box<dyn Interactor> = if matches!(output, OutputFormat::Json) || yes {
+        Box::new(YesInteractor)
+    } else {
+        Box::new(TerminalInteractor)
+    };
+    
+    let summary = import_run(opts, ctx.db(), reporter.as_ref(), interactor.as_ref())?;
     if matches!(output, OutputFormat::Json) {
         println!(
             "{}",

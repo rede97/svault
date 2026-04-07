@@ -25,14 +25,13 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
+// Note: console/style and indicatif removed - terminal output now handled by Reporter
 use rayon::prelude::*;
 
 use crate::config::HashAlgorithm;
 use crate::db::Db;
 use crate::pipeline;
-use crate::reporting::{CoreEvent, ItemStatus, OperationKind, PhaseKind, Reporter};
+use crate::reporting::{CoreEvent, Interactor, ItemStatus, OperationKind, PhaseKind, Reporter};
 use crate::vfs::system::SystemFs;
 use crate::vfs::transfer::transfer_file;
 
@@ -129,79 +128,36 @@ impl ImportState {
 fn process_lookup_result(
     entry: pipeline::types::CrcEntry,
     check_result: pipeline::CheckResult,
-    rel_path: &std::path::PathBuf,
-    opts: &ImportOptions,
+    _rel_path: &std::path::PathBuf,
+    _opts: &ImportOptions,
     state: &mut ImportState,
-    progress: &ProgressBar,
 ) {
     match check_result {
         pipeline::CheckResult::Moved { old_path } => {
-            progress.println(format!("  {} {} {}",
-                style("Moved").cyan(),
-                style(rel_path.display()),
-                style(format!("(in vault: {})", old_path)).dim()));
             state.moved_files.push((entry.file.path.clone(), old_path));
             state.lookup_results.push(pipeline::types::LookupResult { 
                 entry, 
                 status: pipeline::types::FileStatus::LikelyCacheDuplicate 
             });
         }
-        pipeline::CheckResult::Recover { old_path, .. } => {
-            progress.println(format!("  {} {} {}",
-                style("Recover").cyan(),
-                style(rel_path.display()),
-                style(format!("(was: {})", old_path)).dim()));
+        pipeline::CheckResult::Recover { .. } => {
             state.lookup_results.push(pipeline::types::LookupResult { 
                 entry, 
                 status: pipeline::types::FileStatus::LikelyNew 
             });
         }
         pipeline::CheckResult::Duplicate => {
-            if opts.show_dup {
-                progress.println(format!("  {} {}",
-                    style("Duplicate").yellow(),
-                    style(rel_path.display())));
-            }
             state.lookup_results.push(pipeline::types::LookupResult { 
                 entry, 
                 status: pipeline::types::FileStatus::LikelyCacheDuplicate 
             });
         }
         pipeline::CheckResult::New => {
-            progress.println(format!("  {} {}",
-                style("Found").green(),
-                style(rel_path.display())));
             state.lookup_results.push(pipeline::types::LookupResult { 
                 entry, 
                 status: pipeline::types::FileStatus::LikelyNew 
             });
         }
-    }
-}
-
-/// Show pre-flight summary
-fn show_preflight_summary(new_count: usize, dup_count: usize) {
-    eprintln!();
-    eprintln!("{}", style("Pre-flight:").bold());
-    eprintln!("  {}  {}",
-        style(format!("Likely new:       {:>6}", new_count)).green(),
-        style("will be imported"));
-    if dup_count > 0 {
-        eprintln!("  {}  {}",
-            style(format!("Likely duplicate: {:>6}", dup_count)).yellow(),
-            style("already in vault (cache hit)"));
-    }
-}
-
-/// Show duplicate files list (for non-TTY with --show-dup)
-fn show_dup_files_list(dup_files: &[pipeline::types::CrcEntry], source_canon: &Path) {
-    eprintln!();
-    for dup in dup_files {
-        let rel_path = dup.file.path.strip_prefix(source_canon)
-            .unwrap_or(&dup.file.path);
-        eprintln!("  {} {}",
-            style("Duplicate").yellow(),
-            style(rel_path.display()));
     }
 }
 
@@ -209,25 +165,8 @@ fn show_dup_files_list(dup_files: &[pipeline::types::CrcEntry], source_canon: &P
 fn handle_no_new_files(
     total_files: usize,
     likely_dup: usize,
-    moved_files: &[(std::path::PathBuf, String)],
+    _moved_files: &[(std::path::PathBuf, String)],
 ) -> anyhow::Result<ImportSummary> {
-    eprintln!();
-    if !moved_files.is_empty() {
-        eprintln!("{}", style("Note:").bold().cyan());
-        eprintln!("  {} file(s) already exist in vault but were moved.",
-            style(moved_files.len()).cyan());
-        eprintln!("  Use {} to update their paths:", style("svault update").bold());
-        for (src, old) in moved_files.iter().take(3) {
-            eprintln!("    {} → new import from {}", 
-                style(old).dim(),
-                style(src.file_name().unwrap_or_default().to_string_lossy()).cyan());
-        }
-        if moved_files.len() > 3 {
-            eprintln!("    ... and {} more", moved_files.len() - 3);
-        }
-    } else {
-        eprintln!("All {} files matched cache (no new files detected).", total_files);
-    }
     Ok(ImportSummary {
         total: total_files,
         duplicate: likely_dup,
@@ -327,24 +266,18 @@ fn execute_import_stages(
         total: Some(prepared_count) 
     });
     
-    let copy_bar = ProgressBar::new(prepared_count);
-    copy_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    copy_bar.set_prefix("Copying  ");
-
     let src_fs = SystemFs::open(source_canon)?;
     let transfer_strategies = opts.strategy.to_transfer_strategies();
 
+    // Use atomic counter for progress tracking in parallel iteration
+    let copy_progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    
     let copied: Vec<_> = prepared
         .into_par_iter()
         .filter_map(|(src, dest, size, mtime, crc, raw_id)| {
             if let Some(parent) = dest.parent() {
                 if fs::create_dir_all(parent).is_err() {
                     copy_errors.lock().unwrap().insert(src.clone(), "mkdir failed".to_string());
-                    copy_bar.inc(1);
                     return None;
                 }
             }
@@ -352,38 +285,30 @@ fn execute_import_stages(
             let rel = src.strip_prefix(source_canon).unwrap_or(&src);
             match transfer_file(&src_fs, rel, &dst_fs, &dest, &transfer_strategies) {
                 Ok(_) => {
-                    let vault_rel = dest.strip_prefix(&opts.vault_root).unwrap_or(&dest);
-                    copy_bar.println(format!("  {} {}",
-                        style("Added").green(),
-                        style(vault_rel.display())));
-                    copy_bar.inc(1);
+                    copy_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     Some((src, dest, size, mtime, crc, raw_id))
                 }
                 Err(e) => {
                     copy_errors.lock().unwrap().insert(src, e.to_string());
-                    copy_bar.inc(1);
                     return None;
                 }
             }
         })
         .collect();
-    copy_bar.finish_and_clear();
     
-    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Copy });
+    let completed_count = copied.len() as u64;
     reporter.emit(CoreEvent::PhaseProgress { 
         phase: PhaseKind::Copy, 
-        completed: copied.len() as u64, 
+        completed: completed_count, 
         total: Some(prepared_count) 
     });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Copy });
 
     // Stage D: Strong hash (parallel)
-    let hash_bar = ProgressBar::new(copied.len() as u64);
-    hash_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.yellow} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    hash_bar.set_prefix("Hashing  ");
+    reporter.emit(CoreEvent::PhaseStarted { 
+        phase: PhaseKind::Fingerprint, 
+        total: Some(copied.len() as u64) 
+    });
 
     // Convert to CrcEntry for hash stage
     let crc_entries: Vec<pipeline::types::CrcEntry> = copied
@@ -401,8 +326,14 @@ fn execute_import_stages(
 
     // Compute SHA-256 for --force or --full-id mode
     let compute_sha256 = opts.force || opts.full_id;
-    let hash_results = pipeline::hash::compute_hashes(crc_entries, compute_sha256, Some(&hash_bar));
-    hash_bar.finish_and_clear();
+    let hash_results = pipeline::hash::compute_hashes(crc_entries, compute_sha256, None);
+    
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Fingerprint, 
+        completed: hash_results.len() as u64, 
+        total: Some(hash_results.len() as u64) 
+    });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Fingerprint });
 
     // Check duplicates (skip if force mode - trust user's intent)
     let hash_results = if opts.force {
@@ -412,13 +343,11 @@ fn execute_import_stages(
     };
 
     // Stage E: DB insert
-    let insert_bar = ProgressBar::new(hash_results.len() as u64);
-    insert_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.magenta} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    insert_bar.set_prefix("Inserting");
+    let insert_total = hash_results.len() as u64;
+    reporter.emit(CoreEvent::PhaseStarted { 
+        phase: PhaseKind::Insert, 
+        total: Some(insert_total) 
+    });
 
     let session_id = session_id_now();
     let insert_opts = pipeline::insert::InsertOptions {
@@ -429,21 +358,14 @@ fn execute_import_stages(
         force: opts.force,
     };
 
-    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, Some(&insert_bar))?;
-    insert_bar.finish_and_clear();
-
-    // Print summary
-    eprintln!("{} {} file(s) imported",
-        style("Finished:").bold().green(),
-        style(summary.added).green());
-    if summary.duplicate > 0 {
-        eprintln!("         {} duplicate(s) skipped",
-            style(summary.duplicate).yellow());
-    }
-    if summary.failed > 0 {
-        eprintln!("         {} file(s) failed",
-            style(summary.failed).red());
-    }
+    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, None)?;
+    
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Insert, 
+        completed: summary.added as u64, 
+        total: Some(insert_total) 
+    });
+    reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Insert });
 
     let import_summary = ImportSummary {
         total: total_files,
@@ -466,7 +388,7 @@ fn execute_import_stages(
 }
 
 /// Run the full import pipeline (Stages A–E).
-pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter) -> anyhow::Result<ImportSummary> {
+pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter, interactor: &dyn Interactor) -> anyhow::Result<ImportSummary> {
     reporter.emit(CoreEvent::RunStarted { operation: OperationKind::Import });
     
     let source_canon = std::fs::canonicalize(&opts.source)
@@ -486,20 +408,25 @@ pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter) -> anyhow::Res
     reporter.emit(CoreEvent::PhaseStarted { phase: PhaseKind::Scan, total: None });
     
     // Progress bar for scanning phase
-    let scan_bar = ProgressBar::new_spinner();
-    scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files ({per_sec})")
-            .unwrap(),
-    );
-    scan_bar.set_prefix("Scanning");
-
-    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, Some(scan_bar.clone()));
+    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, None);
 
     // Stage C: Lookup (serial from channel) with real-time output
     let mut state = ImportState::new();
     
+    let mut scan_count: u64 = 0;
+    let progress_interval = 10; // Emit progress every 10 files
+    
     for result in crc_rx {
-        scan_bar.inc(1);
+        scan_count += 1;
+        
+        // Emit progress periodically during scan
+        if scan_count % progress_interval == 0 {
+            reporter.emit(CoreEvent::PhaseProgress { 
+                phase: PhaseKind::Scan, 
+                completed: scan_count, 
+                total: None 
+            });
+        }
         
         // Skip vault paths
         if result.file.path.ancestors().any(|p| p == vault_canon) {
@@ -519,10 +446,6 @@ pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter) -> anyhow::Res
         let crc = match result.crc {
             Ok(c) => c,
             Err(e) => {
-                scan_bar.println(format!("  {} {} - {}", 
-                    style("Error").red(), 
-                    style(&result.file.path.display()),
-                    e));
                 reporter.emit(CoreEvent::Error {
                     message: format!("CRC computation failed: {}", e),
                     path: Some(result.file.path.clone()),
@@ -565,12 +488,16 @@ pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter) -> anyhow::Res
             detail: None,
         });
         
-        process_lookup_result(entry, check_result, &rel_path, &opts, &mut state, &scan_bar);
+        process_lookup_result(entry, check_result, &rel_path, &opts, &mut state);
     }
-    scan_bar.finish_and_clear();
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Scan, 
+        completed: scan_count, 
+        total: None 
+    });
     reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Scan });
-
-    finalize_import(state, opts, db, &source_canon, reporter)
+    
+    finalize_import(state, opts, db, &source_canon, reporter, interactor)
 }
 
 /// Run import with a predefined file list (skips directory scanning).
@@ -582,6 +509,7 @@ pub fn run_with_file_list(
     db: &Db,
     paths: Vec<std::path::PathBuf>,
     reporter: &dyn Reporter,
+    interactor: &dyn Interactor,
 ) -> anyhow::Result<ImportSummary> {
     reporter.emit(CoreEvent::RunStarted { operation: OperationKind::Import });
     
@@ -595,21 +523,16 @@ pub fn run_with_file_list(
     // ------------------------------------------------------------------
     reporter.emit(CoreEvent::PhaseStarted { phase: PhaseKind::Scan, total: None });
     
-    let scan_bar = ProgressBar::new_spinner();
-    scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files ({per_sec})")
-            .unwrap(),
-    );
-    scan_bar.set_prefix("Scanning");
-
     let mut state = ImportState::new();
+    let mut scan_count: u64 = 0;
 
     for path in paths {
         // Skip non-existent files
         if !path.exists() {
-            scan_bar.println(format!("  {} {} - file not found",
-                style("Error").red(),
-                style(path.display())));
+            reporter.emit(CoreEvent::Error {
+                message: "file not found".to_string(),
+                path: Some(path.clone()),
+            });
             continue;
         }
 
@@ -624,7 +547,7 @@ pub fn run_with_file_list(
         }
 
         state.total_files += 1;
-        scan_bar.inc(1);
+        scan_count += 1;
         
         // Emit discovery event
         reporter.emit(CoreEvent::ItemDiscovered {
@@ -642,10 +565,6 @@ pub fn run_with_file_list(
         let entry = match build_crc_entry(&path) {
             Ok(e) => e,
             Err(e) => {
-                scan_bar.println(format!("  {} {} - {}",
-                    style("Error").red(),
-                    style(path.display()),
-                    e));
                 reporter.emit(CoreEvent::Error {
                     message: format!("CRC computation failed: {}", e),
                     path: Some(path.clone()),
@@ -673,12 +592,17 @@ pub fn run_with_file_list(
             detail: None,
         });
         
-        process_lookup_result(entry, check_result, &rel_path, &opts, &mut state, &scan_bar);
+        process_lookup_result(entry, check_result, &rel_path, &opts, &mut state);
     }
-    scan_bar.finish_and_clear();
+    
+    reporter.emit(CoreEvent::PhaseProgress { 
+        phase: PhaseKind::Scan, 
+        completed: scan_count, 
+        total: None 
+    });
     reporter.emit(CoreEvent::PhaseFinished { phase: PhaseKind::Scan });
-
-    finalize_import(state, opts, db, &source_canon, reporter)
+    
+    finalize_import(state, opts, db, &source_canon, reporter, interactor)
 }
 
 /// Finalize import: show summary, confirm, execute stages
@@ -688,22 +612,14 @@ fn finalize_import(
     db: &Db,
     source_canon: &Path,
     reporter: &dyn Reporter,
+    interactor: &dyn crate::reporting::Interactor,
 ) -> anyhow::Result<ImportSummary> {
     if state.lookup_results.is_empty() {
-        eprintln!("\nNo files found to import.");
         return Ok(ImportSummary::default());
     }
 
     let (new_files, dup_files) = pipeline::lookup::filter_new(state.lookup_results, opts.force);
     let likely_dup = dup_files.len();
-
-    // Pre-flight summary
-    show_preflight_summary(new_files.len(), likely_dup);
-
-    // Show duplicate files if --show-dup is enabled
-    if opts.show_dup && !dup_files.is_empty() {
-        show_dup_files_list(&dup_files, source_canon);
-    }
 
     // Early exit if no new files
     if new_files.is_empty() {
@@ -715,17 +631,12 @@ fn finalize_import(
     fs::create_dir_all(&staging_dir)?;
 
     if !opts.yes && !opts.dry_run {
-        eprint!("{}", style("Proceed with import? [y/N] ").bold());
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
-            eprintln!("{}", style("Aborted.").yellow());
+        if !interactor.confirm("Proceed with import?") {
             return Ok(ImportSummary { total: state.total_files, duplicate: likely_dup, ..Default::default() });
         }
     }
 
     if opts.dry_run {
-        eprintln!("\n(dry-run: no files copied)");
         return Ok(ImportSummary { total: state.total_files, duplicate: likely_dup, ..Default::default() });
     }
 

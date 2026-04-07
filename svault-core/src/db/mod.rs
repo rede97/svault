@@ -16,7 +16,7 @@ pub mod dump;
 pub mod files;
 pub mod stats;
 
-pub use dump::{TableDump, DumpOptions, dump_database, dump_table, list_tables, 
+pub use dump::{TableDump, DumpOptions, DumpResult, dump_database, dump_table, list_tables, 
                render_csv, render_json, render_sql};
 pub use files::FileRow;
 pub use stats::{VaultStats, ExtensionStats, format_bytes, format_count};
@@ -35,7 +35,6 @@ pub fn init(root: &Path) -> anyhow::Result<()> {
     let db_path = svault_dir.join("vault.db");
     Db::open(&db_path)?;
     crate::config::Config::write_default(root)?;
-    println!("Initialized empty svault at {}", svault_dir.display());
     Ok(())
 }
 
@@ -190,7 +189,7 @@ impl Db {
     }
 
     /// Dump database contents for debugging.
-    pub fn dump(&self, tables: Vec<String>, limit: Option<usize>) -> Result<Vec<TableDump>> {
+    pub fn dump(&self, tables: Vec<String>, limit: Option<usize>) -> Result<dump::DumpResult> {
         let opts = DumpOptions { tables, limit };
         dump::dump_database(&self.conn, opts)
     }

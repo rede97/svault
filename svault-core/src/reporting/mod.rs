@@ -167,6 +167,26 @@ pub fn noop_reporter() -> SharedReporter {
     Arc::new(NoopReporter)
 }
 
+/// Trait for user interaction (confirmation prompts, etc.)
+/// 
+/// This abstracts terminal interaction so core doesn't directly read stdin.
+/// CLI implements this for terminal interaction, GUI would implement differently.
+pub trait Interactor: Send + Sync {
+    /// Confirm an action with the user.
+    /// Returns true if user confirms, false otherwise.
+    fn confirm(&self, message: &str) -> bool;
+}
+
+/// No-op interactor that always returns true (for --yes mode or automation)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct YesInteractor;
+
+impl Interactor for YesInteractor {
+    fn confirm(&self, _message: &str) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

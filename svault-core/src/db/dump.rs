@@ -85,8 +85,18 @@ pub fn dump_table(conn: &Connection, table_name: &str, limit: Option<usize>) -> 
     })
 }
 
+/// Result of a database dump operation.
+#[derive(Debug, Clone)]
+pub struct DumpResult {
+    /// Successfully dumped tables.
+    pub dumps: Vec<TableDump>,
+    /// Warnings for tables that failed to dump.
+    pub warnings: Vec<String>,
+}
+
 /// Dumps all or selected tables from the database.
-pub fn dump_database(conn: &Connection, opts: DumpOptions) -> Result<Vec<TableDump>> {
+/// Returns both successful dumps and warnings for failed tables.
+pub fn dump_database(conn: &Connection, opts: DumpOptions) -> Result<DumpResult> {
     let tables_to_dump = if opts.tables.is_empty() {
         list_tables(conn)?
     } else {
@@ -94,14 +104,16 @@ pub fn dump_database(conn: &Connection, opts: DumpOptions) -> Result<Vec<TableDu
     };
     
     let mut dumps = Vec::new();
+    let mut warnings = Vec::new();
+    
     for table_name in tables_to_dump {
         match dump_table(conn, &table_name, opts.limit) {
             Ok(dump) => dumps.push(dump),
-            Err(e) => eprintln!("Warning: failed to dump table '{}': {}", table_name, e),
+            Err(e) => warnings.push(format!("failed to dump table '{}': {}", table_name, e)),
         }
     }
     
-    Ok(dumps)
+    Ok(DumpResult { dumps, warnings })
 }
 
 /// Formats a SQL value for CSV output.
