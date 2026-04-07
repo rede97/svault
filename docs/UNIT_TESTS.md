@@ -2,7 +2,7 @@
 
 > 本文档跟踪所有单元测试和集成测试的状态，随时更新。
 > 
-> 最后更新：2026-04-05
+> 最后更新：2026-04-08
 
 ---
 
@@ -10,12 +10,14 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (Unit) | 117 | 117 | 0 | 0 |
-| Python E2E 测试 (Linux) | 208 | 208 | 0 | 0 |
-| Python E2E 测试 (Windows) | 208 | 200 | 0 | 8 |
-| **总计** | **523** | **515** | **0** | **8** |
+| 单元测试 (Unit) | 129 | 129 | 0 | 3 (MTP 需物理设备) |
+| Python E2E 测试 (Linux) | 241 | — | — | — |
+| **总计** | — | — | — | — |
 
-> Windows 跳过的 8 个测试主要涉及 reflink/hardlink 特性（Windows 文件系统限制）和某些权限相关测试。
+> **注意：** 
+> - E2E 测试 `pytest --collect-only` 可收集到 241 个，收集阶段已验证；完整测试运行（full run）未在本轮验证。
+> - MTP 相关单元测试 (3个) 因需要物理设备被跳过。
+> - 此前 Windows 测试数据未经验证，已移除。
 
 ---
 
@@ -50,7 +52,7 @@
 | `sha256_digest_display_trait` | `src/hash/mod.rs` | Sha256Digest Display trait | ✅ |
 | `sha256_digest_to_bytes_returns_inner_array` | `src/hash/mod.rs` | Sha256Digest 转字节数组 | ✅ |
 
-### config 模块 (24 tests)
+### config 模块 (23 tests)
 
 | 测试名 | 位置 | 描述 | 状态 |
 |--------|------|------|------|
@@ -63,7 +65,6 @@
 | `parses_config_with_sync_strategy_comma_string` | `src/config.rs` | 逗号分隔策略解析 | ✅ |
 | `parses_config_with_store_exif_true` | `src/config.rs` | store_exif 选项 | ✅ |
 | `parses_config_with_custom_rename_template` | `src/config.rs` | 自定义重命名模板 | ✅ |
-| `rejects_unknown_hash_algorithm` | `src/config.rs` | 拒绝未知哈希算法 | ✅ |
 | `rejects_unknown_strategy` | `src/config.rs` | 拒绝未知策略 | ✅ |
 | `rejects_unknown_strategy_in_string` | `src/config.rs` | 拒绝字符串中的未知策略 | ✅ |
 | `rejects_missing_required_import_section` | `src/config.rs` | 拒绝缺少 import 节 | ✅ |

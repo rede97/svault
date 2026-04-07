@@ -88,7 +88,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Db { command } => match command {
             DbCommand::VerifyChain => commands::db::run_verify_chain(),
-            DbCommand::Replay { .. } => commands::db::run_replay(),
             DbCommand::Dump { tables, format, limit } => {
                 commands::db::run_dump(tables, format, limit)
             }

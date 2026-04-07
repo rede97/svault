@@ -321,21 +321,6 @@ Verifying event chain (312 events)...
 
 ---
 
-### `svault db replay`
-
-从事件日志重建物化视图（用于数据库损坏恢复）。
-
-```
-svault db replay [options]
-```
-
-| 选项 | 说明 |
-|------|------|
-| `--to-seq <n>` | 仅重放到指定事件序号（时间点恢复） |
-| `--to-time <datetime>` | 仅重放到指定时间点 |
-
----
-
 ## AI Agent 集成示例
 
 ```bash

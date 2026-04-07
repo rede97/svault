@@ -176,18 +176,28 @@ svault history --limit 5
 
 ## 📖 Command Reference
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `init` | Initialize a new vault | `svault init` |
-| `import <source>` | Import media from directory or device | `svault import /path/to/photos` |
-| `recheck [source]` | Verify import session against manifest | `svault recheck --session <id>` |
-| `add <path>` | Register files already in vault | `svault add ./existing/photos` |
-| `reconcile` | Update paths for moved files | `svault reconcile --root /vault` |
-| `verify` | Check file integrity | `svault verify --file photo.jpg` |
-| `status` | Show vault overview | `svault status` |
-| `history` | Browse import history | `svault history --events` |
-| `mtp ls` | List MTP devices | `svault mtp ls mtp://1/` |
-| `mtp tree` | Browse device as tree | `svault mtp tree mtp://1/DCIM` |
+| Command | Status | Description | Example |
+|---------|--------|-------------|---------|
+| `init` | ✅ Ready | Initialize a new vault | `svault init` |
+| `import <source>` | ✅ Ready | Import media from directory or device | `svault import /path/to/photos` |
+| `recheck [source]` | ✅ Ready | Verify import session against manifest | `svault recheck --session <id>` |
+| `add <path>` | ✅ Ready | Register files already in vault | `svault add ./existing/photos` |
+| `update` | ✅ Ready | Update paths for moved files | `svault update --target ./vault` |
+| `verify` | ✅ Ready | Check file integrity | `svault verify --file photo.jpg` |
+| `status` | ✅ Ready | Show vault overview | `svault status` |
+| `history` | ✅ Ready | Browse import history | `svault history --events` |
+| `scan` | ✅ Ready | Scan directory for import pipeline | `svault scan ./photos` |
+| `mtp ls` | ✅ Ready | List MTP devices | `svault mtp ls mtp://1/` |
+| `mtp tree` | ✅ Ready | Browse device as tree | `svault mtp tree mtp://1/DCIM` |
+| `db dump` | ✅ Ready | Dump database contents | `svault db dump --format json` |
+| `db verify-chain` | 🧪 Experimental | Verify event-log hash chain integrity | `svault db verify-chain` |
+| `sync` | ⛔ Stub | Sync files from another vault | — |
+| `clone` | ⛔ Stub | Clone a subset to working directory | — |
+
+**Status legend:**
+- ✅ Ready — Fully implemented and tested
+- 🧪 Experimental — Implemented but may have edge cases; API/behavior may change
+- ⛔ Stub — Command exists but exits with `todo!()` (not yet implemented)
 
 ---
 

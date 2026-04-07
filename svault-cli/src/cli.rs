@@ -254,17 +254,6 @@ pub enum DbCommand {
     /// Verify the event-log hash chain
     VerifyChain,
 
-    /// Rebuild views from the event log
-    Replay {
-        /// Replay only up to this event sequence number
-        #[arg(long, value_name = "SEQ")]
-        to_seq: Option<i64>,
-
-        /// Replay only up to this point in time (RFC 3339 or YYYY-MM-DD)
-        #[arg(long, value_name = "DATETIME")]
-        to_time: Option<String>,
-    },
-
     /// Dump database contents
     Dump {
         /// Tables to dump (default: all)

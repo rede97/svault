@@ -3,15 +3,28 @@ use svault_core::context::find_vault_root;
 use svault_core::db;
 
 pub fn run_verify_chain() -> anyhow::Result<()> {
-    let _vault_root = find_vault_root(None, &std::env::current_dir()?)?;
-    let _lock = svault_core::lock::acquire_vault_lock(&_vault_root)?;
-    todo!("db verify-chain")
-}
-
-pub fn run_replay() -> anyhow::Result<()> {
-    let _vault_root = find_vault_root(None, &std::env::current_dir()?)?;
-    let _lock = svault_core::lock::acquire_vault_lock(&_vault_root)?;
-    todo!("db replay")
+    let vault_root = find_vault_root(None, &std::env::current_dir()?)?;
+    let _lock = svault_core::lock::acquire_vault_lock(&vault_root)?;
+    
+    let db_path = vault_root.join(".svault").join("vault.db");
+    let db = db::Db::open(&db_path).map_err(|e| anyhow::anyhow!("cannot open db: {e}"))?;
+    
+    // Get event count for user feedback
+    let count: i64 = db.conn_ref().query_row(
+        "SELECT COUNT(*) FROM events",
+        [],
+        |row| row.get(0),
+    )?;
+    
+    match db.verify_chain() {
+        Ok(()) => {
+            println!("✓ Hash chain verified: {} events intact", count);
+            Ok(())
+        }
+        Err(e) => {
+            anyhow::bail!("✗ Hash chain verification failed: {}", e);
+        }
+    }
 }
 
 pub fn run_dump(

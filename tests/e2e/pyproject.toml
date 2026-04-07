@@ -51,6 +51,10 @@ markers = [
     "config: marks tests for configuration handling",
     "transfer: marks tests for transfer strategy scenarios",
     "media: marks tests for media format support",
+    "fuse: marks tests requiring FUSE filesystem",
+    "corruption: marks tests for corruption detection scenarios",
+    "recheck: marks tests for recheck command scenarios",
+    "verify: marks tests for verify command scenarios",
 ]
 
 [tool.hypothesis]

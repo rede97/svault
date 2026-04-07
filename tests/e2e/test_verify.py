@@ -505,3 +505,54 @@ class TestVerifyRecovery:
 这个根本问题的实际演示参见：
 fuse_tests/test_corruption_fuse.py::TestFundamentalProblem
 """
+
+
+# =============================================================================
+# DB Verify-Chain 测试
+# =============================================================================
+
+class TestDbVerifyChain:
+    """db verify-chain 命令测试 - 验证事件哈希链完整性"""
+    
+    def test_verify_chain_empty_vault(self, vault: VaultEnv) -> None:
+        """空 vault 应验证通过（0 事件）"""
+        result = vault.run("db", "verify-chain")
+        assert result.returncode == 0
+        assert "verified" in result.stdout.lower() or "0 events" in result.stdout
+    
+    def test_verify_chain_after_import(self, vault: VaultEnv) -> None:
+        """导入文件后应验证通过"""
+        from conftest import create_minimal_jpeg
+        
+        test_file = vault.source_dir / "test.jpg"
+        create_minimal_jpeg(test_file)
+        
+        vault.import_dir(vault.source_dir)
+        
+        result = vault.run("db", "verify-chain")
+        assert result.returncode == 0
+        assert "verified" in result.stdout.lower()
+    
+    def test_verify_chain_detects_tampering(self, vault: VaultEnv) -> None:
+        """篡改事件后应检测出链断裂"""
+        from conftest import create_minimal_jpeg
+        
+        test_file = vault.source_dir / "test.jpg"
+        create_minimal_jpeg(test_file)
+        
+        vault.import_dir(vault.source_dir)
+        
+        # 直接篡改数据库中的事件
+        db_path = vault.vault_dir / ".svault" / "vault.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # 修改第一个事件的 payload，破坏 self_hash
+            conn.execute("UPDATE events SET payload = '{\"tampered\":true}' WHERE seq = 1")
+            conn.commit()
+        finally:
+            conn.close()
+        
+        # 验证应失败
+        result = vault.run("db", "verify-chain", check=False)
+        assert result.returncode != 0
+        assert "failed" in result.stdout.lower() or "failed" in result.stderr.lower() or "broken" in result.stdout.lower() or "broken" in result.stderr.lower()

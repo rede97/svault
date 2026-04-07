@@ -365,8 +365,7 @@ mod tests {
         assert!(toml_str.contains("[global]"));
         assert!(toml_str.contains("[import]"));
         
-        // Should contain default values
-        assert!(toml_str.contains("hash"));
+        // Should contain default values (hash field removed from config model)
         assert!(toml_str.contains("sync_strategy"));
         assert!(toml_str.contains("allowed_extensions"));
     }
@@ -388,7 +387,10 @@ mod tests {
 
     #[test]
     fn parses_minimal_valid_config() {
+        // Note: [global] section is now required (even if empty)
         let toml = r#"
+[global]
+
 [import]
 path_template = "$year/$filename"
 allowed_extensions = ["jpg", "png"]
@@ -467,23 +469,6 @@ allowed_extensions = ["jpg"]
     // -------------------------------------------------------------------------
     // TOML deserialization tests - error handling
     // -------------------------------------------------------------------------
-
-    #[test]
-    fn rejects_unknown_hash_algorithm() {
-        let toml = r#"
-[global]
-hash = "md5"
-
-[import]
-path_template = "$year/$filename"
-allowed_extensions = ["jpg"]
-"#;
-        
-        let result: Result<Config, _> = toml::from_str(toml);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("md5") || err_msg.contains("unknown") || err_msg.contains("variant"));
-    }
 
     #[test]
     fn rejects_unknown_strategy() {
