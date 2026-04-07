@@ -127,10 +127,15 @@ fn run_files_from_import(
         files_from: None,
     };
     
+    // JSON mode without --yes is not allowed (cannot prompt without breaking stdout)
+    if matches!(output, OutputFormat::Json) && !yes {
+        return Err(anyhow::anyhow!("JSON mode requires --yes flag (cannot prompt without breaking structured output)"));
+    }
+    
     let reporter = create_reporter(&output);
     
-    // JSON mode never prompts; --yes also skips prompt
-    let interactor: Box<dyn Interactor> = if matches!(output, OutputFormat::Json) || yes {
+    // Only --yes skips prompt; JSON mode alone does not auto-confirm
+    let interactor: Box<dyn Interactor> = if yes {
         Box::new(YesInteractor)
     } else {
         Box::new(TerminalInteractor)
@@ -166,6 +171,11 @@ fn run_mtp_import(
     full_id: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
+    // JSON mode without --yes is not allowed (cannot prompt without breaking stdout)
+    if matches!(output, OutputFormat::Json) && !yes {
+        return Err(anyhow::anyhow!("JSON mode requires --yes flag (cannot prompt without breaking structured output)"));
+    }
+    
     use svault_core::import::vfs_import::{run_vfs_import, VfsImportOptions};
     use svault_core::vfs::manager::VfsManager;
 
@@ -193,8 +203,8 @@ fn run_mtp_import(
 
     let reporter = create_reporter(&output);
     
-    // JSON mode never prompts; --yes also skips prompt
-    let interactor: Box<dyn Interactor> = if matches!(output, OutputFormat::Json) || yes {
+    // Only --yes skips prompt; JSON mode alone does not auto-confirm
+    let interactor: Box<dyn Interactor> = if yes {
         Box::new(YesInteractor)
     } else {
         Box::new(TerminalInteractor)
@@ -229,6 +239,11 @@ fn run_local_import(
     full_id: bool,
     show_dup: bool,
 ) -> anyhow::Result<()> {
+    // JSON mode without --yes is not allowed (cannot prompt without breaking stdout)
+    if matches!(output, OutputFormat::Json) && !yes {
+        return Err(anyhow::anyhow!("JSON mode requires --yes flag (cannot prompt without breaking structured output)"));
+    }
+    
     let ctx = VaultContext::open(target, &source)?;
     let opts = ImportOptions {
         source,
@@ -244,8 +259,8 @@ fn run_local_import(
     };
     let reporter = create_reporter(&output);
     
-    // JSON mode never prompts; --yes also skips prompt
-    let interactor: Box<dyn Interactor> = if matches!(output, OutputFormat::Json) || yes {
+    // Only --yes skips prompt; JSON mode alone does not auto-confirm
+    let interactor: Box<dyn Interactor> = if yes {
         Box::new(YesInteractor)
     } else {
         Box::new(TerminalInteractor)

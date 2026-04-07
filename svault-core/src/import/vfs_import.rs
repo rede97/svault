@@ -208,11 +208,19 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter, 
                 .display()
                 .to_string();
 
+            // Emit discovery event first (consistent with local import)
+            reporter.emit(CoreEvent::ItemDiscovered {
+                path: e.path.clone(),
+                size: e.size,
+                mtime_ms: e.mtime_ms,
+            });
+
             let crc = match crc_result {
                 Err(err) => {
-                    reporter.emit(CoreEvent::Error {
-                        message: format!("CRC failed: {}", err),
-                        path: Some(e.path.clone()),
+                    reporter.emit(CoreEvent::ItemClassified {
+                        path: e.path.clone(),
+                        status: crate::reporting::ItemStatus::Failed,
+                        detail: None,
                     });
                     return ScanEntry {
                         src_path: e.path,
@@ -265,13 +273,19 @@ pub fn run_vfs_import(opts: VfsImportOptions, db: &Db, reporter: &dyn Reporter, 
                 FileStatus::LikelyNew
             };
 
-            if let FileStatus::LikelyNew = status {
-                reporter.emit(CoreEvent::ItemClassified {
-                    path: e.path.clone(),
-                    status: crate::reporting::ItemStatus::New,
-                    detail: Some(format!("Found: {}", rel_path)),
-                });
-            }
+            // Emit classification event for all statuses (consistent with local import)
+            let item_status = match &status {
+                FileStatus::LikelyNew => crate::reporting::ItemStatus::New,
+                FileStatus::LikelyCacheDuplicate => crate::reporting::ItemStatus::Duplicate,
+                FileStatus::Imported => crate::reporting::ItemStatus::New,
+                FileStatus::Duplicate => crate::reporting::ItemStatus::Duplicate,
+                FileStatus::Failed(_) => crate::reporting::ItemStatus::Failed,
+            };
+            reporter.emit(CoreEvent::ItemClassified {
+                path: e.path.clone(),
+                status: item_status,
+                detail: None,
+            });
 
             ScanEntry {
                 src_path: e.path,

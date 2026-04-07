@@ -225,12 +225,26 @@ impl Reporter for TerminalReporter {
                 // Could update message with current file if needed
             }
 
-            CoreEvent::ItemClassified { path: _, status: _, detail } => {
-                // Log classified items (duplicates, etc.) at trace level
-                // In normal operation, only show interesting classifications
-                if let Some(ref detail) = detail {
-                    self.print(format!("  {}", detail));
-                }
+            CoreEvent::ItemClassified { path, status, detail: _ } => {
+                // Show classification status with appropriate color
+                let msg = match status {
+                    svault_core::reporting::ItemStatus::New => {
+                        format!("  {} {}", style("Found").green(), style(path.display()).dim())
+                    }
+                    svault_core::reporting::ItemStatus::Duplicate => {
+                        format!("  {} {}", style("Duplicate").yellow(), style(path.display()).dim())
+                    }
+                    svault_core::reporting::ItemStatus::MovedInVault => {
+                        format!("  {} {}", style("Moved").cyan(), style(path.display()).dim())
+                    }
+                    svault_core::reporting::ItemStatus::Recover => {
+                        format!("  {} {}", style("Recover").blue(), style(path.display()).dim())
+                    }
+                    svault_core::reporting::ItemStatus::Failed => {
+                        format!("  {} {}", style("Failed").red(), style(path.display()).dim())
+                    }
+                };
+                self.print(msg);
             }
 
             CoreEvent::ItemStarted { path, phase: _, .. } => {
