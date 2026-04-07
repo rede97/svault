@@ -45,11 +45,9 @@ impl TerminalReporter {
 
     /// Print a message safely (using multi_progress if bars are active)
     fn print(&self, msg: String) {
-        if *self.bars_active.lock().unwrap() {
-            let _ = self.multi_progress.println(msg);
-        } else {
-            println!("{}", msg);
-        }
+        let _bars_active = *self.bars_active.lock().unwrap();
+        // Always use println for now to ensure messages are visible
+        println!("{}", msg);
     }
 
     /// Finish and clear the current progress bar

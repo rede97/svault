@@ -482,11 +482,19 @@ pub fn run(opts: ImportOptions, db: &Db, reporter: &dyn Reporter, interactor: &d
             pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
             pipeline::CheckResult::Recover { .. } => ItemStatus::Recover,
         };
-        reporter.emit(CoreEvent::ItemClassified {
-            path: file_path,
-            status: item_status,
-            detail: None,
-        });
+        
+        // Emit classification event (respect --show-dup flag for Duplicate status)
+        let should_emit = match item_status {
+            ItemStatus::Duplicate => opts.show_dup,
+            _ => true,
+        };
+        if should_emit {
+            reporter.emit(CoreEvent::ItemClassified {
+                path: file_path,
+                status: item_status,
+                detail: None,
+            });
+        }
         
         process_lookup_result(entry, check_result, &rel_path, &opts, &mut state);
     }
