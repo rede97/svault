@@ -223,6 +223,27 @@ svault-core/src/pipeline/
 - 消除 ~69% 的代码重复
 - 便于测试和维护
 
+### Reporting 架构 (2026-04-12 重构)
+
+**三层架构：**
+
+| 层级 | 位置 | 职责 |
+|------|------|------|
+| Traits | `svault-core/src/reporting/mod.rs` | 定义 Reporter 和 Interactor trait |
+| Builders | `svault-cli/src/reporting/` | 创建具体 reporter 实例 |
+| Implementations | `svault-cli/src/reporting/terminal.rs` | Terminal 输出实现 |
+
+**关键设计：**
+- Typed phase reporters 替代泛型 PhaseReporter (ScanReporter, CopyReporter, HashReporter, etc.)
+- Interactor 使用泛型参数 `<I: Interactor>` 替代 `&dyn Interactor`，零开销抽象
+- SuspendingInteractor 持有 `MultiProgress` 而非 `Arc<TerminalReporterBuilder>`，降低耦合
+- 批量输出：先构建完整 String 再单次 `pb.println()`，避免多线程输出交错
+- ProgressBar 生命周期由 struct Drop 自动管理
+
+**支持输出格式：**
+- Human (默认): 彩色终端输出，带进度条
+- JSON (`--output=json`): 结构化 JSON 事件流，用于脚本集成
+
 ### 关键设计
 
 - **永不删除用户文件** - Svault 没有 delete 命令
@@ -252,3 +273,4 @@ svault-core/src/pipeline/
 | 2026-04-04 | `--strategy` 移除 `auto`，默认改为 `reflink`；支持逗号组合（如 `reflink,hardlink`）；`copy` 始终兜底；hardlink 不再出现在默认策略中 |
 | 2026-04-04 | 实现 `history` / `background-hash` / `verify --upgrade-links`；支持将 hardlink 原地升级为二进制复制 |
 | 2026-04-05 | CLI 重构：拆分 main.rs 为 13 个命令模块；新增 pipeline 架构供 import/add 共享；所有 198 E2E 测试通过 |
+| 2026-04-12 | Reporting 系统重构：Typed reporters 替代泛型系统；Interactor 改泛型参数；VFS/MTP 移除；JSON 输出支持；SuspendingInteractor 解耦 |
