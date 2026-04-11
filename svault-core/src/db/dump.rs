@@ -16,8 +16,7 @@ pub struct TableDump {
 }
 
 /// Options for dumping database contents.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DumpOptions {
     /// Specific tables to dump (empty = all tables).
     pub tables: Vec<String>,
@@ -31,9 +30,9 @@ pub fn list_tables(conn: &Connection) -> Result<Vec<String>> {
         "SELECT name FROM sqlite_master 
          WHERE type = 'table' 
          AND name NOT LIKE 'sqlite_%'
-         ORDER BY name"
+         ORDER BY name",
     )?;
-    
+
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut tables = Vec::new();
     for table in rows {
@@ -50,20 +49,20 @@ pub fn dump_table(conn: &Connection, table_name: &str, limit: Option<usize>) -> 
     let column_rows = stmt.query_map([], |row| {
         row.get::<_, String>(1) // column name is at index 1
     })?;
-    
+
     let mut columns = Vec::new();
     for col in column_rows {
         columns.push(col?);
     }
-    
+
     // Get table data
     let sql = match limit {
         Some(n) => format!("SELECT * FROM {} LIMIT {}", table_name, n),
         None => format!("SELECT * FROM {}", table_name),
     };
-    
+
     let mut stmt = conn.prepare(&sql)?;
-    
+
     let rows = stmt.query_map([], |row| {
         let mut row_data = HashMap::new();
         for (i, col_name) in columns.iter().enumerate() {
@@ -72,12 +71,12 @@ pub fn dump_table(conn: &Connection, table_name: &str, limit: Option<usize>) -> 
         }
         Ok(row_data)
     })?;
-    
+
     let mut row_vec = Vec::new();
     for row in rows {
         row_vec.push(row?);
     }
-    
+
     Ok(TableDump {
         name: table_name.to_string(),
         columns,
@@ -102,17 +101,17 @@ pub fn dump_database(conn: &Connection, opts: DumpOptions) -> Result<DumpResult>
     } else {
         opts.tables.clone()
     };
-    
+
     let mut dumps = Vec::new();
     let mut warnings = Vec::new();
-    
+
     for table_name in tables_to_dump {
         match dump_table(conn, &table_name, opts.limit) {
             Ok(dump) => dumps.push(dump),
             Err(e) => warnings.push(format!("failed to dump table '{}': {}", table_name, e)),
         }
     }
-    
+
     Ok(DumpResult { dumps, warnings })
 }
 
@@ -124,7 +123,8 @@ fn format_value_csv(value: &Value) -> String {
         Value::Real(f) => f.to_string(),
         Value::Text(s) => {
             // Escape quotes and wrap in quotes if contains comma, quote, or newline
-            let needs_quote = s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r');
+            let needs_quote =
+                s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r');
             let escaped = s.replace('"', "\"\"");
             if needs_quote || escaped != *s {
                 format!("\"{}\"", escaped)
@@ -139,29 +139,35 @@ fn format_value_csv(value: &Value) -> String {
 /// Renders dump as CSV (one table per section with header).
 pub fn render_csv(dumps: &[TableDump]) -> anyhow::Result<String> {
     let mut output = String::new();
-    
+
     for (i, dump) in dumps.iter().enumerate() {
         if i > 0 {
             output.push('\n');
         }
-        
+
         // Table header comment
-        output.push_str(&format!("# Table: {} ({} rows)\n", dump.name, dump.rows.len()));
-        
+        output.push_str(&format!(
+            "# Table: {} ({} rows)\n",
+            dump.name,
+            dump.rows.len()
+        ));
+
         if dump.rows.is_empty() {
             // Still output column headers for empty tables
             output.push_str(&dump.columns.join(","));
             output.push('\n');
             continue;
         }
-        
+
         // Column headers
         output.push_str(&dump.columns.join(","));
         output.push('\n');
-        
+
         // Data rows
         for row in &dump.rows {
-            let row_values: Vec<String> = dump.columns.iter()
+            let row_values: Vec<String> = dump
+                .columns
+                .iter()
                 .map(|col| {
                     let val = row.get(col).unwrap_or(&Value::Null);
                     format_value_csv(val)
@@ -171,39 +177,48 @@ pub fn render_csv(dumps: &[TableDump]) -> anyhow::Result<String> {
             output.push('\n');
         }
     }
-    
+
     Ok(output)
 }
 
 /// Renders dump as JSON.
 pub fn render_json(dumps: &[TableDump]) -> anyhow::Result<String> {
-    let json_tables: Vec<serde_json::Value> = dumps.iter().map(|dump| {
-        let rows: Vec<serde_json::Value> = dump.rows.iter().map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in &dump.columns {
-                let val = row.get(col).unwrap_or(&Value::Null);
-                let json_val = match val {
-                    Value::Null => serde_json::Value::Null,
-                    Value::Integer(i) => serde_json::Value::Number((*i).into()),
-                    Value::Real(f) => serde_json::Value::Number(
-                        serde_json::Number::from_f64(*f).unwrap_or(0.into())
-                    ),
-                    Value::Text(s) => serde_json::Value::String(s.clone()),
-                    Value::Blob(b) => serde_json::Value::String(format!("<BLOB:{}>", b.len())),
-                };
-                obj.insert(col.clone(), json_val);
-            }
-            serde_json::Value::Object(obj)
-        }).collect();
-        
-        serde_json::json!({
-            "name": dump.name,
-            "columns": dump.columns,
-            "row_count": dump.rows.len(),
-            "rows": rows,
+    let json_tables: Vec<serde_json::Value> = dumps
+        .iter()
+        .map(|dump| {
+            let rows: Vec<serde_json::Value> = dump
+                .rows
+                .iter()
+                .map(|row| {
+                    let mut obj = serde_json::Map::new();
+                    for col in &dump.columns {
+                        let val = row.get(col).unwrap_or(&Value::Null);
+                        let json_val = match val {
+                            Value::Null => serde_json::Value::Null,
+                            Value::Integer(i) => serde_json::Value::Number((*i).into()),
+                            Value::Real(f) => serde_json::Value::Number(
+                                serde_json::Number::from_f64(*f).unwrap_or(0.into()),
+                            ),
+                            Value::Text(s) => serde_json::Value::String(s.clone()),
+                            Value::Blob(b) => {
+                                serde_json::Value::String(format!("<BLOB:{}>", b.len()))
+                            }
+                        };
+                        obj.insert(col.clone(), json_val);
+                    }
+                    serde_json::Value::Object(obj)
+                })
+                .collect();
+
+            serde_json::json!({
+                "name": dump.name,
+                "columns": dump.columns,
+                "row_count": dump.rows.len(),
+                "rows": rows,
+            })
         })
-    }).collect();
-    
+        .collect();
+
     Ok(serde_json::to_string_pretty(&json_tables)?)
 }
 
@@ -212,26 +227,34 @@ pub fn render_sql(dumps: &[TableDump]) -> String {
     let mut output = String::new();
     output.push_str("-- Svault Database Dump\n");
     output.push_str("-- Generated automatically\n\n");
-    
+
     for dump in dumps {
         if dump.rows.is_empty() {
             output.push_str(&format!("-- Table: {} (empty)\n\n", dump.name));
             continue;
         }
-        
-        output.push_str(&format!("-- Table: {} ({} rows)\n", dump.name, dump.rows.len()));
-        
+
+        output.push_str(&format!(
+            "-- Table: {} ({} rows)\n",
+            dump.name,
+            dump.rows.len()
+        ));
+
         for row in &dump.rows {
-            let values: Vec<String> = dump.columns.iter().map(|col| {
-                match row.get(col).unwrap_or(&Value::Null) {
-                    Value::Null => "NULL".to_string(),
-                    Value::Integer(i) => i.to_string(),
-                    Value::Real(f) => f.to_string(),
-                    Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
-                    Value::Blob(_) => "X'...'".to_string(), // Simplified
-                }
-            }).collect();
-            
+            let values: Vec<String> = dump
+                .columns
+                .iter()
+                .map(|col| {
+                    match row.get(col).unwrap_or(&Value::Null) {
+                        Value::Null => "NULL".to_string(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Real(f) => f.to_string(),
+                        Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+                        Value::Blob(_) => "X'...'".to_string(), // Simplified
+                    }
+                })
+                .collect();
+
             output.push_str(&format!(
                 "INSERT INTO {} ({}) VALUES ({});\n",
                 dump.name,
@@ -241,7 +264,7 @@ pub fn render_sql(dumps: &[TableDump]) -> String {
         }
         output.push('\n');
     }
-    
+
     output
 }
 
@@ -254,8 +277,14 @@ mod tests {
         assert_eq!(format_value_csv(&Value::Null), "");
         assert_eq!(format_value_csv(&Value::Integer(42)), "42");
         assert_eq!(format_value_csv(&Value::Text("hello".to_string())), "hello");
-        assert_eq!(format_value_csv(&Value::Text("with,comma".to_string())), "\"with,comma\"");
-        assert_eq!(format_value_csv(&Value::Text("with\"quote".to_string())), "\"with\"\"quote\"");
+        assert_eq!(
+            format_value_csv(&Value::Text("with,comma".to_string())),
+            "\"with,comma\""
+        );
+        assert_eq!(
+            format_value_csv(&Value::Text("with\"quote".to_string())),
+            "\"with\"\"quote\""
+        );
     }
 
     #[test]
@@ -268,9 +297,11 @@ mod tests {
     #[test]
     fn test_list_tables_with_data() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test VALUES (1, 'hello')", []).unwrap();
-        
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test VALUES (1, 'hello')", [])
+            .unwrap();
+
         let tables = list_tables(&conn).unwrap();
         assert_eq!(tables, vec!["test"]);
     }
@@ -292,7 +323,7 @@ mod tests {
         let mut row = HashMap::new();
         row.insert("id".to_string(), Value::Integer(1));
         row.insert("name".to_string(), Value::Text("test".to_string()));
-        
+
         let dump = TableDump {
             name: "test".to_string(),
             columns: vec!["id".to_string(), "name".to_string()],

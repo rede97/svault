@@ -18,6 +18,7 @@ Merged from:
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -34,6 +35,14 @@ def compute_file_hash(path: Path) -> str:
         while chunk := f.read(8192):
             h.update(chunk)
     return h.hexdigest()
+
+
+def load_latest_recheck_report(vault: VaultEnv) -> dict:
+    """Load the latest recheck JSON report from .svault/staging."""
+    staging = vault.vault_dir / ".svault" / "staging"
+    reports = sorted(staging.glob("recheck_*.json"), key=lambda p: p.stat().st_mtime)
+    assert reports, f"No recheck report found in {staging}"
+    return json.loads(reports[-1].read_text())
 
 
 # =============================================================================
@@ -250,8 +259,9 @@ class TestRecheckWorkflow:
 
         result = vault.run("recheck")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "Vault corrupted" in combined
+        report = load_latest_recheck_report(vault)
+        statuses = [f["status"] for f in report["files"]]
+        assert any("VaultCorrupted" in s for s in statuses)
 
         corrupt_target.unlink()
 
@@ -267,8 +277,9 @@ class TestRecheckWorkflow:
 
         result = vault.run("recheck")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "VAULT_CORRUPTED" not in combined
+        report = load_latest_recheck_report(vault)
+        statuses = [f["status"] for f in report["files"]]
+        assert all("VaultCorrupted" not in s for s in statuses)
 
     def test_recheck_all_ok(self, vault: VaultEnv) -> None:
         """Recheck after successful import should report all OK."""
@@ -281,9 +292,9 @@ class TestRecheckWorkflow:
 
         result = vault.run("recheck")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "OK" in combined
-        assert "corrupted" not in combined.lower()
+        report = load_latest_recheck_report(vault)
+        statuses = [f["status"] for f in report["files"]]
+        assert statuses and all("Ok" in s for s in statuses)
 
     def test_recheck_source_mismatch(self, vault: VaultEnv) -> None:
         """Providing a source path that doesn't match the manifest should error."""
@@ -308,8 +319,9 @@ class TestRecheckWorkflow:
 
         result = vault.run("recheck", str(vault.source_dir.resolve()))
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "OK" in combined
+        report = load_latest_recheck_report(vault)
+        statuses = [f["status"] for f in report["files"]]
+        assert statuses and all("Ok" in s for s in statuses)
 
 
 # =============================================================================

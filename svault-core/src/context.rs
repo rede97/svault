@@ -3,10 +3,10 @@
 //! Provides unified vault discovery, locking, database connection,
 //! and configuration loading for both CLI and programmatic use.
 
-use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::db::Db;
 use crate::lock::VaultLock;
+use std::path::{Path, PathBuf};
 
 /// Walk up from `start` looking for `.svault/vault.db`.
 pub fn find_vault_root(target: Option<PathBuf>, source: &Path) -> anyhow::Result<PathBuf> {
@@ -84,8 +84,7 @@ impl VaultContext {
     pub fn open_at(vault_root: PathBuf) -> anyhow::Result<Self> {
         let lock = crate::lock::acquire_vault_lock(&vault_root)?;
         let db_path = vault_root.join(".svault").join("vault.db");
-        let db = Db::open(&db_path)
-            .map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
+        let db = Db::open(&db_path).map_err(|e| anyhow::anyhow!("cannot open vault db: {e}"))?;
         let config = Config::load(&vault_root)?;
 
         Ok(Self {

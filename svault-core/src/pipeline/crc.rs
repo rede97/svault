@@ -4,12 +4,11 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
-use indicatif::ProgressBar;
 use rayon::prelude::*;
 
+use crate::media::MediaFormat;
 use crate::media::crc::compute_checksum;
 use crate::media::raw_id::{extract_raw_id_if_raw, get_fingerprint_string, is_raw_file};
-use crate::media::MediaFormat;
 use crate::pipeline::types::{CrcEntry, FileEntry};
 
 /// Batch size for parallel CRC computation.
@@ -31,7 +30,6 @@ pub struct CrcResult {
 ///
 /// # Arguments
 /// * `rx` - Input stream of FileEntry results (from scan_stream)
-/// * `progress` - Optional progress bar
 ///
 /// # Returns
 /// Receiver that yields CrcResult as they are computed.
@@ -43,7 +41,6 @@ pub struct CrcResult {
 /// - Handles errors gracefully (error entries are still yielded)
 pub fn compute_crcs_stream(
     rx: mpsc::Receiver<anyhow::Result<FileEntry>>,
-    progress: Option<ProgressBar>,
 ) -> mpsc::Receiver<CrcResult> {
     let (tx, output_rx) = mpsc::channel();
 
@@ -57,7 +54,7 @@ pub fn compute_crcs_stream(
 
                     // Process batch when full
                     if batch.len() >= CRC_BATCH_SIZE {
-                        process_crc_batch(&mut batch, &tx, &progress);
+                        process_crc_batch(&mut batch, &tx);
                     }
                 }
                 Err(e) => {
@@ -80,7 +77,7 @@ pub fn compute_crcs_stream(
 
         // Process remaining entries
         if !batch.is_empty() {
-            process_crc_batch(&mut batch, &tx, &progress);
+            process_crc_batch(&mut batch, &tx);
         }
     });
 
@@ -88,14 +85,10 @@ pub fn compute_crcs_stream(
 }
 
 /// Process a batch of entries in parallel.
-fn process_crc_batch(
-    batch: &mut Vec<FileEntry>,
-    tx: &mpsc::Sender<CrcResult>,
-    progress: &Option<ProgressBar>,
-) {
+fn process_crc_batch(batch: &mut Vec<FileEntry>, tx: &mpsc::Sender<CrcResult>) {
     let results: Vec<CrcResult> = batch
         .par_drain(..)
-        .map(|e| compute_crc_for_entry(&e, progress))
+        .map(|e| compute_crc_for_entry(&e))
         .collect();
 
     for result in results {
@@ -106,26 +99,18 @@ fn process_crc_batch(
 }
 
 /// Compute CRC for a single file entry.
-fn compute_crc_for_entry(e: &FileEntry, progress: &Option<ProgressBar>) -> CrcResult {
+fn compute_crc_for_entry(e: &FileEntry) -> CrcResult {
     // Compute format-specific CRC32C
     let format = MediaFormat::from_path(&e.path).unwrap_or(MediaFormat::Unknown(""));
     let crc = compute_checksum(&e.path, &format).map_err(|err| err.to_string());
 
     // Extract RAW ID for RAW files
-    let ext = e
-        .path
-        .extension()
-        .and_then(|ex| ex.to_str())
-        .unwrap_or("");
+    let ext = e.path.extension().and_then(|ex| ex.to_str()).unwrap_or("");
     let raw_unique_id = if is_raw_file(ext) {
         extract_raw_id_if_raw(&e.path).and_then(|raw_id| get_fingerprint_string(&raw_id))
     } else {
         None
     };
-
-    if let Some(pb) = progress {
-        pb.inc(1);
-    }
 
     CrcResult {
         file: e.clone(),
@@ -176,19 +161,27 @@ mod tests {
 
         let results = vec![
             CrcResult {
-                file: FileEntry { path: test_file, size: 5, mtime_ms: 0 },
+                file: FileEntry {
+                    path: test_file,
+                    size: 5,
+                    mtime_ms: 0,
+                },
                 crc: Ok(12345),
                 raw_unique_id: None,
             },
             CrcResult {
-                file: FileEntry { path: PathBuf::from("/missing"), size: 0, mtime_ms: 0 },
+                file: FileEntry {
+                    path: PathBuf::from("/missing"),
+                    size: 0,
+                    mtime_ms: 0,
+                },
                 crc: Err("not found".to_string()),
                 raw_unique_id: None,
             },
         ];
 
         let (success, errors) = split_results(results);
-        
+
         assert_eq!(success.len(), 1);
         assert_eq!(errors.len(), 1);
         assert_eq!(success[0].crc32c, 12345);
@@ -209,11 +202,12 @@ mod tests {
             path: test_file.clone(),
             size: 11,
             mtime_ms: 0,
-        })).unwrap();
+        }))
+        .unwrap();
         drop(tx);
 
-        let results: Vec<_> = compute_crcs_stream(rx, None).into_iter().collect();
-        
+        let results: Vec<_> = compute_crcs_stream(rx).into_iter().collect();
+
         assert_eq!(results.len(), 1);
         assert!(results[0].crc.is_ok());
     }
@@ -223,11 +217,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Create test files
-        let files: Vec<_> = (0..10).map(|i| {
-            let path = tmp.path().join(format!("test{}.txt", i));
-            fs::write(&path, format!("content {}", i)).unwrap();
-            path
-        }).collect();
+        let files: Vec<_> = (0..10)
+            .map(|i| {
+                let path = tmp.path().join(format!("test{}.txt", i));
+                fs::write(&path, format!("content {}", i)).unwrap();
+                path
+            })
+            .collect();
 
         let (tx, rx) = mpsc::channel();
         for path in &files {
@@ -235,12 +231,13 @@ mod tests {
                 path: path.clone(),
                 size: 10,
                 mtime_ms: 0,
-            })).unwrap();
+            }))
+            .unwrap();
         }
         drop(tx);
 
-        let results: Vec<_> = compute_crcs_stream(rx, None).into_iter().collect();
-        
+        let results: Vec<_> = compute_crcs_stream(rx).into_iter().collect();
+
         assert_eq!(results.len(), 10);
         // All should succeed
         assert!(results.iter().all(|r| r.crc.is_ok()));
@@ -262,12 +259,13 @@ mod tests {
                     path,
                     size: 10,
                     mtime_ms: 0,
-                })).unwrap();
+                }))
+                .unwrap();
             }
         });
 
-        let results: Vec<_> = compute_crcs_stream(rx, None).into_iter().collect();
-        
+        let results: Vec<_> = compute_crcs_stream(rx).into_iter().collect();
+
         assert_eq!(results.len(), num_files);
     }
 
@@ -282,12 +280,13 @@ mod tests {
             path: valid_file,
             size: 5,
             mtime_ms: 0,
-        })).unwrap();
+        }))
+        .unwrap();
         tx.send(Err(anyhow::anyhow!("test error"))).unwrap();
         drop(tx);
 
-        let results: Vec<_> = compute_crcs_stream(rx, None).into_iter().collect();
-        
+        let results: Vec<_> = compute_crcs_stream(rx).into_iter().collect();
+
         assert_eq!(results.len(), 2);
         // One should be ok (valid file), one should be error
         let ok_count = results.iter().filter(|r| r.crc.is_ok()).count();

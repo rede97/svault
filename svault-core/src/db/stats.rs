@@ -47,11 +47,9 @@ impl Db {
         )?;
 
         // Total events
-        let total_events: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM events",
-            [],
-            |row| row.get(0),
-        )?;
+        let total_events: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
 
         // Status counts
         let imported_count: i64 = self.conn.query_row(
@@ -110,7 +108,7 @@ impl Db {
              WHERE path LIKE '%.%'
              GROUP BY ext
              ORDER BY total_size DESC
-             LIMIT ?1"
+             LIMIT ?1",
         )?;
 
         let rows = stmt.query_map([limit], |row| {

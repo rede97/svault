@@ -1,6 +1,7 @@
 pub mod config;
 pub mod context;
 pub mod db;
+pub mod fs;
 pub mod hash;
 pub mod import;
 pub mod lock;
@@ -9,4 +10,3 @@ pub mod pipeline;
 pub mod reporting;
 pub mod status;
 pub mod verify;
-pub mod vfs;

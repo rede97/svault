@@ -1,9 +1,13 @@
-use svault_core::config::TransferStrategyArg;
 use clap::{Parser, Subcommand, ValueEnum};
+use svault_core::config::TransferStrategyArg;
 
 /// Svault — content-addressed multimedia archive.
 #[derive(Parser)]
-#[command(name = "svault", version, about = "Content-addressed multimedia archive")]
+#[command(
+    name = "svault",
+    version,
+    about = "Content-addressed multimedia archive"
+)]
 pub struct Cli {
     /// Output format
     #[arg(long, global = true, default_value = "human", value_enum)]
@@ -110,7 +114,6 @@ pub enum Command {
         /// Session ID to recheck (default: latest import).
         #[arg(long, value_name = "SESSION_ID")]
         session: Option<String>,
-
     },
 
     /// Register files already inside the vault
@@ -120,7 +123,6 @@ pub enum Command {
         #[arg(value_name = "PATH")]
         path: std::path::PathBuf,
     },
-
 
     /// Sync files from another vault
     Sync {
@@ -140,7 +142,6 @@ pub enum Command {
         /// full verifies the entire local vault database.
         #[arg(long, default_value = "norm", value_enum)]
         verify: SyncVerifyScope,
-
     },
 
     /// Update database paths for moved or renamed files
@@ -235,17 +236,34 @@ pub enum Command {
         filter_group: Option<String>,
     },
 
-    /// Browse MTP devices
-    #[cfg(feature = "mtp")]
-    Mtp {
-        #[command(subcommand)]
-        command: MtpCommand,
-    },
-
     /// Database maintenance
     Db {
         #[command(subcommand)]
         command: DbCommand,
+    },
+
+    /// Debug utilities
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DebugCommand {
+    /// Test reporter output with simulated import
+    Reporter {
+        /// Number of files to simulate
+        #[arg(short, long, default_value = "10")]
+        count: usize,
+
+        /// Delay between events (milliseconds)
+        #[arg(short, long, default_value = "100")]
+        delay_ms: u64,
+
+        /// Show duplicate file simulation
+        #[arg(long)]
+        show_dup: bool,
     },
 }
 
@@ -267,31 +285,6 @@ pub enum DbCommand {
         /// Limit number of rows per table
         #[arg(short, long, value_name = "N")]
         limit: Option<usize>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum MtpCommand {
-    /// List MTP devices or browse files
-    Ls {
-        /// MTP path (e.g., mtp://1/DCIM). If omitted, lists devices.
-        #[arg(value_name = "PATH")]
-        path: Option<String>,
-
-        /// Show file sizes and modification time
-        #[arg(short, long)]
-        long: bool,
-    },
-
-    /// Show MTP device tree
-    Tree {
-        /// MTP path (e.g., mtp://1/)
-        #[arg(value_name = "PATH")]
-        path: String,
-
-        /// Maximum depth to display
-        #[arg(short, long, default_value = "3")]
-        depth: usize,
     },
 }
 

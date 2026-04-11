@@ -21,7 +21,7 @@ pub mod commands;
 pub mod reporting;
 
 use clap::Parser;
-use cli::{Cli, Command, DbCommand, MtpCommand};
+use cli::{Cli, Command, DbCommand, DebugCommand};
 use commands::setup_signal_handler;
 
 fn run(cli: Cli) -> anyhow::Result<()> {
@@ -29,12 +29,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let output = cli.output;
     let dry_run = cli.dry_run;
     let yes = cli.yes;
-    
+
+    // Note: JSON output support is limited; individual commands handle their own output formatting
+
     match cli.command {
         Command::Init => commands::init::run(),
-        Command::Scan { source, show_dup } => {
-            commands::scan::run(output, source, show_dup)
-        }
+        Command::Scan { source, show_dup } => commands::scan::run(output, source, show_dup),
         Command::Import {
             source,
             files_from,
@@ -43,7 +43,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             force,
             full_id,
             show_dup,
-        } => commands::import::run(output, dry_run, yes, source, files_from, target, strategy, force, full_id, show_dup),
+        } => commands::import::run(
+            output, dry_run, yes, source, files_from, target, strategy, force, full_id, show_dup,
+        ),
         Command::Recheck {
             source,
             target,
@@ -51,9 +53,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => commands::recheck::run(source, target, session),
         Command::Add { path } => commands::add::run(path),
         Command::Sync { .. } => commands::sync::run(),
-        Command::Update { target, delete } => {
-            commands::update::run(dry_run, yes, target, delete)
-        }
+        Command::Update { target, delete } => commands::update::run(dry_run, yes, target, delete),
         Command::Verify {
             file,
             recent,
@@ -78,20 +78,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             verbose,
         } => commands::history::run(output, file, from, to, events, limit, verbose),
         Command::Clone { .. } => commands::clone::run(),
-        #[cfg(feature = "mtp")]
-        Command::Mtp { command } => match command {
-            MtpCommand::Ls { path, long } => commands::mtp::run_ls(path, long),
-            MtpCommand::Tree { path, depth } => commands::mtp::run_tree(path, depth),
-        },
-        #[cfg(not(feature = "mtp"))]
-        Command::Mtp { .. } => {
-            Err(anyhow::anyhow!("MTP support not enabled. Build with --features mtp"))
-        }
         Command::Db { command } => match command {
             DbCommand::VerifyChain => commands::db::run_verify_chain(),
-            DbCommand::Dump { tables, format, limit } => {
-                commands::db::run_dump(tables, format, limit)
-            }
+            DbCommand::Dump {
+                tables,
+                format,
+                limit,
+            } => commands::db::run_dump(tables, format, limit),
+        },
+        Command::Debug { command } => match command {
+            DebugCommand::Reporter {
+                count,
+                delay_ms,
+                show_dup,
+            } => commands::debug_reporter::run(output, count, delay_ms, show_dup),
         },
     }
 }

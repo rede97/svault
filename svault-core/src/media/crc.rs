@@ -3,7 +3,7 @@
 //! This module is internal - users interact with checksums through `MediaInfo::checksum`.
 
 use crate::media::formats::MediaFormat;
-use crate::media::{MediaReader, Result, CHECKSUM_BUFFER_SIZE};
+use crate::media::{CHECKSUM_BUFFER_SIZE, MediaReader, Result};
 use std::fs::File;
 use std::io::SeekFrom;
 use std::path::Path;
@@ -29,7 +29,7 @@ pub(crate) fn compute_checksum_with_strategy(
             let mut head_buf = vec![0u8; head_n];
             let head_read = reader.read(&mut head_buf)?;
             head_buf.truncate(head_read);
-            
+
             // Read tail
             let len = reader.len()?;
             let tail_start = len.saturating_sub(tail_m as u64);
@@ -37,7 +37,7 @@ pub(crate) fn compute_checksum_with_strategy(
             let mut tail_buf = vec![0u8; tail_m];
             let tail_read = reader.read(&mut tail_buf)?;
             tail_buf.truncate(tail_read);
-            
+
             // Combine and hash
             head_buf.extend_from_slice(&tail_buf);
             Ok(crate::media::crc32_bytes(&head_buf))
@@ -69,7 +69,7 @@ pub(crate) enum CrcStrategy {
 
 impl CrcStrategy {
     /// Get the default strategy for a media format.
-    /// 
+    ///
     /// CRC strategy is format-specific to handle different metadata locations:
     /// - JPEG: Head (64KB) - image data starts early, metadata at start
     /// - PNG: Tail (64KB) - image data at end, metadata at start (can be modified)
@@ -94,7 +94,9 @@ impl CrcStrategy {
 
             // RAW formats: head + tail (128KB total)
             // RAW files are large; head+tail captures embedded JPEG preview and metadata
-            Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => CrcStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE),
+            Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => {
+                CrcStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE)
+            }
 
             // Unknown: full file to be safe
             Unknown(_) => CrcStrategy::Full,
@@ -104,7 +106,6 @@ impl CrcStrategy {
 
 /// Compute CRC32 of first N bytes.
 fn compute_head(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
-
     reader.seek(SeekFrom::Start(0))?;
     let mut buffer = vec![0u8; n];
     let read = reader.read(&mut buffer)?;
@@ -114,7 +115,6 @@ fn compute_head(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
 
 /// Compute CRC32 of last N bytes.
 fn compute_tail(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
-
     let len = reader.len()?;
     let start = len.saturating_sub(n as u64);
 
@@ -127,7 +127,6 @@ fn compute_tail(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
 
 /// Compute CRC32 of entire file.
 fn compute_full(reader: &mut dyn MediaReader) -> Result<u32> {
-
     reader.seek(SeekFrom::Start(0))?;
     let mut hasher = crc32fast::Hasher::new();
     let mut buffer = [0u8; 8192];
@@ -145,7 +144,6 @@ fn compute_full(reader: &mut dyn MediaReader) -> Result<u32> {
 
 /// Compute CRC32 of a specific byte range.
 fn compute_range(reader: &mut dyn MediaReader, start: usize, len: usize) -> Result<u32> {
-
     reader.seek(SeekFrom::Start(start as u64))?;
     let mut buffer = vec![0u8; len];
     let read = reader.read(&mut buffer)?;

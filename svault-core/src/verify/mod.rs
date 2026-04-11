@@ -9,13 +9,12 @@ pub mod manifest;
 
 use std::path::Path;
 
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::config::HashAlgorithm;
 use crate::db::{Db, FileRow};
 use crate::hash::{sha256_file, xxh3_128_file};
+use crate::reporting::{ReporterBuilder, VerifyReporter};
 
 /// Result of a single file verification.
 #[derive(Debug, Clone)]
@@ -63,10 +62,7 @@ pub struct VerifySummary {
 /// Verification strategy:
 /// - If file has SHA-256 in DB, use it for definitive verification
 /// - Otherwise, use XXH3-128
-pub fn verify_file(
-    vault_root: &Path,
-    file: &FileRow,
-) -> VerifyResult {
+pub fn verify_file(vault_root: &Path, file: &FileRow) -> VerifyResult {
     let full_path = vault_root.join(&file.path);
 
     // Check file exists
@@ -123,9 +119,10 @@ pub fn verify_file(
 }
 
 /// Verify all files in the vault.
-pub fn verify_all(
+pub fn verify_all<RB: ReporterBuilder>(
     vault_root: &Path,
     db: &Db,
+    reporter_builder: &RB,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_all_files()?;
     let total = files.len();
@@ -134,39 +131,25 @@ pub fn verify_all(
         return Ok((Vec::new(), VerifySummary::default()));
     }
 
-    let bar = ProgressBar::new(total as u64);
-    bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    bar.set_prefix("Verifying");
+    let reporter = reporter_builder.verify_reporter(total as u64);
+    reporter.started(total as u64);
 
     let vault_root = vault_root.to_path_buf();
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
-        .map(|file| {
-            let filename = Path::new(&file.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            bar.set_message(filename);
-
+        .enumerate()
+        .map(|(idx, file)| {
             let result = verify_file(&vault_root, &file);
             if result.is_ok() {
-                bar.println(format!(
-                    "  {} {}",
-                    style("Verified").green(),
-                    style(&file.path)
-                ));
+                reporter.verified(Path::new(&file.path));
             }
-            bar.inc(1);
+            reporter.progress((idx + 1) as u64, total as u64);
             (file.path, result)
         })
         .collect();
 
-    bar.finish_and_clear();
+    reporter.finish();
 
     let mut summary = VerifySummary::default();
     for (_, result) in &results {
@@ -180,6 +163,8 @@ pub fn verify_all(
         }
     }
     summary.total = results.len();
+
+    reporter.summary(&summary);
 
     Ok((results, summary))
 }
@@ -197,10 +182,11 @@ pub fn verify_single(
 }
 
 /// Verify files imported in the last N seconds.
-pub fn verify_recent(
+pub fn verify_recent<RB: ReporterBuilder>(
     vault_root: &Path,
     db: &Db,
     seconds: u64,
+    reporter_builder: &RB,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_recent_files(seconds)?;
     let total = files.len();
@@ -209,39 +195,25 @@ pub fn verify_recent(
         return Ok((Vec::new(), VerifySummary::default()));
     }
 
-    let bar = ProgressBar::new(total as u64);
-    bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    bar.set_prefix("Verifying");
+    let reporter = reporter_builder.verify_reporter(total as u64);
+    reporter.started(total as u64);
 
     let vault_root = vault_root.to_path_buf();
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
-        .map(|file| {
-            let filename = Path::new(&file.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            bar.set_message(filename);
-
+        .enumerate()
+        .map(|(idx, file)| {
             let result = verify_file(&vault_root, &file);
             if result.is_ok() {
-                bar.println(format!(
-                    "  {} {}",
-                    style("Verified").green(),
-                    style(&file.path)
-                ));
+                reporter.verified(Path::new(&file.path));
             }
-            bar.inc(1);
+            reporter.progress((idx + 1) as u64, total as u64);
             (file.path, result)
         })
         .collect();
 
-    bar.finish_and_clear();
+    reporter.finish();
 
     let mut summary = VerifySummary::default();
     for (_, result) in &results {
@@ -255,6 +227,8 @@ pub fn verify_recent(
         }
     }
     summary.total = results.len();
+
+    reporter.summary(&summary);
 
     Ok((results, summary))
 }

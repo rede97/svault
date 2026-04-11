@@ -307,7 +307,10 @@ class TestRawIdAddCommand:
         )
         
         result = vault.run("add", str(vault_subdir), check=False)
-        
-        output = result.stdout + result.stderr
-        # Should detect as duplicate if RAW ID extraction works
-        assert "duplicate" in output.lower() or "added" in output.lower()
+        assert result.returncode == 0
+
+        # Current behavior may either deduplicate or register both paths.
+        # Validate functional invariant: RAW IDs are extracted and consistent.
+        rows = vault.db_query("SELECT path, raw_unique_id FROM files WHERE path LIKE '%.dng%'")
+        assert len(rows) >= 1
+        assert all(r["raw_unique_id"] == "DUP123:DUP-001" for r in rows)

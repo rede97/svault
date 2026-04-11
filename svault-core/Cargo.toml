@@ -9,9 +9,8 @@ keywords = ["archive", "multimedia", "photos", "vault", "content-addressed"]
 categories = ["filesystem"]
 
 [features]
-default = ["mtp"]
+default = []
 cli = ["dep:clap"]
-mtp = ["dep:mtp-rs", "dep:tokio", "dep:futures"]
 
 [dependencies]
 anyhow = "1"
@@ -26,8 +25,6 @@ sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
 dashmap = "6"
 rayon = "1"
-indicatif = "0.17"
-console = "0.15"
 rich_rust = "0.2"
 kamadak-exif = "0.5"
 log = "0.4"
@@ -37,9 +34,6 @@ fs2 = "0.4"
 thiserror = "1"
 env_logger = "0.11"
 clap = { version = "4", features = ["derive"], optional = true }
-mtp-rs = { version = "0.3", optional = true }
-tokio = { version = "1", features = ["rt"], optional = true }
-futures = { version = "0.3", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"

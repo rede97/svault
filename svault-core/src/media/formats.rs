@@ -256,9 +256,9 @@ impl FormatRegistry {
 
     /// Check if a format is supported.
     pub fn is_supported(&self, format: &MediaFormat) -> bool {
-        matches!(format, MediaFormat::Unknown(_)).then(|| false).unwrap_or(
-            self.supported.iter().any(|f| f == format)
-        )
+        matches!(format, MediaFormat::Unknown(_))
+            .then(|| false)
+            .unwrap_or(self.supported.iter().any(|f| f == format))
     }
 
     /// Check if a file extension is supported.

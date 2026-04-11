@@ -1,36 +1,35 @@
 //! Reporting abstraction layer for svault-core.
 //!
-//! This module provides a trait-based event reporting system that allows
-//! svault-core to emit progress and status events without coupling to
-//! specific output mechanisms (terminal, GUI, etc.).
+//! Core calls methods on typed phase reporters rather than emitting a generic
+//! event enum.  CLI / GUI layers implement the traits to adapt those calls to
+//! concrete rendering strategies (terminal progress bars, JSON stream,
+//! pipeable text, …).
 //!
-//! Design principles:
-//! - Core emits structured events, not formatted strings
-//! - CLI/GUI implement Reporter trait to handle events
-//! - No direct dependency on indicatif, console, or println! in core
+//! # Architecture
+//!
+//! ```text
+//! ReporterBuilder
+//!   ├─ scan_reporter()         → ScanReporter          (walk + CRC + lookup + preflight)
+//!   ├─ copy_reporter()         → CopyReporter          (file transfer)
+//!   ├─ hash_reporter()         → HashReporter          (XXH3 / SHA-256)
+//!   ├─ insert_reporter()       → InsertReporter        (DB insert + final summary)
+//!   ├─ add_summary_reporter()  → AddSummaryReporter    (add command summary)
+//!   ├─ recheck_reporter()      → RecheckReporter       (manifest integrity check)
+//!   ├─ update_hash_reporter()  → UpdateHashReporter    (update: hash-to-match phase)
+//!   └─ update_apply_reporter() → UpdateApplyReporter   (update: path-apply phase)
+//! ```
+//!
+//! Each reporter is obtained from the builder, used for exactly one phase,
+//! then dropped.  `Drop` implementations guarantee that any progress
+//! indicator is cleared even on early exit or panic.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
-/// High-level operation being performed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationKind {
-    Import,
-    ImportVfs,
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared enums
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Phase within an operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhaseKind {
-    Scan,
-    Fingerprint,
-    DedupLookup,
-    Copy,
-    Verify,
-    Insert,
-}
-
-/// Classification status of an item after scanning/deduplication.
+/// Classification status of an item after scanning / deduplication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemStatus {
     New,
@@ -40,237 +39,474 @@ pub enum ItemStatus {
     Failed,
 }
 
-/// Phase for per-item progress tracking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemPhase {
-    Copy,
-    Verify,
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase reporter traits
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reporter for the scan phase (Stages A + B + C: walk + CRC + DB lookup).
+///
+/// Also handles the pre-flight summary and the "nothing to import" case,
+/// since both are emitted at the end of the scan phase before the reporter
+/// is dropped.
+pub trait ScanReporter: Send + Sync {
+    /// A file was discovered during the directory walk.
+    fn discovered(&self, path: &Path, size: u64, mtime_ms: i64);
+
+    /// A file was classified after a DB duplicate check.
+    fn classified(&self, path: &Path, status: ItemStatus, detail: Option<&str>);
+
+    /// Periodic progress counter — number of files visited so far.
+    fn progress(&self, completed: u64);
+
+    /// A non-fatal warning associated with an optional path.
+    fn warning(&self, message: &str, path: Option<&Path>);
+
+    /// A file could not be read or hashed.
+    fn error(&self, message: &str, path: Option<&Path>);
+
+    /// Pre-flight summary emitted after scan and before the user is asked
+    /// to confirm.  Core provides raw counts; formatting is up to the
+    /// implementation.
+    fn preflight(
+        &self,
+        total_scanned: usize,
+        new_count: usize,
+        duplicate_count: usize,
+        moved_count: usize,
+        failed_count: usize,
+        source: &Path,
+    );
+
+    /// All scanned files were already in the vault — nothing to import.
+    fn nothing_to_import(&self, total: usize, duplicate: usize);
+
+    /// The scan phase is complete.  Implementations should print any
+    /// completion summary and clear progress indicators.
+    fn finish(&self);
 }
 
-/// Core events emitted by svault-core operations.
-/// 
-/// These events are designed to support both CLI progress bars and
-/// GUI real-time updates without mandating a specific rendering approach.
-#[derive(Debug, Clone)]
-pub enum CoreEvent {
-    /// Operation started
-    RunStarted {
-        operation: OperationKind,
-    },
-    /// Operation completed with summary
-    RunFinished {
-        operation: OperationKind,
+/// Reporter for the copy phase (Stage C: file transfer).
+pub trait CopyReporter: Send + Sync {
+    /// A file is about to be transferred.
+    fn item_started(&self, path: &Path, bytes_total: Option<u64>);
+
+    /// A file was successfully transferred.
+    fn item_finished(&self, path: &Path);
+
+    /// Parallel-safe progress update.
+    fn progress(&self, completed: u64, total: u64);
+
+    /// A file could not be transferred.
+    fn error(&self, message: &str, path: Option<&Path>);
+
+    /// The copy phase is complete.
+    fn finish(&self);
+}
+
+/// Reporter for the hash phase (Stage D: XXH3-128 / SHA-256 computation).
+pub trait HashReporter: Send + Sync {
+    fn progress(&self, completed: u64, total: u64);
+    fn finish(&self);
+}
+
+/// Reporter for the DB insert phase (Stage E).
+///
+/// Also carries the final import summary via [`InsertReporter::summary`],
+/// since insert is the last pipeline stage.
+pub trait InsertReporter: Send + Sync {
+    fn progress(&self, completed: u64, total: u64);
+
+    /// The insert phase is complete (clears progress indicator).
+    fn finish(&self);
+
+    /// Emit the final import summary after all pipeline stages complete.
+    ///
+    /// Called after [`finish`](InsertReporter::finish).
+    fn summary(
+        &self,
         total: usize,
         imported: usize,
         duplicate: usize,
         failed: usize,
-    },
-
-    /// Phase started (e.g., Scan, Copy)
-    PhaseStarted {
-        phase: PhaseKind,
-        total: Option<u64>,
-    },
-    /// Phase progress update
-    PhaseProgress {
-        phase: PhaseKind,
-        completed: u64,
-        total: Option<u64>,
-    },
-    /// Phase completed
-    PhaseFinished {
-        phase: PhaseKind,
-    },
-
-    /// File discovered during scanning
-    /// 
-    /// Emitted as soon as a file is found, before classification.
-    /// GUI can use this to populate the file list and request thumbnails.
-    ItemDiscovered {
-        path: PathBuf,
-        size: u64,
-        mtime_ms: i64,
-    },
-    /// File classified after deduplication check
-    /// 
-    /// Emitted after CRC/ hash lookup determines the file status.
-    /// Maps to: New, Duplicate, Recover, MovedInVault, Failed
-    ItemClassified {
-        path: PathBuf,
-        status: ItemStatus,
-        detail: Option<String>,
-    },
-
-    /// Item processing started (e.g., copy beginning)
-    ItemStarted {
-        path: PathBuf,
-        phase: ItemPhase,
-        bytes_total: Option<u64>,
-    },
-    /// Item progress update
-    /// 
-    /// First version may only emit at start/end; future versions
-    /// can add per-file byte progress without breaking the API.
-    ItemProgress {
-        path: PathBuf,
-        phase: ItemPhase,
-        bytes_done: u64,
-        bytes_total: Option<u64>,
-    },
-    /// Item processing completed
-    ItemFinished {
-        path: PathBuf,
-        phase: ItemPhase,
-    },
-
-    /// Warning message (non-fatal)
-    Warning {
-        message: String,
-        path: Option<PathBuf>,
-    },
-    /// Error message (potentially fatal for this item)
-    Error {
-        message: String,
-        path: Option<PathBuf>,
-    },
+        manifest_path: Option<&Path>,
+    );
 }
 
-/// Trait for receiving core events.
-/// 
-/// Implementations handle events according to their target medium:
-/// - TerminalReporter (CLI): renders progress bars and status text
-/// - ChannelReporter (GUI): forwards events via channel for async handling
-/// - NoopReporter: silently discards all events (testing, JSON mode)
-pub trait Reporter: Send + Sync {
-    /// Emit a core event.
-    fn emit(&self, event: CoreEvent);
+// ─────────────────────────────────────────────────────────────────────────────
+// Builder
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add command reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reporter for the `add` command's summary phase.
+///
+/// The scan and hash phases reuse [`ScanReporter`] and [`HashReporter`].
+/// This trait handles the add-specific pre-flight summary and the
+/// "vault-internal move detected" hints.
+///
+/// `moved_files` slices contain `(current_vault_path, old_recorded_path)` pairs.
+pub trait AddSummaryReporter: Send + Sync {
+    /// Pre-flight counts before inserting (no confirmation needed for `add`).
+    fn preflight(&self, new_count: usize, duplicate_count: usize, moved_count: usize);
+
+    /// All scanned files were vault-internal moves; suggest `svault update`.
+    /// Called instead of `summary` when `new_count == 0 && moved_count > 0`.
+    fn only_moved(&self, moved_files: &[(PathBuf, String)], vault_root: &Path);
+
+    /// Final summary after the insert stage completes.
+    fn summary(&self, total: usize, added: usize, duplicate: usize, failed: usize);
+
+    /// Post-insert hint shown when some files were also detected as moved
+    /// alongside new files.
+    fn moved_hint(&self, moved_files: &[(PathBuf, String)], vault_root: &Path);
+
+    /// The add summary phase is complete.
+    fn finish(&self);
 }
 
-/// No-op reporter that discards all events.
-/// 
-/// Useful for:
-/// - Unit tests that don't care about progress
-/// - JSON output mode where progress shouldn't clutter stdout
-/// - Suppressing output entirely
+// ─────────────────────────────────────────────────────────────────────────────
+// recheck command reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reporter for the `recheck` command (manifest integrity verification).
+pub trait RecheckReporter: Send + Sync {
+    /// Called once at the start with the total number of file pairs to check.
+    fn started(&self, total: usize, session_id: &str, source: &Path);
+
+    /// Parallel-safe progress update.
+    fn progress(&self, completed: u64, total: u64);
+
+    /// The check phase is complete (clears progress indicator).
+    fn finish(&self);
+
+    /// Final summary with per-status counts and the path of the written report.
+    #[allow(clippy::too_many_arguments)]
+    fn summary(
+        &self,
+        ok: usize,
+        source_modified: usize,
+        vault_corrupted: usize,
+        both_diverged: usize,
+        source_deleted: usize,
+        vault_deleted: usize,
+        errors: usize,
+        sha256_verified: usize,
+        report_path: &Path,
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// verify command reporters
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reporter for the `verify` command (vault integrity check).
+pub trait VerifyReporter: Send + Sync {
+    /// Called once at the start with the total number of files to verify.
+    fn started(&self, total: u64);
+
+    /// Parallel-safe progress update.
+    fn progress(&self, completed: u64, total: u64);
+
+    /// A file was successfully verified.
+    fn verified(&self, path: &Path);
+
+    /// The verification phase is complete.
+    fn finish(&self);
+
+    /// Final summary with per-status counts.
+    fn summary(&self, summary: &crate::verify::VerifySummary);
+}
+
+/// Reporter for the background hash computation phase.
+pub trait BackgroundHashReporter: Send + Sync {
+    /// Called once at the start.
+    fn started(&self, total: u64);
+
+    /// Progress update for current file.
+    fn progress(&self, completed: u64, total: u64, current_path: &Path);
+
+    /// A file was successfully hashed and stored.
+    fn hashed(&self, path: &Path);
+
+    /// A file failed to hash.
+    fn error(&self, path: &Path, message: &str);
+
+    /// The hashing phase is complete.
+    fn finish(&self);
+
+    /// Final summary.
+    fn summary(&self, processed: usize, failed: usize);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// update command reporters
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Confidence level of a file-path match found by `svault update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchConfidence {
+    /// Matched by SHA-256 — cryptographically definitive.
+    Definitive,
+    /// Matched by XXH3-128 only — fast but theoretically collidable.
+    Fast,
+}
+
+/// Reporter for the `update` command's hash-and-match phase.
+///
+/// Hashes files on disk to find DB records whose paths are now stale.
+pub trait UpdateHashReporter: Send + Sync {
+    fn progress(&self, completed: u64, total: u64);
+
+    /// A relocate match was found between `old_path` (DB record) and
+    /// `new_path` (current disk location).
+    fn matched(&self, old_path: &str, new_path: &str, confidence: MatchConfidence);
+
+    /// The hash phase is complete; also shows the collected match list.
+    fn finish(&self);
+}
+
+/// Reporter for the `update` command's path-apply phase.
+///
+/// Applies the matched path corrections to the database (and optionally
+/// marks unmatched records as missing / deleted).
+pub trait UpdateApplyReporter: Send + Sync {
+    fn progress(&self, completed: u64, total: u64);
+
+    /// A DB update failed for `path`.
+    fn error(&self, message: &str, path: &str);
+
+    /// The apply phase is complete.
+    fn finish(&self);
+
+    /// Final summary of the update operation.
+    fn summary(
+        &self,
+        scanned: usize,
+        missing: usize,
+        matched: usize,
+        unmatched: usize,
+        updated: usize,
+    );
+
+    /// Called when there are no missing files to update.
+    fn nothing_to_update(&self);
+
+    /// Called in dry-run mode to preview files that would be marked as missing.
+    fn dry_run_missing(&self, count: usize);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Builder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Creates typed phase reporters.
+///
+/// Each `*_reporter` method returns an owned value whose `Drop`
+/// implementation guarantees any progress indicator is cleared when
+/// the phase ends.
+pub trait ReporterBuilder: Send + Sync {
+    // ── import pipeline ───────────────────────────────────────────────────
+    type Scan: ScanReporter;
+    type Copy: CopyReporter;
+    type Hash: HashReporter;
+    type Insert: InsertReporter;
+
+    fn scan_reporter(&self, source: &Path) -> Self::Scan;
+    fn copy_reporter(&self, source: &Path, total: u64) -> Self::Copy;
+    fn hash_reporter(&self, source: &Path, total: u64) -> Self::Hash;
+    fn insert_reporter(&self, source: &Path, total: u64) -> Self::Insert;
+
+    // ── add command ───────────────────────────────────────────────────────
+    type AddSummary: AddSummaryReporter;
+
+    fn add_summary_reporter(&self, vault_root: &Path) -> Self::AddSummary;
+
+    // ── recheck command ───────────────────────────────────────────────────
+    type Recheck: RecheckReporter;
+
+    fn recheck_reporter(&self, total: u64) -> Self::Recheck;
+
+    // ── update command ────────────────────────────────────────────────────
+    type UpdateHash: UpdateHashReporter;
+    type UpdateApply: UpdateApplyReporter;
+
+    fn update_hash_reporter(&self, total: u64) -> Self::UpdateHash;
+    fn update_apply_reporter(&self, total: u64) -> Self::UpdateApply;
+
+    // ── verify command ────────────────────────────────────────────────────
+    type Verify: VerifyReporter;
+    type BackgroundHash: BackgroundHashReporter;
+
+    fn verify_reporter(&self, total: u64) -> Self::Verify;
+    fn background_hash_reporter(&self, total: u64) -> Self::BackgroundHash;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Noop implementations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// No-op reporter — silently discards all events.
+///
+/// Used by [`NoopReporterBuilder`] and by builders that only implement a
+/// subset of phases (e.g. `PipeReporterBuilder` uses `Noop` for the
+/// Copy / Hash / Insert reporters it does not need).
 #[derive(Debug, Clone, Copy, Default)]
-pub struct NoopReporter;
+pub struct Noop;
 
-impl Reporter for NoopReporter {
-    fn emit(&self, _event: CoreEvent) {}
+impl ScanReporter for Noop {
+    fn discovered(&self, _: &Path, _: u64, _: i64) {}
+    fn classified(&self, _: &Path, _: ItemStatus, _: Option<&str>) {}
+    fn progress(&self, _: u64) {}
+    fn warning(&self, _: &str, _: Option<&Path>) {}
+    fn error(&self, _: &str, _: Option<&Path>) {}
+    fn preflight(&self, _: usize, _: usize, _: usize, _: usize, _: usize, _: &Path) {}
+    fn nothing_to_import(&self, _: usize, _: usize) {}
+    fn finish(&self) {}
 }
 
-/// Shared reporter type for convenient passing across threads.
-pub type SharedReporter = Arc<dyn Reporter>;
-
-/// Helper function to create a shared noop reporter.
-pub fn noop_reporter() -> SharedReporter {
-    Arc::new(NoopReporter)
+impl CopyReporter for Noop {
+    fn item_started(&self, _: &Path, _: Option<u64>) {}
+    fn item_finished(&self, _: &Path) {}
+    fn progress(&self, _: u64, _: u64) {}
+    fn error(&self, _: &str, _: Option<&Path>) {}
+    fn finish(&self) {}
 }
 
-/// Trait for user interaction (confirmation prompts, etc.)
-/// 
-/// This abstracts terminal interaction so core doesn't directly read stdin.
-/// CLI implements this for terminal interaction, GUI would implement differently.
+impl HashReporter for Noop {
+    fn progress(&self, _: u64, _: u64) {}
+    fn finish(&self) {}
+}
+
+impl InsertReporter for Noop {
+    fn progress(&self, _: u64, _: u64) {}
+    fn finish(&self) {}
+    fn summary(&self, _: usize, _: usize, _: usize, _: usize, _: Option<&Path>) {}
+}
+
+impl AddSummaryReporter for Noop {
+    fn preflight(&self, _: usize, _: usize, _: usize) {}
+    fn only_moved(&self, _: &[(PathBuf, String)], _: &Path) {}
+    fn summary(&self, _: usize, _: usize, _: usize, _: usize) {}
+    fn moved_hint(&self, _: &[(PathBuf, String)], _: &Path) {}
+    fn finish(&self) {}
+}
+
+impl RecheckReporter for Noop {
+    fn started(&self, _: usize, _: &str, _: &Path) {}
+    fn progress(&self, _: u64, _: u64) {}
+    fn finish(&self) {}
+    fn summary(
+        &self,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: &Path,
+    ) {
+    }
+}
+
+impl UpdateHashReporter for Noop {
+    fn progress(&self, _: u64, _: u64) {}
+    fn matched(&self, _: &str, _: &str, _: MatchConfidence) {}
+    fn finish(&self) {}
+}
+
+impl UpdateApplyReporter for Noop {
+    fn progress(&self, _: u64, _: u64) {}
+    fn error(&self, _: &str, _: &str) {}
+    fn finish(&self) {}
+    fn summary(&self, _: usize, _: usize, _: usize, _: usize, _: usize) {}
+    fn nothing_to_update(&self) {}
+    fn dry_run_missing(&self, _: usize) {}
+}
+
+impl VerifyReporter for Noop {
+    fn started(&self, _: u64) {}
+    fn progress(&self, _: u64, _: u64) {}
+    fn verified(&self, _: &Path) {}
+    fn finish(&self) {}
+    fn summary(&self, _: &crate::verify::VerifySummary) {}
+}
+
+impl BackgroundHashReporter for Noop {
+    fn started(&self, _: u64) {}
+    fn progress(&self, _: u64, _: u64, _: &Path) {}
+    fn hashed(&self, _: &Path) {}
+    fn error(&self, _: &Path, _: &str) {}
+    fn finish(&self) {}
+    fn summary(&self, _: usize, _: usize) {}
+}
+
+/// No-op builder — all phases use [`Noop`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopReporterBuilder;
+
+impl ReporterBuilder for NoopReporterBuilder {
+    type Scan = Noop;
+    type Copy = Noop;
+    type Hash = Noop;
+    type Insert = Noop;
+    type AddSummary = Noop;
+    type Recheck = Noop;
+    type UpdateHash = Noop;
+    type UpdateApply = Noop;
+    type Verify = Noop;
+    type BackgroundHash = Noop;
+
+    fn scan_reporter(&self, _: &Path) -> Noop {
+        Noop
+    }
+    fn copy_reporter(&self, _: &Path, _: u64) -> Noop {
+        Noop
+    }
+    fn hash_reporter(&self, _: &Path, _: u64) -> Noop {
+        Noop
+    }
+    fn insert_reporter(&self, _: &Path, _: u64) -> Noop {
+        Noop
+    }
+    fn add_summary_reporter(&self, _: &Path) -> Noop {
+        Noop
+    }
+    fn recheck_reporter(&self, _: u64) -> Noop {
+        Noop
+    }
+    fn update_hash_reporter(&self, _: u64) -> Noop {
+        Noop
+    }
+    fn update_apply_reporter(&self, _: u64) -> Noop {
+        Noop
+    }
+    fn verify_reporter(&self, _: u64) -> Noop {
+        Noop
+    }
+    fn background_hash_reporter(&self, _: u64) -> Noop {
+        Noop
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interactor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Trait for interactive user prompts (confirmation dialogs, etc.).
 pub trait Interactor: Send + Sync {
-    /// Confirm an action with the user.
-    /// Returns true if user confirms, false otherwise.
     fn confirm(&self, message: &str) -> bool;
 }
 
-/// No-op interactor that always returns true (for --yes mode or automation)
+/// No-op interactor that always confirms without prompting.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct YesInteractor;
 
 impl Interactor for YesInteractor {
     fn confirm(&self, _message: &str) -> bool {
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    /// Test reporter that collects all events for verification.
-    #[derive(Debug, Default)]
-    struct TestReporter {
-        events: Mutex<Vec<CoreEvent>>,
-    }
-
-    impl Reporter for TestReporter {
-        fn emit(&self, event: CoreEvent) {
-            self.events.lock().unwrap().push(event);
-        }
-    }
-
-    #[test]
-    fn test_noop_reporter_silent() {
-        let reporter = NoopReporter;
-        // Should not panic or do anything observable
-        reporter.emit(CoreEvent::RunStarted {
-            operation: OperationKind::Import,
-        });
-    }
-
-    #[test]
-    fn test_reporter_can_emit_all_event_types() {
-        let reporter = TestReporter::default();
-        
-        reporter.emit(CoreEvent::RunStarted {
-            operation: OperationKind::Import,
-        });
-        reporter.emit(CoreEvent::PhaseStarted {
-            phase: PhaseKind::Scan,
-            total: Some(100),
-        });
-        reporter.emit(CoreEvent::ItemDiscovered {
-            path: PathBuf::from("/test/file.jpg"),
-            size: 1024,
-            mtime_ms: 1234567890,
-        });
-        reporter.emit(CoreEvent::ItemClassified {
-            path: PathBuf::from("/test/file.jpg"),
-            status: ItemStatus::New,
-            detail: None,
-        });
-        reporter.emit(CoreEvent::PhaseProgress {
-            phase: PhaseKind::Scan,
-            completed: 50,
-            total: Some(100),
-        });
-        reporter.emit(CoreEvent::PhaseFinished {
-            phase: PhaseKind::Scan,
-        });
-        reporter.emit(CoreEvent::RunFinished {
-            operation: OperationKind::Import,
-            total: 1,
-            imported: 1,
-            duplicate: 0,
-            failed: 0,
-        });
-
-        let events = reporter.events.lock().unwrap();
-        assert_eq!(events.len(), 7);
-    }
-
-    #[test]
-    fn test_shared_reporter() {
-        let reporter: SharedReporter = Arc::new(TestReporter::default());
-        let reporter2 = Arc::clone(&reporter);
-        
-        // Simulate cross-thread usage
-        reporter.emit(CoreEvent::RunStarted {
-            operation: OperationKind::Import,
-        });
-        reporter2.emit(CoreEvent::RunFinished {
-            operation: OperationKind::Import,
-            total: 0,
-            imported: 0,
-            duplicate: 0,
-            failed: 0,
-        });
-        
-        // Both references work
     }
 }

@@ -14,10 +14,8 @@ Tests for less common scenarios and potential failure modes.
 - 数据安全：损坏文件应被识别而非静默导入
 
 Coverage of old test_rules.json scenarios:
-- c1_rename_before_import: test_renamed_before_import
 - c2_move_to_subdir: test_moved_subdirectory
 - c3_interrupt_copy: test_truncated_jpeg_handling
-- c5_repeat_import: test_second_import_all_duplicates (TestRepeatedImport)
 """
 
 from __future__ import annotations
@@ -88,6 +86,5 @@ class TestChaosScenarios:
         
         files = vault.db_files()
         assert len(files) == 0
-
 
 

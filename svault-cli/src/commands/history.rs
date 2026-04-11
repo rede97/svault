@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
 use crate::commands::parse_datetime_to_ms;
+use console::style;
 use svault_core::context::VaultContext;
 use svault_core::db::Db;
-use console::style;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -24,9 +24,7 @@ pub fn run(
         show_session_history(output, ctx.vault_root(), ctx.db(), from, to, limit, verbose)?;
     } else {
         // Original event-based history (all events, use grep for filtering)
-        show_event_history(
-            output, ctx.vault_root(), file, from, to, limit, ctx.db(),
-        )?;
+        show_event_history(output, ctx.vault_root(), file, from, to, limit, ctx.db())?;
     }
     Ok(())
 }
@@ -40,7 +38,6 @@ fn show_session_history(
     limit: usize,
     verbose: bool,
 ) -> anyhow::Result<()> {
-
     let from_ms = from.as_ref().and_then(|s| parse_datetime_to_ms(s));
     let to_ms = to.as_ref().and_then(|s| parse_datetime_to_ms(s));
 
@@ -57,7 +54,7 @@ fn show_session_history(
     let sessions: Vec<(i64, String, String)> = all_events
         .into_iter()
         .filter(|e| {
-            e.event_type.starts_with("import.") 
+            e.event_type.starts_with("import.")
                 || e.event_type.starts_with("add.")
                 || e.event_type == "batch.imported"
         })
@@ -87,9 +84,11 @@ fn show_session_history(
                     .or_insert((occurred_at, None, payload));
             }
             "import.completed" | "add.completed" | "batch.imported" => {
-                let entry = session_map
-                    .entry(session_id.clone())
-                    .or_insert((occurred_at, None, payload.clone()));
+                let entry = session_map.entry(session_id.clone()).or_insert((
+                    occurred_at,
+                    None,
+                    payload.clone(),
+                ));
                 entry.1 = Some(occurred_at);
                 entry.2 = payload;
             }
@@ -101,8 +100,7 @@ fn show_session_history(
         let sessions_json: Vec<_> = session_map
             .iter()
             .map(|(session_id, (started_at, completed_at, payload))| {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(payload).unwrap_or_default();
+                let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
 
                 serde_json::json!({
                     "session_id": session_id,
@@ -121,11 +119,14 @@ fn show_session_history(
             }))?
         );
     } else {
-        println!("{}", style("History (import/add/update)").bold().underlined());
+        println!(
+            "{}",
+            style("History (import/add/update)").bold().underlined()
+        );
         println!();
 
         let mut sessions_vec: Vec<_> = session_map.into_iter().collect();
-        sessions_vec.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        sessions_vec.sort_by(|a, b| b.1.0.cmp(&a.1.0));
 
         for (i, (session_id, (started_at, completed_at, payload))) in
             sessions_vec.iter().enumerate()
@@ -135,10 +136,7 @@ fn show_session_history(
             let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
             let source = parsed["source"].as_str().unwrap_or("unknown");
             let total_files = parsed["total_files"].as_i64().unwrap_or(0);
-            let imported = parsed
-                .get("imported")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let imported = parsed.get("imported").and_then(|v| v.as_i64()).unwrap_or(0);
 
             let status_icon = if completed_at.is_some() {
                 style("✓").green()
@@ -163,10 +161,7 @@ fn show_session_history(
                     style(total_files).yellow()
                 );
             } else {
-                println!(
-                    "  Status: {}",
-                    style("pending (not confirmed)").yellow()
-                );
+                println!("  Status: {}", style("pending (not confirmed)").yellow());
             }
 
             if verbose {
@@ -223,7 +218,8 @@ fn show_event_history(
         }
         println!("{:>6}  {:<22}  {:<20}  payload", "seq", "time", "event");
         for e in events {
-            let datetime = chrono::DateTime::from_timestamp_millis(e.occurred_at).unwrap_or_default();
+            let datetime =
+                chrono::DateTime::from_timestamp_millis(e.occurred_at).unwrap_or_default();
             println!(
                 "{:>6}  {:<22}  {:<20}  {}",
                 e.seq,

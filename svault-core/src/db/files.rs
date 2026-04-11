@@ -36,11 +36,14 @@ impl Db {
     /// Returns the current CRC32C cache epoch from `metadata`.
     /// Epoch 1 is the default written during `init`.
     pub fn crc32c_epoch(&self) -> Result<i64> {
-        let epoch: Option<String> = self.conn.query_row(
-            "SELECT value FROM metadata WHERE key = 'crc32c_epoch'",
-            [],
-            |row| row.get(0),
-        ).optional()?;
+        let epoch: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'crc32c_epoch'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
         Ok(epoch.and_then(|s| s.parse().ok()).unwrap_or(1))
     }
 
@@ -63,29 +66,26 @@ impl Db {
         // Query all matching CRC+size+ext rows
         let mut stmt = self.conn.prepare(
             "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
-             FROM files WHERE size = ?1 AND crc32c = ?2 AND lower(path) LIKE ?3"
+             FROM files WHERE size = ?1 AND crc32c = ?2 AND lower(path) LIKE ?3",
         )?;
 
-        let rows = stmt.query_map(
-            params![size, crc32c as i64, ext_pattern],
-            file_row_from_row,
-        )?;
+        let rows = stmt.query_map(params![size, crc32c as i64, ext_pattern], file_row_from_row)?;
 
         // Find the best match
         for row in rows {
             let row = row?;
 
             // If we have a RAW unique ID, prefer exact match
-            if let Some(search_id) = raw_unique_id {
-                if let Some(ref row_id) = row.raw_unique_id {
-                    if row_id == search_id {
-                        return Ok(Some(row));
-                    }
-                    // Different RAW ID, skip this row (not a duplicate)
-                    continue;
+            if let Some(search_id) = raw_unique_id
+                && let Some(ref row_id) = row.raw_unique_id
+            {
+                if row_id == search_id {
+                    return Ok(Some(row));
                 }
-                // Existing row has no RAW ID, but we have one
-                // Return it - caller may decide to do stronger comparison
+                // Different RAW ID, skip this row (not a duplicate)
+                continue;
+                // Note: if existing row has no RAW ID but we have one,
+                // we fall through to return it - caller may decide to do stronger comparison
             }
 
             // No RAW ID to compare, return first CRC match
@@ -96,7 +96,11 @@ impl Db {
     }
 
     /// Look up a file by its strong hash (XXH3-128 or SHA-256, stored as BLOBs).
-    pub fn lookup_by_hash(&self, hash_bytes: &[u8], algo: &HashAlgorithm) -> Result<Option<FileRow>> {
+    pub fn lookup_by_hash(
+        &self,
+        hash_bytes: &[u8],
+        algo: &HashAlgorithm,
+    ) -> Result<Option<FileRow>> {
         let col = match algo {
             HashAlgorithm::Xxh3_128 => "xxh3_128",
             HashAlgorithm::Sha256 => "sha256",
@@ -105,7 +109,9 @@ impl Db {
             "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files WHERE {col} = ?1 LIMIT 1"
         );
-        self.conn.query_row(&sql, params![hash_bytes], file_row_from_row).optional()
+        self.conn
+            .query_row(&sql, params![hash_bytes], file_row_from_row)
+            .optional()
     }
 
     // -----------------------------------------------------------------------
@@ -154,7 +160,7 @@ impl Db {
     pub fn get_all_files(&self) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
-             FROM files ORDER BY path"
+             FROM files ORDER BY path",
         )?;
         let rows = stmt.query_map([], file_row_from_row)?;
         rows.collect()
@@ -162,19 +168,21 @@ impl Db {
 
     /// Get a file by its path.
     pub fn get_file_by_path(&self, path: &str) -> Result<Option<FileRow>> {
-        self.conn.query_row(
-            "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
+        self.conn
+            .query_row(
+                "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
              FROM files WHERE path = ?1 LIMIT 1",
-            params![path],
-            file_row_from_row,
-        ).optional()
+                params![path],
+                file_row_from_row,
+            )
+            .optional()
     }
 
     /// Get files imported since a given timestamp (inclusive).
     pub fn get_files_imported_since(&self, since_ms: i64) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
-             FROM files WHERE imported_at >= ?1 ORDER BY imported_at"
+             FROM files WHERE imported_at >= ?1 ORDER BY imported_at",
         )?;
         let rows = stmt.query_map(params![since_ms], file_row_from_row)?;
         rows.collect()
@@ -206,7 +214,7 @@ impl Db {
     pub fn get_missing_files(&self, vault_root: &std::path::Path) -> Result<Vec<FileRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status \
-             FROM files WHERE status = 'imported' ORDER BY path"
+             FROM files WHERE status = 'imported' ORDER BY path",
         )?;
         let rows = stmt.query_map([], file_row_from_row)?;
         rows.filter(|r| {
@@ -216,7 +224,8 @@ impl Db {
             } else {
                 true
             }
-        }).collect()
+        })
+        .collect()
     }
 
     /// Update the path of a file by its ID.

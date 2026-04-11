@@ -62,13 +62,6 @@ Svault is also a **public benchmark** for AI software engineering. Every line of
 ### 🔒 **Content-Addressed Storage**
 Files are stored by their cryptographic hash (SHA-256), ensuring absolute integrity. Same content = same address, automatic deduplication.
 
-### 📱 **Direct Device Import**
-Import directly from cameras and phones via USB (MTP protocol):
-```bash
-svault import mtp://1/SD/DCIM/     # Import from SD card
-svault import mtp://1/Internal\ Storage/  # Import from phone
-```
-
 ### 🚀 **High-Performance Pipeline**
 Three-tier hashing for speed and accuracy:
 1. **CRC32C** — Fast fingerprinting (hardware-accelerated)
@@ -146,19 +139,6 @@ svault status
 svault verify
 ```
 
-### Import from Phone
-
-```bash
-# List connected devices
-svault mtp ls
-
-# Browse device contents
-svault mtp tree mtp://1/ --depth 2
-
-# Import photos from phone
-svault import mtp://1/Internal\ Storage/DCIM/Camera/ --target phone_backup
-```
-
 ### Daily Workflow
 
 ```bash
@@ -179,7 +159,7 @@ svault history --limit 5
 | Command | Status | Description | Example |
 |---------|--------|-------------|---------|
 | `init` | ✅ Ready | Initialize a new vault | `svault init` |
-| `import <source>` | ✅ Ready | Import media from directory or device | `svault import /path/to/photos` |
+| `import <source>` | ✅ Ready | Import media from directory | `svault import /path/to/photos` |
 | `recheck [source]` | ✅ Ready | Verify import session against manifest | `svault recheck --session <id>` |
 | `add <path>` | ✅ Ready | Register files already in vault | `svault add ./existing/photos` |
 | `update` | ✅ Ready | Update paths for moved files | `svault update --target ./vault` |
@@ -187,8 +167,6 @@ svault history --limit 5
 | `status` | ✅ Ready | Show vault overview | `svault status` |
 | `history` | ✅ Ready | Browse import history | `svault history --events` |
 | `scan` | ✅ Ready | Scan directory for import pipeline | `svault scan ./photos` |
-| `mtp ls` | ✅ Ready | List MTP devices | `svault mtp ls mtp://1/` |
-| `mtp tree` | ✅ Ready | Browse device as tree | `svault mtp tree mtp://1/DCIM` |
 | `db dump` | ✅ Ready | Dump database contents | `svault db dump --format json` |
 | `db verify-chain` | 🧪 Experimental | Verify event-log hash chain integrity | `svault db verify-chain` |
 | `sync` | ⛔ Stub | Sync files from another vault | — |
@@ -216,7 +194,7 @@ svault history --limit 5
 │  ├──────────────────────────────────────────────────┤   │
 │  │  Hash    CRC32C → XXH3-128 → SHA-256 (lazy)     │   │
 │  ├──────────────────────────────────────────────────┤   │
-│  │  VFS     reflink/hardlink/copy with fallback    │   │
+│  │  FS      reflink/hardlink/copy with fallback    │   │
 │  ├──────────────────────────────────────────────────┤   │
 │  │  Pipeline 5-stage import (scan → crc → lookup   │   │
 │  │            → hash → insert)                     │   │
@@ -232,10 +210,10 @@ svault history --limit 5
 Source → [A] Scan → [B] CRC32C → Lookup → [D] Hash → [E] Insert → Vault
           ↓          ↓            ↓         ↓          ↓
         Files    Fingerprint   Dedup     Identity    DB+Events
-        (VFS)    (parallel)    (cache)   (parallel)  (atomic)
+         (FS)    (parallel)    (cache)   (parallel)  (atomic)
 ```
 
-**Stage A (Scan)**: Parallel directory traversal via VFS abstraction (local FS or MTP)
+**Stage A (Scan)**: Parallel directory traversal via local filesystem
 **Stage B (CRC32C)**: Hardware-accelerated fingerprinting for fast cache lookup
 **Lookup**: Check CRC cache to skip known duplicates (early exit)
 **Stage D (Hash)**: Compute strong hash (XXH3-128/SHA-256) for new files only
@@ -246,7 +224,7 @@ Source → [A] Scan → [B] CRC32C → Lookup → [D] Hash → [E] Insert → Va
 - **Append-only event log** — All state changes recorded as events, enabling full history and tamper detection
 - **Lazy SHA-256** — Computed only when needed for collision resolution
 - **Pipeline architecture** — Shared 5-stage pipeline used by `import` and `add` commands
-- **VFS abstraction** — Unified interface for local filesystem and MTP devices
+- **Filesystem module** — Local filesystem primitives with transfer fallback chain
 - **Early deduplication** — CRC32C cache eliminates 90%+ of duplicate work before hashing
 
 ---
@@ -306,7 +284,7 @@ bash run.sh --test-dir /mnt/btrfs
 
 | Phase | Status | Deliverables |
 |-------|--------|--------------|
-| ✅ Phase 1 | Complete | CLI skeleton, event-sourced DB, local VFS, `init` |
+| ✅ Phase 1 | Complete | CLI skeleton, event-sourced DB, local FS module, `init` |
 | ✅ Phase 2 | Complete | `import`, 5-stage pipeline, manifest output |
 | ✅ Phase 3 | Partial | `reconcile`, multi-target replication (sync stubbed) |
 | ✅ Phase 4 | Complete | `verify`, `history`, `recheck`, background-hash |

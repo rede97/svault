@@ -37,7 +37,7 @@
 | `0` | 成功 |
 | `1` | 通用错误 |
 | `2` | 参数错误 |
-| `3` | 源不可达（设备离线、路径不存在） |
+| `3` | 源不可达（路径不存在） |
 | `4` | 目标空间不足 |
 | `5` | 冲突需人工介入 |
 | `6` | 数据库一致性错误 |
@@ -48,7 +48,7 @@
 
 ### `svault import`
 
-从源目录或设备导入媒体文件到归档。
+从源目录导入媒体文件到归档。
 
 ```
 svault import <source> [options]
@@ -265,24 +265,6 @@ svault scan /mnt/card > candidates.txt
 exiftool -p '$Directory/$FileName' -if '$Model eq "iPhone 15"' /mnt/card > iphone.txt
 svault import /mnt/card --files-from iphone.txt
 ```
-
----
-
-### `svault mtp`
-
-> ⚠️ **实验性 / 未完成**：`mtp ls` 和 `mtp tree` 可用，但 `svault import mtp://...` 存在已知缺陷（如 `create_dir_all` 不支持、单流传输稳定性不足），**暂定为 browse-only，直接导入功能尚未完成**。
-
-浏览已连接的 MTP 设备（如 Android 手机、相机）。
-
-```
-svault mtp ls [mtp://<device>/<path>]
-svault mtp tree mtp://<device>/<path> --depth 3
-```
-
-| 子命令 | 说明 |
-|--------|------|
-| `ls [path]` | 列出设备、存储或目录内容 |
-| `tree <path>` | 以树形结构浏览设备目录 |
 
 ---
 

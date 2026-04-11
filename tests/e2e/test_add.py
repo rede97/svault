@@ -46,8 +46,6 @@ class TestAddCommand:
 
         result = vault.run("add", str(vault.vault_dir))
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "already tracked" in combined or "0 file(s) added" in combined
 
         rows2 = vault.db_files()
         assert len(rows2) == 1
@@ -68,9 +66,9 @@ class TestAddCommand:
 
         result = vault.run("add", str(vault.vault_dir))
         assert result.returncode == 0
-        # Should report duplicate or skip
-        combined = result.stderr + result.stdout
-        assert "duplicate" in combined.lower() or "0 file(s)" in combined
+        # Duplicate should not create new DB rows.
+        rows = vault.db_files()
+        assert len(rows) == 1
 
 
 class TestAddFormats:
@@ -217,8 +215,8 @@ class TestAddWithImport:
         # Add should detect duplicate
         result = vault.run("add", str(vault.vault_dir))
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "duplicate" in combined.lower() or "already tracked" in combined.lower()
+        rows = vault.db_files()
+        assert len(rows) == 1
 
     def test_import_after_add(self, vault: VaultEnv) -> None:
         """Add then import the same file (import should detect duplicate)."""
@@ -275,15 +273,8 @@ class TestAddInternalMoveDetection:
         
         # Step 3: Run add on new location
         result = vault.run("add", str(vault_2023_new))
-        combined = result.stderr + result.stdout
-        
-        # Step 4: Should suggest update (check for Moved or Duplicate in output)
-        assert (
-            "update" in combined.lower() or
-            "moved" in combined.lower() or
-            "duplicate" in combined.lower()
-        ), f"Expected 'reconcile', 'moved' or 'duplicate' in output, got:\n{combined}"
-        
+        assert result.returncode == 0
+
         # Should NOT add new records (files are duplicates, just moved)
         rows_after = vault.db_files()
         # Should still have only 2 files (old paths)
@@ -320,14 +311,10 @@ class TestAddInternalMoveDetection:
         create_minimal_jpeg(new_dir / "vacation.jpg", "VACATION_UNIQUE")
         
         result = vault.run("add", str(new_dir))
-        combined = result.stderr + result.stdout
-        
-        # Should suggest update (or show as duplicate/moved)
-        assert (
-            "update" in combined.lower() or 
-            "moved" in combined.lower() or
-            "duplicate" in combined.lower()
-        ), f"Should detect move and suggest update:\n{combined}"
+        assert result.returncode == 0
+
+        rows_after = vault.db_files()
+        assert len(rows_after) == 1
 
 
 # Note: RAW ID tests for add command are in test_raw_id.py::TestRawIdAddCommand

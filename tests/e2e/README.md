@@ -85,17 +85,14 @@ uv pip install -e "."
 
 | 文件 | 内容 | 标记 |
 |------|------|------|
-| `test_import_basic.py` | 基础导入场景 | - |
-| `test_import_force.py` | 强制导入与重复文件 | `force` |
-| `test_import_ignore.py` | Vault 自我保护扫描过滤 | `ignore` |
-| `test_recheck.py` | 一致性校验工作流 | `recheck` |
-| `test_import_conflict.py` | 文件名冲突处理 | `conflict` |
-| `test_import_dedup.py` | 三层去重系统 | `dedup` |
+| `test_import.py` | 主导入流程、CLI 语义、`--show-dup` | - |
+| `test_import_dedup.py` | 身份判定矩阵：去重 + 文件名冲突 | `dedup`, `conflict` |
+| `test_import_recovery.py` | 幂等性、增量导入、恢复场景 | - |
+| `test_import_interruption.py` | 信号注入中断与恢复 | - |
 | `test_chaos.py` | 边界/异常场景 | `chaos`, `slow` |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
 | `test_verify.py` | 完整性验证（哈希匹配、损坏检测） | `verify` |
 | `fuse_tests/test_corruption_fuse.py` | 硬件损坏/静默损坏 FUSE 测试 | `fuse`, `corruption` |
-| `test_concurrent_modification.py` | 并发修改与恢复 | `concurrent` |
 | `fuse_tests/` | **FUSE 深度故障注入测试** | `fuse`, `slow` |
 
 ## 使用 Fixtures

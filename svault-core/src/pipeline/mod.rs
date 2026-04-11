@@ -11,12 +11,12 @@
 //! Stage E (insert):  DB batch insert -> PipelineSummary
 //! ```
 
-pub mod types;
-pub mod scan;
 pub mod crc;
-pub mod lookup;
 pub mod hash;
 pub mod insert;
+pub mod lookup;
+pub mod scan;
+pub mod types;
 
 pub use types::{
     CheckResult, CopyResult, CrcEntry, FileEntry, FileStatus, HashResult, LookupResult,

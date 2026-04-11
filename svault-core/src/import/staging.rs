@@ -16,9 +16,21 @@ pub fn write_pending(
     let mut buf = String::new();
     writeln!(buf, "source={}", source.display())?;
     writeln!(buf, "session={session_id}")?;
-    let new_count = entries.iter().filter(|e| e.status == FileStatus::LikelyNew).count();
-    let dup_count = entries.iter().filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count();
-    writeln!(buf, "total={} new={} duplicate={}", entries.len(), new_count, dup_count)?;
+    let new_count = entries
+        .iter()
+        .filter(|e| e.status == FileStatus::LikelyNew)
+        .count();
+    let dup_count = entries
+        .iter()
+        .filter(|e| e.status == FileStatus::LikelyCacheDuplicate)
+        .count();
+    writeln!(
+        buf,
+        "total={} new={} duplicate={}",
+        entries.len(),
+        new_count,
+        dup_count
+    )?;
     for e in entries.iter().filter(|e| e.status == FileStatus::LikelyNew) {
         writeln!(buf, "{}\t{}", e.src_path.display(), e.size)?;
     }
@@ -38,15 +50,26 @@ pub fn write_staging(
     entries: &[ScanEntry],
 ) -> anyhow::Result<()> {
     let mut buf = String::new();
-    let new_count = entries.iter().filter(|e| e.status == FileStatus::LikelyNew).count();
-    let dup_count = entries.iter().filter(|e| e.status == FileStatus::LikelyCacheDuplicate).count();
-    writeln!(buf, "# source={}  session={}  total={}  new={}  duplicate={}",
-        source.display(), session_id, entries.len(), new_count, dup_count)?;
+    let new_count = entries
+        .iter()
+        .filter(|e| e.status == FileStatus::LikelyNew)
+        .count();
+    let dup_count = entries
+        .iter()
+        .filter(|e| e.status == FileStatus::LikelyCacheDuplicate)
+        .count();
+    writeln!(
+        buf,
+        "# source={}  session={}  total={}  new={}  duplicate={}",
+        source.display(),
+        session_id,
+        entries.len(),
+        new_count,
+        dup_count
+    )?;
     for e in entries.iter().filter(|e| e.status == FileStatus::LikelyNew) {
         writeln!(buf, "{}\t{}", e.src_path.display(), e.size)?;
     }
     fs::write(path, buf)?;
     Ok(())
 }
-
-

@@ -1,11 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::cli::OutputFormat;
-use svault_core::context::VaultContext;
+use crate::reporting::TerminalReporterBuilder;
 use console::style;
-use svault_core::verify::background_hash;
+use svault_core::context::VaultContext;
 use svault_core::db;
-use svault_core::verify::{verify_all, verify_recent, verify_single, VerifyResult, VerifySummary};
+use svault_core::verify::background_hash;
+use svault_core::verify::{VerifyResult, VerifySummary, verify_all, verify_recent, verify_single};
 
 pub fn run(
     output: OutputFormat,
@@ -23,11 +25,10 @@ pub fn run(
             limit: background_hash_limit,
             nice: false, // Auto-managed based on system load
         };
-        let summary = background_hash::run_background_hash(opts, ctx.db())?;
-        eprintln!(
-            "Processed {} file(s), {} failed.",
-            summary.processed, summary.failed
-        );
+        let reporter_builder = Arc::new(TerminalReporterBuilder::new());
+        let _summary =
+            background_hash::run_background_hash(opts, ctx.db(), reporter_builder.as_ref())?;
+        // Summary is printed by reporter
     }
 
     if upgrade_links {
@@ -40,7 +41,13 @@ pub fn run(
             style("Verify:").bold().cyan(),
             style(seconds).cyan()
         );
-        let (results, summary) = verify_recent(ctx.vault_root(), ctx.db(), seconds)?;
+        let reporter_builder = Arc::new(TerminalReporterBuilder::new());
+        let (results, summary) = verify_recent(
+            ctx.vault_root(),
+            ctx.db(),
+            seconds,
+            reporter_builder.as_ref(),
+        )?;
         print_verify_results(output, &results, &summary)?;
         return Ok(());
     }
@@ -52,7 +59,8 @@ pub fn run(
             "{} Verifying all files in vault",
             style("Verify:").bold().cyan()
         );
-        let (results, summary) = verify_all(ctx.vault_root(), ctx.db())?;
+        let reporter_builder = Arc::new(TerminalReporterBuilder::new());
+        let (results, summary) = verify_all(ctx.vault_root(), ctx.db(), reporter_builder.as_ref())?;
         print_verify_results(output, &results, &summary)?;
     }
 
@@ -115,7 +123,7 @@ fn upgrade_hardlinks(
 fn verify_single_file(
     vault_root: &std::path::Path,
     db: &db::Db,
-    file_path: &PathBuf,
+    file_path: &std::path::Path,
 ) -> anyhow::Result<()> {
     match verify_single(vault_root, db, &file_path.to_string_lossy())? {
         Some(result) => match result {
@@ -207,12 +215,7 @@ pub fn print_verify_results(
             }
             VerifyResult::IoError(e) => {
                 has_failures = true;
-                eprintln!(
-                    "{} {} - IO error: {}",
-                    style("✗").red().bold(),
-                    path,
-                    e
-                );
+                eprintln!("{} {} - IO error: {}", style("✗").red().bold(), path, e);
             }
             VerifyResult::HashNotAvailable => {
                 eprintln!(
@@ -262,7 +265,11 @@ pub fn print_verify_results(
     if summary.hash_not_available > 0 {
         eprintln!(
             "  {} {}",
-            style(format!("Hash pending:     {:>6}", summary.hash_not_available)).yellow(),
+            style(format!(
+                "Hash pending:     {:>6}",
+                summary.hash_not_available
+            ))
+            .yellow(),
             style("hash not yet computed")
         );
     }

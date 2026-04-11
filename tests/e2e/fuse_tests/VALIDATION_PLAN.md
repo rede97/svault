@@ -343,5 +343,4 @@ cd tests/e2e/fuse_tests && ./run_fuse.sh
 
 - [ ] NFS 行为模拟（属性缓存、弱一致性）
 - [ ] SMB 锁冲突模拟
-- [ ] MTP 设备断开模拟
 - [ ] 网络存储延迟抖动模拟

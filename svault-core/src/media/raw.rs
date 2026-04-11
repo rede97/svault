@@ -44,7 +44,7 @@ impl RawUniqueId {
 }
 
 /// Extract unique identifier from a RAW file.
-/// 
+///
 /// This function tries to extract EXIF data from RAW files. Most modern cameras
 /// embed a thumbnail JPEG with full EXIF data that we can parse.
 pub fn extract_raw_unique_id(path: &Path) -> Result<RawUniqueId> {
@@ -112,7 +112,7 @@ fn parse_exif_unique_id(jpeg_data: &[u8]) -> Result<RawUniqueId> {
 fn parse_tiff_exif(data: &[u8]) -> Result<RawUniqueId> {
     // For TIFF-based RAWs, the EXIF IFD is usually at a specific offset
     // This is a simplified parser - in production we might want more comprehensive handling
-    
+
     // Check byte order
     let little_endian = data.starts_with(b"II*\0");
     let _big_endian = data.starts_with(b"MM\0*");
@@ -129,11 +129,17 @@ fn parse_tiff_exif(data: &[u8]) -> Result<RawUniqueId> {
 /// Check if a file extension indicates a RAW format.
 pub fn is_raw_format(path: &Path) -> bool {
     use super::formats::MediaFormat;
-    
+
     match MediaFormat::from_path(path) {
-        Ok(format) => matches!(format, 
-            MediaFormat::Dng | MediaFormat::Arw | MediaFormat::Cr2 | 
-            MediaFormat::Cr3 | MediaFormat::Nef | MediaFormat::Raf | MediaFormat::Rw2
+        Ok(format) => matches!(
+            format,
+            MediaFormat::Dng
+                | MediaFormat::Arw
+                | MediaFormat::Cr2
+                | MediaFormat::Cr3
+                | MediaFormat::Nef
+                | MediaFormat::Raf
+                | MediaFormat::Rw2
         ),
         Err(_) => false,
     }

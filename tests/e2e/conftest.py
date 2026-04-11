@@ -47,6 +47,40 @@ def _check_tool(tool: str) -> bool:
 FFMPEG_AVAILABLE = _check_tool("ffmpeg")
 EXIFTOOL_AVAILABLE = _check_tool("exiftool")
 
+def parse_json_summary(stdout: str, event_type: str = "import_summary") -> dict[str, Any]:
+    """Parse JSON Lines output and extract a specific event.
+    
+    Args:
+        stdout: The stdout from a command with --output=json
+        event_type: The event type to extract (default: import_summary)
+    
+    Returns:
+        The JSON object for the specified event type, or nothing_to_import event
+        converted to summary format
+    
+    Raises:
+        ValueError: If the event type is not found or JSON is invalid
+    """
+    lines = [l.strip() for l in stdout.strip().split('\n') if l.strip()]
+    for line in lines:
+        try:
+            obj = json.loads(line)
+            if obj.get("event") == event_type:
+                return obj
+            # Handle nothing_to_import as a special case - convert to summary format
+            if obj.get("event") == "nothing_to_import":
+                return {
+                    "imported": 0,
+                    "total": obj.get("total", 0),
+                    "duplicate": obj.get("duplicate", 0),
+                    "failed": 0,
+                    "skipped": obj.get("total", 0),
+                }
+        except json.JSONDecodeError:
+            continue
+    raise ValueError(f"Event '{event_type}' not found in output:\n{stdout}")
+
+
 # pytest fixtures for optional tools
 @pytest.fixture(scope="session")
 def ffmpeg_available() -> bool:

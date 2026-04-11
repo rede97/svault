@@ -2,8 +2,7 @@
 
 use std::path::Path;
 
-use dashmap::{mapref::entry::Entry, DashMap};
-use indicatif::ProgressBar;
+use dashmap::{DashMap, mapref::entry::Entry};
 use rayon::prelude::*;
 
 use crate::db::Db;
@@ -18,14 +17,14 @@ use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
 /// # Arguments
 /// * `entries` - CRC entries (from lookup stage)
 /// * `compute_sha256` - If true, also compute SHA-256 for definitive identity
-/// * `progress` - Optional progress bar
+/// * `progress_cb` - Optional callback for progress updates
 ///
 /// # Returns
 /// List of hash results (errors preserved in result with dup_reason)
 pub fn compute_hashes(
     entries: Vec<CrcEntry>,
     compute_sha256: bool,
-    progress: Option<&ProgressBar>,
+    progress_cb: Option<&(dyn Fn() + Send + Sync)>,
 ) -> Vec<HashResult> {
     entries
         .into_par_iter()
@@ -36,8 +35,8 @@ pub fn compute_hashes(
             let xxh3_128 = match xxh3_128_file(abs_path) {
                 Ok(h) => h.to_bytes().to_vec(),
                 Err(e) => {
-                    if let Some(pb) = progress {
-                        pb.inc(1);
+                    if let Some(cb) = progress_cb {
+                        cb();
                     }
                     return HashResult {
                         path: abs_path.clone(),
@@ -58,8 +57,8 @@ pub fn compute_hashes(
                 match sha256_file(abs_path) {
                     Ok(h) => FileHash::Full(xxh3_128, h.to_bytes().to_vec()),
                     Err(e) => {
-                        if let Some(pb) = progress {
-                            pb.inc(1);
+                        if let Some(cb) = progress_cb {
+                            cb();
                         }
                         return HashResult {
                             path: abs_path.clone(),
@@ -78,8 +77,8 @@ pub fn compute_hashes(
                 FileHash::Fast(xxh3_128)
             };
 
-            if let Some(pb) = progress {
-                pb.inc(1);
+            if let Some(cb) = progress_cb {
+                cb();
             }
 
             HashResult {
@@ -124,17 +123,21 @@ pub fn check_duplicates(
 
         // Get identity hash and algorithm
         let (hash_bytes, hash_algo) = r.hash.identity();
-        let algo_name = if r.hash.is_full() { "sha256" } else { "xxh3_128" };
+        let algo_name = if r.hash.is_full() {
+            "sha256"
+        } else {
+            "xxh3_128"
+        };
 
         // Check hash duplicate in DB
         let existing = db.lookup_by_hash(hash_bytes, &hash_algo)?;
 
         if let Some(ref row) = existing {
             let vault_path = vault_root.join(&row.path);
-            
+
             // For add command: allow re-adding same path
             let is_same_file = allow_same_path && vault_path == r.path;
-            
+
             if !is_same_file && vault_path.exists() {
                 r.is_duplicate = true;
                 r.dup_reason = Some(format!("db ({algo_name})"));

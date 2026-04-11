@@ -288,7 +288,7 @@
     {
       "id": "c2_move_to_subdir",
       "action": "Move file into subdirectory within source, then import",
-      "expected": "Still found by VFS walk, imported correctly"
+      "expected": "Still found by scan walk, imported correctly"
     },
     {
       "id": "c3_interrupt_copy",

@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use crate::reporting::TerminalReporterBuilder;
 use svault_core::context::VaultContext;
-use svault_core::import::recheck::{run_recheck, RecheckOptions};
+use svault_core::import::recheck::{RecheckOptions, run_recheck};
 use svault_core::verify::manifest::ManifestManager;
 
 pub fn run(
@@ -43,6 +45,7 @@ pub fn run(
         vault_root: ctx.vault_root().to_path_buf(),
         manifest,
     };
-    run_recheck(opts, ctx.db())?;
+    let reporter_builder = Arc::new(TerminalReporterBuilder::new());
+    run_recheck(opts, ctx.db(), reporter_builder.as_ref())?;
     Ok(())
 }

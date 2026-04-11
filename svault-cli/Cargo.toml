@@ -13,8 +13,7 @@ name = "svault"
 path = "src/main.rs"
 
 [features]
-default = ["mtp"]
-mtp = ["svault-core/mtp"]
+default = []
 
 [dependencies]
 svault-core = { version = "0.1.0", path = "../svault-core", features = ["cli"] }

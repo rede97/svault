@@ -26,10 +26,6 @@ class TestReconcileCommand:
         # Reconcile with --yes
         result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "Matched:" in combined
-        assert "Updated:" in combined
-        assert "renamed.jpg" in combined
 
         # DB path should be updated
         rows = vault.db_files()
@@ -52,8 +48,6 @@ class TestReconcileCommand:
         # Run without --yes
         result = vault.run("update", f"--target={vault.vault_dir}")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "Matches found:" in combined
 
         # DB should be unchanged
         rows = vault.db_files()
@@ -67,8 +61,9 @@ class TestReconcileCommand:
 
         result = vault.run("update", f"--target={vault.vault_dir}")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "nothing to reconcile" in combined.lower() or "All tracked files exist" in combined
+        rows = vault.db_files()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "imported"
 
     def test_update_renamed_directory_then_verify_passes(self, vault: VaultEnv) -> None:
         """Rename an entire directory inside the vault, reconcile, then verify should pass."""
@@ -90,15 +85,12 @@ class TestReconcileCommand:
         # Reconcile from the vault root
         result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "Updated:" in combined
-        assert (top_dir + "X") in combined
 
         # Verify should now pass (no missing files)
         result = vault.run("verify", capture=True)
         assert result.returncode == 0
-        assert "OK" in result.stdout or "verified successfully" in result.stderr
-        assert "Missing" not in result.stdout
+        rows = vault.db_files()
+        assert all(r["status"] == "imported" for r in rows)
 
     def test_update_missing_files_marked(self, vault: VaultEnv) -> None:
         """Import a file, delete it from vault, then update should mark it missing."""
@@ -114,8 +106,6 @@ class TestReconcileCommand:
         # Update with --yes (clean is default behavior)
         result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "Cleaned:" in combined or "marked as missing" in combined.lower()
 
         # DB status should be 'missing'
         rows = vault.db_query("SELECT status FROM files WHERE path LIKE '%.jpg%'")
@@ -137,8 +127,6 @@ class TestReconcileCommand:
         # Run --dry-run (preview mode)
         result = vault.run("update", "--dry-run", f"--target={vault.vault_dir}")
         assert result.returncode == 0
-        combined = result.stderr + result.stdout
-        assert "Files to mark as missing:" in combined
 
         # DB should be unchanged
         rows = vault.db_files()

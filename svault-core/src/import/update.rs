@@ -5,17 +5,17 @@
 //! When a match is found, the file has been moved/renamed outside of Svault.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
 
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
+use jwalk::WalkDir;
 use rayon::prelude::*;
 
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
-use crate::vfs::system::SystemFs;
-use crate::vfs::VfsBackend;
+use crate::reporting::{
+    Interactor, MatchConfidence, ReporterBuilder, UpdateApplyReporter, UpdateHashReporter,
+};
 
 /// Summary of an `update` operation.
 #[derive(Debug, Default)]
@@ -45,57 +45,58 @@ pub struct UpdateMatch {
     pub file_id: i64,
 }
 
-/// Identity verification level for matched files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MatchConfidence {
-    /// Matched by SHA-256 (cryptographic, definitive).
-    Definitive,
-    /// Matched by XXH3-128 only (fast, but could collide).
-    Fast,
-}
+// MatchConfidence is now defined in crate::reporting
 
 /// Run `update` on the vault.
-pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary> {
+pub fn run_update<RB: ReporterBuilder, I: Interactor>(
+    opts: UpdateOptions,
+    db: &Db,
+    reporter_builder: &RB,
+    interactor: &I,
+) -> anyhow::Result<UpdateSummary> {
     // 1. Find missing files in DB
     let missing_files = db.get_missing_files(&opts.vault_root)?;
     let missing_count = missing_files.len();
 
     if missing_count == 0 {
-        eprintln!("{} All tracked files exist on disk — nothing to update.",
-            style("Update:").bold().green());
+        let apply_reporter = reporter_builder.update_apply_reporter(0);
+        apply_reporter.nothing_to_update();
         return Ok(UpdateSummary::default());
     }
 
-    eprintln!(
-        "{} {} tracked file(s) missing from disk",
-        style("Update:").bold().cyan(),
-        style(missing_count).cyan()
-    );
-
-    // 2. Scan vault disk for all files (streaming)
-    let fs = SystemFs::open(&opts.root)?;
-    let disk_entries: Vec<_> = fs.walk_stream(Path::new(""), &[])?.into_iter()
-        .filter_map(|r| r.ok())
+    // 2. Scan vault disk for all files.
+    // Keep `.svault` excluded to match the previous VFS-backed traversal behavior.
+    let disk_entries: Vec<_> = WalkDir::new(&opts.root)
+        .skip_hidden(false)
+        .process_read_dir(|_depth, _path, _state, children| {
+            children.iter_mut().for_each(|child_result| {
+                if let Ok(child) = child_result
+                    && child.file_name == OsStr::new(".svault")
+                {
+                    child.read_children_path = None;
+                }
+            });
+        })
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path())
         .collect();
     let scanned = disk_entries.len();
 
     if scanned == 0 {
-        eprintln!("{} No files found on disk to match against.",
-            style("Warning:").yellow().bold());
-        return Ok(UpdateSummary { missing: missing_count, ..Default::default() });
+        return Ok(UpdateSummary {
+            missing: missing_count,
+            ..Default::default()
+        });
     }
-
-    eprintln!(
-        "  Scanning {} file(s) on disk for matches...",
-        style(scanned).cyan()
-    );
 
     // Build indices for efficient lookup
     // Primary index: xxh3_128 (fast)
     // Secondary index: sha256 (definitive, only for files that have it)
     let mut missing_by_xxh3: HashMap<String, Vec<&crate::db::files::FileRow>> = HashMap::new();
     let mut missing_by_sha256: HashMap<String, Vec<&crate::db::files::FileRow>> = HashMap::new();
-    
+
     for row in &missing_files {
         // Index by xxh3_128 (always)
         if let Some(xxh3) = row.xxh3_128.as_ref().map(|b| hex_encode(b)) {
@@ -108,27 +109,16 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
     }
 
     // 3. Hash all disk files and look for matches
-    let bar = ProgressBar::new(scanned as u64);
-    bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    bar.set_prefix("Hashing  ");
+    let hash_reporter = reporter_builder.update_hash_reporter(scanned as u64);
 
     let matches: Vec<(UpdateMatch, MatchConfidence)> = disk_entries
         .into_par_iter()
-        .filter_map(|e| {
-            let filename = e.path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            bar.set_message(filename);
-
+        .enumerate()
+        .filter_map(|(idx, path)| {
             // Always compute xxh3_128 first (fast)
-            let xxh3_result = xxh3_128_file(&e.path)
-                .map(|h| hex_encode(&h.to_bytes()));
-            
-            bar.inc(1);
+            let xxh3_result = xxh3_128_file(&path).map(|h| hex_encode(&h.to_bytes()));
+
+            hash_reporter.progress((idx + 1) as u64, scanned as u64);
             let xxh3_str = match xxh3_result {
                 Ok(h) => h,
                 Err(_) => return None,
@@ -140,21 +130,23 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
 
             // First: try fast match by xxh3_128
             if let Some(candidates) = missing_by_xxh3.get(&xxh3_str) {
-                let meta = fs::metadata(&e.path).ok()?;
-                
+                let meta = fs::metadata(&path).ok()?;
+
                 for candidate in candidates {
                     if candidate.size == meta.len() as i64 {
-                        let rel_new = e.path.strip_prefix(&opts.vault_root).unwrap_or(&e.path);
-                        
+                        let rel_new = path.strip_prefix(&opts.vault_root).unwrap_or(&path);
+
                         // If candidate has sha256, compute and verify for definitive match
                         let confidence = if candidate.sha256.is_some() {
-                            match sha256_file(&e.path) {
+                            match sha256_file(&path) {
                                 Ok(sha256_hash) => {
                                     let disk_sha256 = sha256_hash.to_hex();
-                                    let candidate_sha256 = candidate.sha256.as_ref()
+                                    let candidate_sha256 = candidate
+                                        .sha256
+                                        .as_ref()
                                         .map(|b| hex_encode(b))
                                         .unwrap_or_default();
-                                    
+
                                     if disk_sha256 == candidate_sha256 {
                                         MatchConfidence::Definitive
                                     } else {
@@ -171,12 +163,15 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
                             // No sha256 in DB, use fast match
                             MatchConfidence::Fast
                         };
-                        
-                        return Some((UpdateMatch {
-                            old_path: candidate.path.clone(),
-                            new_path: rel_new.to_string_lossy().into_owned(),
-                            file_id: candidate.id,
-                        }, confidence));
+
+                        return Some((
+                            UpdateMatch {
+                                old_path: candidate.path.clone(),
+                                new_path: rel_new.to_string_lossy().into_owned(),
+                                file_id: candidate.id,
+                            },
+                            confidence,
+                        ));
                     }
                 }
             }
@@ -184,166 +179,76 @@ pub fn run_update(opts: UpdateOptions, db: &Db) -> anyhow::Result<UpdateSummary>
         })
         .collect();
 
-    bar.finish_and_clear();
-
     let matched = matches.len();
     let unmatched = missing_count - matched;
-    
-    // Count definitive vs fast matches
-    let definitive_count = matches.iter()
-        .filter(|(_, conf)| *conf == MatchConfidence::Definitive)
-        .count();
-    let fast_count = matched - definitive_count;
 
-    eprintln!();
-    eprintln!("{}", style("Matches found:").bold());
+    // Report matches
     for (m, conf) in &matches {
-        let conf_icon = match conf {
-            MatchConfidence::Definitive => style("✓").green(),
-            MatchConfidence::Fast => style("~").yellow(),
-        };
-        eprintln!(
-            "  {} {}  {} -> {}",
-            conf_icon,
-            style(&m.old_path),
-            style("→").dim(),
-            style(&m.new_path).green()
-        );
+        hash_reporter.matched(&m.old_path, &m.new_path, *conf);
     }
-
-    if matches.is_empty() {
-        eprintln!("  {} No relocated files detected.", style("-"));
-    } else {
-        if definitive_count > 0 {
-            eprintln!("    {} {} definitive (SHA-256)", style("✓").green(), definitive_count);
-        }
-        if fast_count > 0 {
-            eprintln!("    {} {} fast (XXH3-128 only)", style("~").yellow(), fast_count);
-        }
-    }
+    hash_reporter.finish();
 
     // 4. Dry-run or confirm
     let mut updated = 0;
+    let apply_total = if matched > 0 { matched } else { 0 }
+        + if unmatched > 0 && !opts.dry_run {
+            unmatched
+        } else {
+            0
+        };
+    let apply_reporter = reporter_builder.update_apply_reporter(apply_total as u64);
+
     if !opts.dry_run && matched > 0 {
-        if !opts.yes {
-            eprint!("{}", style("Apply path updates? [y/N] ").bold());
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line)?;
-            if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
-                eprintln!("{}", style("Aborted.").yellow());
-                return Ok(UpdateSummary { missing: missing_count, scanned, matched, unmatched, updated: 0 });
-            }
+        if !opts.yes && !interactor.confirm("Apply path updates?") {
+            return Ok(UpdateSummary {
+                missing: missing_count,
+                scanned,
+                matched,
+                unmatched,
+                updated: 0,
+            });
         }
 
-        // Apply updates with progress bar
-        let update_bar = ProgressBar::new(matched as u64);
-        update_bar.set_style(
-            ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
-                .unwrap()
-                .progress_chars("=> "),
-        );
-        update_bar.set_prefix("Updating ");
-
-        for m in matches.iter().map(|(m, _)| m) {
-            update_bar.set_message(m.old_path.clone());
+        // Apply updates
+        for (idx, m) in matches.iter().map(|(m, _)| m).enumerate() {
             if let Err(e) = db.update_file_path(m.file_id, &m.new_path) {
-                eprintln!("\n{} Failed to update {}: {}", 
-                    style("Error:").red().bold(), 
-                    style(&m.old_path),
-                    e);
+                apply_reporter.error(&format!("Failed to update: {}", e), &m.old_path);
             } else {
                 updated += 1;
             }
-            update_bar.inc(1);
+            apply_reporter.progress((idx + 1) as u64, apply_total as u64);
         }
-        update_bar.finish_and_clear();
     }
 
     // 5. Clean phase (mark unmatched as missing, or delete)
-    // This is the default behavior - unmatched files are marked as missing
     if unmatched > 0 {
-        let to_clean: Vec<_> = missing_files.iter()
-            .filter(|f| !matches.iter().any(|(m, _)| m.file_id == f.id))
-            .collect();
-
         if opts.dry_run {
-            if opts.delete {
-                eprintln!();
-                eprintln!("{} Files to delete:", style("Dry run:").bold().cyan());
-                for f in &to_clean {
-                    eprintln!("  - {}", style(&f.path).dim());
-                }
-            } else {
-                eprintln!();
-                eprintln!("{} Files to mark as missing:", style("Dry run:").bold().cyan());
-                for f in &to_clean {
-                    eprintln!("  - {}", style(&f.path).dim());
-                }
-            }
-        } else if opts.delete {
-            eprintln!();
-            eprintln!("{} Permanently deleting {} missing file(s)...", 
-                style("Delete:").bold().red(),
-                style(to_clean.len()).red());
-            // Note: actual file deletion would go here
-            // For now we just mark as missing in DB
-            let clean_bar = ProgressBar::new(to_clean.len() as u64);
-            clean_bar.set_style(
-                ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
-                    .unwrap()
-                    .progress_chars("=> "),
-            );
-            clean_bar.set_prefix("Cleaning ");
-            for f in to_clean {
-                clean_bar.set_message(f.path.clone());
-                if let Err(e) = db.update_file_status(f.id, "missing") {
-                    eprintln!("\n{} Failed to mark {} as missing: {}", 
-                        style("Error:").red().bold(), 
-                        style(&f.path),
-                        e);
-                }
-                clean_bar.inc(1);
-            }
-            clean_bar.finish_and_clear();
+            apply_reporter.dry_run_missing(unmatched);
         } else {
-            eprintln!();
-            eprintln!("{} Marking {} unmatched file(s) as missing...", 
-                style("Cleaned:").bold().green(),
-                style(to_clean.len()).green());
-            let clean_bar = ProgressBar::new(to_clean.len() as u64);
-            clean_bar.set_style(
-                ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
-                    .unwrap()
-                    .progress_chars("=> "),
-            );
-            clean_bar.set_prefix("Cleaning ");
-            for f in to_clean {
-                clean_bar.set_message(f.path.clone());
+            let to_clean: Vec<_> = missing_files
+                .iter()
+                .filter(|f| !matches.iter().any(|(m, _)| m.file_id == f.id))
+                .collect();
+
+            for (idx, f) in to_clean.iter().enumerate() {
                 if let Err(e) = db.update_file_status(f.id, "missing") {
-                    eprintln!("\n{} Failed to mark {} as missing: {}", 
-                        style("Error:").red().bold(), 
-                        style(&f.path),
-                        e);
+                    apply_reporter.error(&format!("Failed to mark as missing: {}", e), &f.path);
                 }
-                clean_bar.inc(1);
+                apply_reporter.progress((matched + idx + 1) as u64, apply_total as u64);
             }
-            clean_bar.finish_and_clear();
         }
     }
 
-    eprintln!();
-    eprintln!("{}", style("Summary:").bold());
-    eprintln!("  Scanned: {} file(s) on disk", scanned);
-    eprintln!("  Missing: {} file(s) from DB", missing_count);
-    eprintln!("  Matched: {} file(s) relocated", style(matched).green());
-    if unmatched > 0 {
-        eprintln!("  Unmatched: {} file(s) not found", style(unmatched).yellow());
-    }
-    if updated > 0 {
-        eprintln!("  Updated: {} file(s) path corrected", style(updated).green().bold());
-    }
+    apply_reporter.finish();
+    apply_reporter.summary(scanned, missing_count, matched, unmatched, updated);
 
-    Ok(UpdateSummary { scanned, missing: missing_count, matched, unmatched, updated })
+    Ok(UpdateSummary {
+        scanned,
+        missing: missing_count,
+        matched,
+        unmatched,
+        updated,
+    })
 }
 
 /// Hex encode bytes.

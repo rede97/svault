@@ -214,7 +214,10 @@ impl BindingDetector {
         };
 
         // Image must be HEIC or JPEG
-        if !matches!(img.format, MediaFormat::Heic | MediaFormat::Heif | MediaFormat::Jpeg) {
+        if !matches!(
+            img.format,
+            MediaFormat::Heic | MediaFormat::Heif | MediaFormat::Jpeg
+        ) {
             return false;
         }
 
@@ -320,8 +323,12 @@ impl BindingDetector {
 
         // Check for Live Photo
         if self.detect_live_photo {
-            let has_img = formats.iter().any(|f| f.category() == FormatCategory::Image);
-            let has_vid = formats.iter().any(|f| f.category() == FormatCategory::Video);
+            let has_img = formats
+                .iter()
+                .any(|f| f.category() == FormatCategory::Image);
+            let has_vid = formats
+                .iter()
+                .any(|f| f.category() == FormatCategory::Video);
             if has_img && has_vid {
                 return BindingKind::LivePhoto;
             }
@@ -422,9 +429,7 @@ fn is_burst_sequence(a: &str, b: &str) -> bool {
     // _0001234.JPG, _0001235.JPG
 
     static BURST_RE: OnceLock<Regex> = OnceLock::new();
-    let re = BURST_RE.get_or_init(|| {
-        Regex::new(r"^(.*?)(\d+)$").unwrap()
-    });
+    let re = BURST_RE.get_or_init(|| Regex::new(r"^(.*?)(\d+)$").unwrap());
 
     let cap_a = re.captures(a);
     let cap_b = re.captures(b);

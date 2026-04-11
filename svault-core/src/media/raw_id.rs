@@ -58,7 +58,8 @@ pub fn extract_raw_id(path: &Path) -> anyhow::Result<RawId> {
     }
 
     // Clean up values (remove quotes, trim whitespace)
-    camera_serial = camera_serial.map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string());
+    camera_serial =
+        camera_serial.map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string());
     image_id = image_id.map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string());
 
     // Create combined fingerprint if both values are present
@@ -78,15 +79,12 @@ pub fn extract_raw_id(path: &Path) -> anyhow::Result<RawId> {
 
 /// Extract unique ID if path is a RAW file, otherwise return None
 pub fn extract_raw_id_if_raw(path: &Path) -> Option<RawId> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
     if !is_raw_file(ext) {
         return None;
     }
-    
+
     extract_raw_id(path).ok()
 }
 

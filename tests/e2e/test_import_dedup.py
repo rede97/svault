@@ -65,94 +65,10 @@ class TestDeduplication:
         assert len(files) == 1
 
 
-# ========== Tests migrated from test_import_conflict.py ==========
+@pytest.mark.dedup
+class TestDuplicateDetection:
+    """Canonical duplicate-detection scenarios."""
 
-@pytest.mark.conflict
-class TestFilenameConflict:
-    """Test filename conflict resolution.
-    
-    Merged from test_import_conflict.py (2026-04-08).
-    Tests the "different content + same name = conflict (auto-rename)" scenario.
-    """
-    
-    def test_two_cameras_same_filename(self, vault: VaultEnv) -> None:
-        """Two cameras with same filename - second should be renamed.
-        
-        Scenario:
-        - camera_a/DSC0001.jpg (first)
-        - camera_b/DSC0001.jpg (second, different content)
-        
-        Expected:
-        - First: DSC0001.jpg
-        - Second: DSC0001.1.jpg
-        """
-        copy_fixture(vault, "camera_a/DSC0001.jpg", subdir="camera_a")
-        copy_fixture(vault, "camera_b/DSC0001.jpg", subdir="camera_b")
-        
-        vault.import_dir(vault.source_dir)
-        
-        files = vault.db_files()
-        filenames = [Path(f["path"]).name for f in files]
-        
-        # Both should be imported
-        assert len(files) == 2
-        
-        # One should be original name, one renamed
-        assert "DSC0001.jpg" in filenames
-        renamed = [f for f in filenames if re.match(r"DSC0001\.\d+\.jpg", f)]
-        assert len(renamed) == 1, f"Expected one renamed file, got: {filenames}"
-    
-    @pytest.mark.parametrize("camera_count", [2, 4, 8])
-    def test_multiple_cameras_same_filename(self, vault: VaultEnv, camera_count: int) -> None:
-        """Multiple cameras with same filename - all should be imported with unique names.
-        
-        Uses camera_a through camera_h fixtures which have:
-        - Same filename: DSC0001.jpg
-        - Same device: Sony A7IV
-        - Same date: 2024-05-03
-        - Different content (different GPS coordinates)
-        """
-        cameras = [f"camera_{chr(ord('a') + i)}" for i in range(camera_count)]
-        
-        for cam in cameras:
-            fixture_path = f"{cam}/DSC0001.jpg"
-            copy_fixture(vault, fixture_path, subdir=cam)
-        
-        vault.import_dir(vault.source_dir)
-        
-        files = vault.db_files()
-        assert len(files) == camera_count, f"Expected {camera_count} files, got {len(files)}"
-        
-        filenames = [Path(f["path"]).name for f in files]
-        
-        # First one should keep original name
-        assert "DSC0001.jpg" in filenames
-        
-        # Rest should be renamed
-        renamed = [f for f in filenames if re.match(r"DSC0001\.\d+\.jpg", f)]
-        assert len(renamed) == camera_count - 1
-    
-    def test_eight_camera_stress_test(self, vault: VaultEnv) -> None:
-        """Stress test with 8 cameras (maximum conflict scenario from fixtures)."""
-        for letter in "abcdefgh":
-            copy_fixture(vault, f"camera_{letter}/DSC0001.jpg", subdir=f"camera_{letter}")
-        
-        vault.import_dir(vault.source_dir)
-        
-        files = vault.db_files()
-        assert len(files) == 8
-        
-        # Verify all in correct location
-        for f in files:
-            assert_path_contains(f["path"], "2024", "05-03", "Sony A7IV")
-        
-        # Verify no camera subdir names in paths (flattened structure)
-        for cam in ["camera_a", "camera_b", "camera_c", "camera_d",
-                    "camera_e", "camera_f", "camera_g", "camera_h"]:
-            for f in files:
-                assert cam not in f["path"], f"Path should not contain {cam}"
-        assert files[0]["status"] == "imported"
-    
     def test_renamed_file_detected_as_duplicate(self, vault: VaultEnv) -> None:
         """File with different name but same content should be duplicate."""
         # Create original
@@ -195,7 +111,7 @@ class TestFilenameConflict:
         files = vault.db_files()
         assert len(files) == 1
         assert Path(files[0]["path"]).name == "DSC0001.jpg"
-    
+
     def test_different_content_same_name(self, vault: VaultEnv) -> None:
         """Files with same name but different content are conflicts, not duplicates."""
         # Create two files with same name in different subdirs
@@ -217,6 +133,83 @@ class TestFilenameConflict:
             assert f["status"] == "imported"
 
 
+# ========== Tests migrated from test_import_conflict.py ==========
+
+@pytest.mark.conflict
+class TestFilenameConflict:
+    """Filename conflict resolution for same-name, different-content files."""
+
+    def test_two_cameras_same_filename(self, vault: VaultEnv) -> None:
+        """Two cameras with same filename - second should be renamed.
+
+        Scenario:
+        - camera_a/DSC0001.jpg (first)
+        - camera_b/DSC0001.jpg (second, different content)
+
+        Expected:
+        - First: DSC0001.jpg
+        - Second: DSC0001.1.jpg
+        """
+        copy_fixture(vault, "camera_a/DSC0001.jpg", subdir="camera_a")
+        copy_fixture(vault, "camera_b/DSC0001.jpg", subdir="camera_b")
+
+        vault.import_dir(vault.source_dir)
+
+        files = vault.db_files()
+        filenames = [Path(f["path"]).name for f in files]
+
+        assert len(files) == 2
+        assert "DSC0001.jpg" in filenames
+        renamed = [f for f in filenames if re.match(r"DSC0001\.\d+\.jpg", f)]
+        assert len(renamed) == 1, f"Expected one renamed file, got: {filenames}"
+
+    @pytest.mark.parametrize("camera_count", [2, 4, 8])
+    def test_multiple_cameras_same_filename(self, vault: VaultEnv, camera_count: int) -> None:
+        """Multiple cameras with same filename - all should be imported with unique names."""
+        cameras = [f"camera_{chr(ord('a') + i)}" for i in range(camera_count)]
+
+        for cam in cameras:
+            fixture_path = f"{cam}/DSC0001.jpg"
+            copy_fixture(vault, fixture_path, subdir=cam)
+
+        vault.import_dir(vault.source_dir)
+
+        files = vault.db_files()
+        assert len(files) == camera_count, f"Expected {camera_count} files, got {len(files)}"
+
+        filenames = [Path(f["path"]).name for f in files]
+        assert "DSC0001.jpg" in filenames
+
+        renamed = [f for f in filenames if re.match(r"DSC0001\.\d+\.jpg", f)]
+        assert len(renamed) == camera_count - 1
+
+    def test_eight_camera_stress_test(self, vault: VaultEnv) -> None:
+        """Stress test with 8 cameras (maximum conflict scenario from fixtures)."""
+        for letter in "abcdefgh":
+            copy_fixture(vault, f"camera_{letter}/DSC0001.jpg", subdir=f"camera_{letter}")
+
+        vault.import_dir(vault.source_dir)
+
+        files = vault.db_files()
+        assert len(files) == 8
+
+        for f in files:
+            assert_path_contains(f["path"], "2024", "05-03", "Sony A7IV")
+
+        for cam in [
+            "camera_a",
+            "camera_b",
+            "camera_c",
+            "camera_d",
+            "camera_e",
+            "camera_f",
+            "camera_g",
+            "camera_h",
+        ]:
+            for f in files:
+                assert cam not in f["path"], f"Path should not contain {cam}"
+
+@pytest.mark.dedup
 class TestBatchDeduplication:
     """Test deduplication within a single batch."""
     
@@ -301,6 +294,7 @@ class TestBatchDeduplication:
 
 # ========== Tests migrated from test_import.py ==========
 
+@pytest.mark.dedup
 class TestDuplicateDetection:
     """Test duplicate file detection based on content hash.
     

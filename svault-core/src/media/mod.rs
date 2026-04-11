@@ -39,8 +39,8 @@ pub mod video;
 
 pub use binding::{BindingDetector, BindingKind, MediaBinding};
 pub use formats::{FormatRegistry, MediaFormat};
-pub use raw_id::{extract_raw_id, extract_raw_id_if_raw, is_raw_file, RawId};
-pub use video::{extract_video_metadata, VideoMetadata};
+pub use raw_id::{RawId, extract_raw_id, extract_raw_id_if_raw, is_raw_file};
+pub use video::{VideoMetadata, extract_video_metadata};
 
 /// Errors that can occur during media operations.
 #[derive(Error, Debug)]
@@ -105,8 +105,6 @@ pub struct BindingKey {
     /// Binding type
     pub kind: BindingKind,
 }
-
-
 
 /// Trait for reading media data with seeking support.
 pub(crate) trait MediaReader: Read + Seek {

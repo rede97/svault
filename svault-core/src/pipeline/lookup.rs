@@ -71,10 +71,7 @@ pub fn lookup_duplicates(
 }
 
 /// Filter to likely new files (with optional force mode).
-pub fn filter_new(
-    results: Vec<LookupResult>,
-    force: bool,
-) -> (Vec<CrcEntry>, Vec<CrcEntry>) {
+pub fn filter_new(results: Vec<LookupResult>, force: bool) -> (Vec<CrcEntry>, Vec<CrcEntry>) {
     let mut new_files = Vec::new();
     let mut duplicates = Vec::new();
 

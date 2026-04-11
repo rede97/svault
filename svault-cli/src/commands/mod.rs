@@ -3,15 +3,15 @@
 pub mod add;
 pub mod clone;
 pub mod db;
+pub mod debug_reporter;
 pub mod history;
 pub mod import;
 pub mod init;
-pub mod mtp;
 pub mod recheck;
 pub mod scan;
-pub mod update;
 pub mod status;
 pub mod sync;
+pub mod update;
 pub mod verify;
 
 /// Parse a datetime string (RFC 3339 or YYYY-MM-DD) into Unix milliseconds.
@@ -70,10 +70,9 @@ pub fn is_shutdown_requested() -> bool {
 pub fn setup_signal_handler() {
     ctrlc::set_handler(move || {
         eprintln!("\n⚠️  Received interrupt signal (Ctrl-C)");
-        eprintln!("   Closing MTP device connection, please wait...");
+        eprintln!("   Shutting down, please wait...");
         SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
         // Give the program a moment to clean up
-        // The actual MTP session close happens in MtpFs::Drop
         std::thread::sleep(std::time::Duration::from_millis(800));
         std::process::exit(130); // 128 + SIGINT(2)
     })

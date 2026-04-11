@@ -8,12 +8,11 @@
 use std::fs;
 use std::path::Path;
 
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
+use crate::reporting::{RecheckReporter, ReporterBuilder};
 use crate::verify::manifest::ImportManifest;
 
 use super::utils::session_id_now;
@@ -58,60 +57,33 @@ pub struct RecheckOptions {
 /// Verification strategy:
 /// - If manifest has SHA-256, use it for definitive verification
 /// - Otherwise, use XXH3-128 (fast but less secure)
-pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
+pub fn run_recheck<RB: ReporterBuilder>(
+    opts: RecheckOptions,
+    _db: &Db,
+    reporter_builder: &RB,
+) -> anyhow::Result<()> {
     let session_id = session_id_now();
     let manifest = &opts.manifest;
     let total = manifest.files.len();
 
     if total == 0 {
-        eprintln!("{} Manifest contains no files", style("Warning:").yellow().bold());
+        // Nothing to check — reporter.not_started() or similar could be added
+        // if the CLI wants to show a warning; core stays silent.
         return Ok(());
     }
 
-    eprintln!(
-        "{} Rechecking {} files from session {}",
-        style("Recheck:").bold().cyan(),
-        style(total).cyan(),
-        style(&manifest.session_id)
-    );
-    eprintln!("  Source: {}", style(manifest.source_root.display()));
-    eprintln!();
-    eprintln!("{} {}",
-        style("Caution:").yellow().bold(),
-        style("Recheck assumes the source device has not changed since import.").yellow()
-    );
-    eprintln!("{} {}",
-        style("         "),
-        style("If you took new photos or modified files, filenames may be reused with different content.")
-    );
-    eprintln!("{} {}",
-        style("         "),
-        style("Please review the report carefully before deleting anything.")
-    );
+    let reporter = reporter_builder.recheck_reporter(total as u64);
+    reporter.started(total, &manifest.session_id, &manifest.source_root);
 
-    let bar = ProgressBar::new(total as u64);
-    bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    bar.set_prefix("Checking ");
+    let progress_counter = std::sync::atomic::AtomicU64::new(0);
 
     let results: Vec<RecheckResult> = manifest
         .files
         .clone()
         .into_par_iter()
         .map(|record| {
-            let filename = record
-                .src_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            bar.set_message(filename);
-
             let vault_abs = opts.vault_root.join(&record.dest_path);
 
-            // Determine which hash to use: prefer SHA-256 if available
             let has_sha256 = record.sha256.is_some();
             let expected_hash = if has_sha256 {
                 record.sha256.clone()
@@ -119,12 +91,13 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
                 record.xxh3_128.clone()
             };
 
-            // Compute source hash if file exists
             let src_hash = if record.src_path.exists() {
                 match compute_hash(&record.src_path, has_sha256) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        bar.inc(1);
+                        let done =
+                            progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        reporter.progress(done, total as u64);
                         return RecheckResult {
                             src_path: record.src_path,
                             vault_path: vault_abs,
@@ -137,12 +110,13 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
                 None
             };
 
-            // Compute vault hash if file exists
             let vault_hash = if vault_abs.exists() {
                 match compute_hash(&vault_abs, has_sha256) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        bar.inc(1);
+                        let done =
+                            progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        reporter.progress(done, total as u64);
                         return RecheckResult {
                             src_path: record.src_path,
                             vault_path: vault_abs,
@@ -165,19 +139,14 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
                         (true, true) => RecheckStatus::Ok,
                         (true, false) => RecheckStatus::VaultCorrupted,
                         (false, true) => RecheckStatus::SourceModified,
-                        (false, false) => {
-                            if s == v {
-                                // Both diverged to the same content — still not the original
-                                RecheckStatus::BothDiverged
-                            } else {
-                                RecheckStatus::BothDiverged
-                            }
-                        }
+                        (false, false) => RecheckStatus::BothDiverged,
                     }
                 }
             };
 
-            bar.inc(1);
+            let done = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            reporter.progress(done, total as u64);
+
             RecheckResult {
                 src_path: record.src_path,
                 vault_path: vault_abs,
@@ -187,17 +156,17 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
         })
         .collect();
 
-    bar.finish_and_clear();
+    reporter.finish();
 
-    // Print summary
-    let mut ok = 0;
-    let mut source_modified = 0;
-    let mut vault_corrupted = 0;
-    let mut both_diverged = 0;
-    let mut source_deleted = 0;
-    let mut vault_deleted = 0;
-    let mut errors = 0;
-    let mut sha256_verified = 0;
+    // Tally results
+    let mut ok = 0usize;
+    let mut source_modified = 0usize;
+    let mut vault_corrupted = 0usize;
+    let mut both_diverged = 0usize;
+    let mut source_deleted = 0usize;
+    let mut vault_deleted = 0usize;
+    let mut errors = 0usize;
+    let mut sha256_verified = 0usize;
 
     for r in &results {
         if r.used_sha256 {
@@ -214,32 +183,20 @@ pub fn run_recheck(opts: RecheckOptions, _db: &Db) -> anyhow::Result<()> {
         }
     }
 
-    eprintln!("{}", style("Results:").bold().underlined());
-    eprintln!("  {} OK", style(format!("{:>4}", ok)).green());
-    if source_modified > 0 {
-        eprintln!("  {} Source modified", style(format!("{:>4}", source_modified)).yellow());
-    }
-    if vault_corrupted > 0 {
-        eprintln!("  {} Vault corrupted", style(format!("{:>4}", vault_corrupted)).red());
-    }
-    if both_diverged > 0 {
-        eprintln!("  {} Both diverged", style(format!("{:>4}", both_diverged)).red());
-    }
-    if source_deleted > 0 {
-        eprintln!("  {} Source deleted", style(format!("{:>4}", source_deleted)).yellow());
-    }
-    if vault_deleted > 0 {
-        eprintln!("  {} Vault deleted", style(format!("{:>4}", vault_deleted)).red());
-    }
-    if errors > 0 {
-        eprintln!("  {} Errors", style(format!("{:>4}", errors)).red());
-    }
-    if sha256_verified > 0 {
-        eprintln!("  ({} files verified with SHA-256)", sha256_verified);
-    }
+    // Write JSON report first, then call reporter.summary with the path
+    let report_path = write_report(&opts.vault_root, &session_id, &results)?;
 
-    // Write report
-    write_report(&opts.vault_root, &session_id, &results)?;
+    reporter.summary(
+        ok,
+        source_modified,
+        vault_corrupted,
+        both_diverged,
+        source_deleted,
+        vault_deleted,
+        errors,
+        sha256_verified,
+        &report_path,
+    );
 
     Ok(())
 }
@@ -253,16 +210,20 @@ fn compute_hash(path: &Path, use_sha256: bool) -> std::io::Result<String> {
     } else {
         let hash = xxh3_128_file(path)?;
         // Match the format used in manifest: hex of little-endian bytes
-        Ok(hash.to_bytes().iter().map(|b| format!("{:02x}", b)).collect())
+        Ok(hash
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect())
     }
 }
 
-/// Write the recheck report to `.svault/staging/`.
+/// Write the recheck report to `.svault/staging/` and return its path.
 fn write_report(
     vault_root: &Path,
     session_id: &str,
     results: &[RecheckResult],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::path::PathBuf> {
     let staging = vault_root.join(".svault").join("staging");
     fs::create_dir_all(&staging)?;
 
@@ -271,14 +232,23 @@ fn write_report(
     // Build JSON report
     let mut report = serde_json::Map::new();
     report.insert("session_id".to_string(), session_id.into());
-    report.insert("checked_at".to_string(), chrono::Utc::now().to_rfc3339().into());
+    report.insert(
+        "checked_at".to_string(),
+        chrono::Utc::now().to_rfc3339().into(),
+    );
 
     let items: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
             let mut obj = serde_json::Map::new();
-            obj.insert("src_path".to_string(), r.src_path.to_string_lossy().into_owned().into());
-            obj.insert("vault_path".to_string(), r.vault_path.to_string_lossy().into_owned().into());
+            obj.insert(
+                "src_path".to_string(),
+                r.src_path.to_string_lossy().into_owned().into(),
+            );
+            obj.insert(
+                "vault_path".to_string(),
+                r.vault_path.to_string_lossy().into_owned().into(),
+            );
             obj.insert("status".to_string(), format!("{:?}", r.status).into());
             obj.insert("used_sha256".to_string(), r.used_sha256.into());
             obj.into()
@@ -289,11 +259,5 @@ fn write_report(
     let json = serde_json::to_string_pretty(&report)?;
     fs::write(&report_path, json)?;
 
-    eprintln!();
-    eprintln!("{} Report written to {}",
-        style("Report:").bold(),
-        style(report_path.display()).underlined()
-    );
-
-    Ok(())
+    Ok(report_path)
 }

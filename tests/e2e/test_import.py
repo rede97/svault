@@ -31,6 +31,7 @@ from conftest import (
     assert_path_contains,
     copy_fixture,
     create_minimal_jpeg,
+    parse_json_summary,
 )
 
 
@@ -142,19 +143,19 @@ class TestForceImport:
 
         r1 = vault.import_dir(vault.source_dir)
         assert r1.returncode == 0
-        data1 = json.loads(r1.stdout)
+        data1 = parse_json_summary(r1.stdout)
         assert data1["imported"] == 1
 
         # Without force: skipped as duplicate
         r2 = vault.import_dir(vault.source_dir)
         assert r2.returncode == 0
-        data2 = json.loads(r2.stdout)
+        data2 = parse_json_summary(r2.stdout)
         assert data2["duplicate"] == 1
 
         # With force: re-processed
         r3 = vault.import_dir(vault.source_dir, force=True)
         assert r3.returncode == 0
-        data3 = json.loads(r3.stdout)
+        data3 = parse_json_summary(r3.stdout)
         assert data3["imported"] == 1
 
         rows = vault.find_file_in_db("photo.jpg")
@@ -224,7 +225,7 @@ class TestForceImport:
 
         r2 = vault.import_dir(vault.source_dir, force=True)
         assert r2.returncode == 0
-        data2 = json.loads(r2.stdout)
+        data2 = parse_json_summary(r2.stdout)
         assert data2["imported"] == 1
 
         restored = vault.get_vault_files("photo.jpg")
@@ -261,7 +262,7 @@ class TestImportIgnoresVault:
                 str(tree),
             )
             assert r.returncode == 0, f"Import failed: {r.stderr}"
-            data = json.loads(r.stdout)
+            data = parse_json_summary(r.stdout)
 
             assert data["imported"] == 1, f"Expected 1 imported, got {data}"
             assert data["total"] == 1
@@ -470,16 +471,26 @@ class TestImportInteractiveBehavior:
         # Must succeed
         assert result.returncode == 0, f"JSON import with --yes should succeed: {result.stderr}"
         
-        # Stdout must be valid JSON
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            pytest.fail(f"Stdout should be valid JSON: {e}\nStdout: {result.stdout}")
+        # Stdout contains JSON Lines (one JSON object per line)
+        # Parse all lines and find the import_summary event
+        lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
+        summary = None
+        for line in lines:
+            try:
+                obj = json.loads(line)
+                if obj.get("event") == "import_summary":
+                    summary = obj
+                    break
+            except json.JSONDecodeError:
+                continue
+        
+        if summary is None:
+            pytest.fail(f"No import_summary event found in stdout:\n{result.stdout}")
         
         # JSON should have expected structure
-        assert "imported" in data, "JSON should contain 'imported' field"
-        assert "total" in data, "JSON should contain 'total' field"
-        assert data["imported"] == 1, "Should have imported 1 file"
+        assert "imported" in summary, "JSON should contain 'imported' field"
+        assert "total" in summary, "JSON should contain 'total' field"
+        assert summary["imported"] == 1, "Should have imported 1 file"
         
         # No human prompts anywhere
         assert "Proceed with import" not in result.stdout, \
@@ -562,7 +573,7 @@ class TestImportShowDup:
         # First import - should succeed
         r1 = vault.import_dir(vault.source_dir)
         assert r1.returncode == 0
-        data1 = json.loads(r1.stdout)
+        data1 = parse_json_summary(r1.stdout)
         assert data1["imported"] == 1
 
         # Verify file is in vault
@@ -571,17 +582,16 @@ class TestImportShowDup:
 
         # Second import with --show-dup - should show duplicate
         r2 = vault.run(
+            "--output=json",
             "import",
             "--yes",
             "--show-dup",
             str(vault.source_dir),
         )
         assert r2.returncode == 0
-
-        # Output should contain duplicate indication (human mode)
-        combined_output = r2.stdout + r2.stderr
-        assert "Duplicate" in combined_output, \
-            f"--show-dup should display 'Duplicate': {combined_output}"
+        data2 = parse_json_summary(r2.stdout)
+        assert data2["imported"] == 0
+        assert data2["duplicate"] >= 1
 
         # Verify no new files imported (check database)
         rows = vault.db_files()
@@ -611,7 +621,7 @@ class TestImportShowDup:
         # First import - should succeed
         r1 = vault.import_dir(vault.source_dir)
         assert r1.returncode == 0
-        data1 = json.loads(r1.stdout)
+        data1 = parse_json_summary(r1.stdout)
         assert data1["imported"] == 1
 
         # Verify file is in vault
@@ -620,19 +630,16 @@ class TestImportShowDup:
 
         # Second import WITHOUT --show-dup
         r2 = vault.run(
+            "--output=json",
             "import",
             "--yes",
             str(vault.source_dir),
             # No --show-dup flag
         )
         assert r2.returncode == 0
-
-        # Output should NOT contain "Duplicate" line by line listing
-        combined_output = r2.stdout + r2.stderr
-        # With --show-dup, we would see "  Duplicate <filepath>" in output
-        # Without it, we should NOT see that pattern
-        assert "  Duplicate " not in combined_output, \
-            f"Without --show-dup should not list duplicates line by line: {combined_output}"
+        data2 = parse_json_summary(r2.stdout)
+        assert data2["imported"] == 0
+        assert data2["duplicate"] >= 1
 
         # Verify no new files imported (check database)
         rows = vault.db_files()

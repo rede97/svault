@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use indicatif::ProgressBar;
-
 use crate::db::Db;
 use crate::pipeline::types::{FileHash, HashResult, PipelineSummary};
 use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager};
@@ -36,7 +34,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 /// * `results` - Hash results (with is_duplicate and dup_reason flags)
 /// * `db` - Database handle
 /// * `opts` - Insert options
-/// * `progress` - Optional progress bar
+/// * `progress_cb` - Optional callback for progress updates
 ///
 /// # Returns
 /// PipelineSummary with counts of added/duplicate/failed/skipped files.
@@ -44,16 +42,16 @@ pub fn batch_insert(
     results: Vec<HashResult>,
     db: &Db,
     opts: InsertOptions,
-    progress: Option<&ProgressBar>,
+    progress_cb: Option<&dyn Fn()>,
 ) -> anyhow::Result<PipelineSummary> {
     let mut summary = PipelineSummary::new(results.len());
     let now_ms = crate::import::utils::unix_now_ms();
 
     // Prepare manifest if needed
-    let mut manifest = if opts.write_manifest && opts.source_root.is_some() {
-        Some(ImportManifest {
+    let mut manifest = if opts.write_manifest {
+        opts.source_root.map(|root| ImportManifest {
             session_id: opts.session_id.to_string(),
-            source_root: opts.source_root.unwrap().to_path_buf(),
+            source_root: root.to_path_buf(),
             imported_at: now_ms,
             hash_algorithm: "xxh3_128".to_string(), // Primary hash is always xxh3_128
             files: Vec::new(),
@@ -64,22 +62,20 @@ pub fn batch_insert(
 
     // Collect files to be inserted (filter duplicates first)
     let mut files_to_insert: Vec<HashResult> = Vec::with_capacity(results.len());
-    
+
     for r in results {
-        // Update progress bar (filtering phase)
-        if let Some(pb) = progress {
-            pb.inc(1);
+        // Update progress (filtering phase)
+        if let Some(cb) = progress_cb {
+            cb();
         }
-        
+
         let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
         let rel_str = rel_path.to_string_lossy().into_owned();
 
         // Skip if already tracked by path (unless force mode)
-        if !opts.force {
-            if let Ok(Some(_)) = db.get_file_by_path(&rel_str) {
-                summary.skipped += 1;
-                continue;
-            }
+        if !opts.force && db.get_file_by_path(&rel_str).is_ok_and(|r| r.is_some()) {
+            summary.skipped += 1;
+            continue;
         }
 
         // Handle errors
@@ -103,7 +99,9 @@ pub fn batch_insert(
             let src_path = r.src_path.clone().unwrap_or_else(|| r.path.clone());
             let (xxh3_hex, sha256_hex) = match &r.hash {
                 FileHash::Fast(xxh3) => (Some(bytes_to_hex(xxh3)), None),
-                FileHash::Full(xxh3, sha256) => (Some(bytes_to_hex(xxh3)), Some(bytes_to_hex(sha256))),
+                FileHash::Full(xxh3, sha256) => {
+                    (Some(bytes_to_hex(xxh3)), Some(bytes_to_hex(sha256)))
+                }
             };
             m.files.push(ImportRecord {
                 src_path,
@@ -124,7 +122,7 @@ pub fn batch_insert(
     if !files_to_insert.is_empty() {
         let mut updated_count = 0;
         let mut inserted_count = 0;
-        
+
         db.with_transaction(|conn| {
             // Prepare statements once
             let mut insert_stmt = conn.prepare(
@@ -132,7 +130,7 @@ pub fn batch_insert(
                  (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)"
             )?;
-            
+
             let mut update_stmt = conn.prepare(
                 "UPDATE files SET path = ?1, status = 'imported', mtime = ?2, imported_at = ?3 WHERE id = ?4"
             )?;
@@ -146,7 +144,7 @@ pub fn batch_insert(
                     FileHash::Fast(xxh3) => (xxh3.as_slice(), "xxh3_128"),
                     FileHash::Full(_, sha256) => (sha256.as_slice(), "sha256"),
                 };
-                
+
                 // Check if there's a 'missing' file with same hash to recover
                 let missing_file: Option<i64> = conn.query_row(
                     &format!("SELECT id FROM files WHERE {} = ?1 AND status = 'missing' LIMIT 1", hash_col),
@@ -169,7 +167,7 @@ pub fn batch_insert(
                         FileHash::Fast(xxh3) => (Some(xxh3.clone()), None),
                         FileHash::Full(xxh3, sha256) => (Some(xxh3.clone()), Some(sha256.clone())),
                     };
-                    
+
                     insert_stmt.execute(rusqlite::params![
                         rel_str,
                         r.size as i64,
@@ -183,7 +181,7 @@ pub fn batch_insert(
                     inserted_count += 1;
                 }
             }
-            
+
             Ok(())
         })?;
 
@@ -210,11 +208,11 @@ pub fn batch_insert(
     )?;
 
     // Write manifest file if needed
-    if let Some(m) = manifest {
-        if !m.files.is_empty() {
-            let manager = ManifestManager::new(opts.vault_root);
-            manager.save(&m)?;
-        }
+    if let Some(m) = manifest
+        && !m.files.is_empty()
+    {
+        let manager = ManifestManager::new(opts.vault_root);
+        summary.manifest_path = Some(manager.save(&m)?);
     }
 
     Ok(summary)

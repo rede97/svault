@@ -213,6 +213,7 @@ pub struct PipelineSummary {
     pub duplicate: usize,
     pub skipped: usize,
     pub failed: usize,
+    pub manifest_path: Option<PathBuf>,
     /// All files were cache hits (no new files)
     pub all_cache_hit: bool,
 }

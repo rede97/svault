@@ -18,24 +18,24 @@ pub fn read_exif_date_device(path: &Path, mtime_ms: i64) -> (i64, String) {
         return (mtime_ms, "Unknown".to_string());
     };
     let mut reader = BufReader::new(file);
-    
+
     // Try EXIF first (for images)
     if let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) {
         return extract_from_exif(&exif, mtime_ms);
     }
-    
+
     // Fallback to video metadata extraction
     if let Ok(video_meta) = extract_video_metadata(path) {
         return extract_from_video(video_meta, mtime_ms);
     }
-    
+
     (mtime_ms, "Unknown".to_string())
 }
 
 /// Extract metadata from EXIF data.
 fn extract_from_exif(exif: &exif::Exif, mtime_ms: i64) -> (i64, String) {
     use exif::In;
-    
+
     // Date: prefer DateTimeOriginal, fallback to DateTime
     let taken_ms = exif
         .get_field(exif::Tag::DateTimeOriginal, In::PRIMARY)
@@ -69,14 +69,14 @@ fn extract_from_exif(exif: &exif::Exif, mtime_ms: i64) -> (i64, String) {
 /// Extract metadata from video metadata.
 fn extract_from_video(meta: crate::media::VideoMetadata, mtime_ms: i64) -> (i64, String) {
     let taken_ms = meta.creation_time_ms.unwrap_or(mtime_ms);
-    
+
     let device = match (meta.device_make.as_ref(), meta.device_model.as_ref()) {
         (Some(make), Some(model)) => sanitize_device_name(make, model),
         (None, Some(model)) => sanitize_device_name("", model),
         (Some(make), None) => sanitize_device_name("", make),
         (None, None) => "Unknown".to_string(),
     };
-    
+
     (taken_ms, device)
 }
 
@@ -85,13 +85,13 @@ fn sanitize_device_name(make: &str, model: &str) -> String {
     if make.is_empty() && model.is_empty() {
         return "Unknown".to_string();
     }
-    
+
     let raw = if make.is_empty() || model.starts_with(make) {
         model.to_string() // avoid "Apple Apple iPhone"
     } else {
         format!("{} {}", make, model)
     };
-    
+
     // Replace path-unsafe chars with '_'
     raw.chars()
         .map(|c| {
@@ -122,12 +122,12 @@ fn parse_exif_datetime_ms(s: &str) -> Option<i64> {
     if b.len() < 19 {
         return None;
     }
-    let year:  i64 = std::str::from_utf8(&b[0..4]).ok()?.parse().ok()?;
+    let year: i64 = std::str::from_utf8(&b[0..4]).ok()?.parse().ok()?;
     let month: i64 = std::str::from_utf8(&b[5..7]).ok()?.parse().ok()?;
-    let day:   i64 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
-    let hour:  i64 = std::str::from_utf8(&b[11..13]).ok()?.parse().ok()?;
-    let min:   i64 = std::str::from_utf8(&b[14..16]).ok()?.parse().ok()?;
-    let sec:   i64 = std::str::from_utf8(&b[17..19]).ok()?.parse().ok()?;
+    let day: i64 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
+    let hour: i64 = std::str::from_utf8(&b[11..13]).ok()?.parse().ok()?;
+    let min: i64 = std::str::from_utf8(&b[14..16]).ok()?.parse().ok()?;
+    let sec: i64 = std::str::from_utf8(&b[17..19]).ok()?.parse().ok()?;
     let days = ymd_to_days(year as i32, month as u32, day as u32)?;
     let secs = days * 86400 + hour * 3600 + min * 60 + sec;
     Some(secs * 1000)
@@ -140,7 +140,11 @@ fn ymd_to_days(y: i32, m: u32, d: u32) -> Option<i64> {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as u32;
-    let m_adj = if m > 2 { (m - 3) as u32 } else { (m + 9) as u32 };
+    let m_adj = if m > 2 {
+        (m - 3) as u32
+    } else {
+        (m + 9) as u32
+    };
     let doy = (153 * m_adj + 2) / 5 + d as u32 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     Some((era as i64) * 146097 + doe as i64 - 719468)
@@ -256,12 +260,23 @@ mod tests {
             (2024, 5, 15),
             (1999, 12, 31),
         ];
-        
+
         for (y, m, d) in test_dates {
-            let days = ymd_to_days(y, m, d).expect(&format!("Valid date {}-{}-{}", y, m, d));
+            let days =
+                ymd_to_days(y, m, d).unwrap_or_else(|| panic!("Valid date {}-{}-{}", y, m, d));
             let (y2, m2, d2) = secs_to_ymd(days * 86400);
-            assert_eq!((y, m, d), (y2, m2, d2), "Round-trip failed for {}-{}-{}: got {}-{}-{} days={}", 
-                      y, m, d, y2, m2, d2, days);
+            assert_eq!(
+                (y, m, d),
+                (y2, m2, d2),
+                "Round-trip failed for {}-{}-{}: got {}-{}-{} days={}",
+                y,
+                m,
+                d,
+                y2,
+                m2,
+                d2,
+                days
+            );
         }
     }
 
@@ -272,7 +287,7 @@ mod tests {
         // Day 0 produces a valid result (last day of previous month in the algorithm)
         let result = ymd_to_days(2024, 1, 0);
         assert!(result.is_some()); // The algorithm accepts day 0
-        
+
         // Month 0 also produces a result (December of previous year)
         let result = ymd_to_days(2024, 0, 1);
         assert!(result.is_some());

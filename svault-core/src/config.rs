@@ -64,11 +64,11 @@ pub enum TransferStrategyArg {
 }
 
 impl TransferStrategyArg {
-    pub fn to_transfer_strategy(&self) -> crate::vfs::TransferStrategy {
+    pub fn to_transfer_strategy(&self) -> crate::fs::TransferStrategy {
         match self {
-            TransferStrategyArg::Reflink => crate::vfs::TransferStrategy::Reflink,
-            TransferStrategyArg::Hardlink => crate::vfs::TransferStrategy::Hardlink,
-            TransferStrategyArg::Copy => crate::vfs::TransferStrategy::StreamCopy,
+            TransferStrategyArg::Reflink => crate::fs::TransferStrategy::Reflink,
+            TransferStrategyArg::Hardlink => crate::fs::TransferStrategy::Hardlink,
+            TransferStrategyArg::Copy => crate::fs::TransferStrategy::StreamCopy,
         }
     }
 }
@@ -112,7 +112,7 @@ pub struct SyncStrategy(pub Vec<TransferStrategyArg>);
 impl SyncStrategy {
     /// Resolve this strategy into a list of concrete [`TransferStrategy`]
     /// values to be attempted in order.
-    pub fn to_transfer_strategies(&self) -> Vec<crate::vfs::TransferStrategy> {
+    pub fn to_transfer_strategies(&self) -> Vec<crate::fs::TransferStrategy> {
         self.0.iter().map(|a| a.to_transfer_strategy()).collect()
     }
 }
@@ -161,8 +161,11 @@ impl<'de> Deserialize<'de> for SyncStrategy {
                 let strategies: Result<Vec<_>, _> = value
                     .split(',')
                     .map(|s| {
-                        TransferStrategyArg::deserialize(serde::de::value::StrDeserializer::<'_, serde::de::value::Error>::new(s.trim()))
-                            .map_err(de::Error::custom)
+                        TransferStrategyArg::deserialize(serde::de::value::StrDeserializer::<
+                            '_,
+                            serde::de::value::Error,
+                        >::new(s.trim()))
+                        .map_err(de::Error::custom)
                     })
                     .collect();
                 Ok(SyncStrategy(strategies?))
@@ -216,19 +219,28 @@ impl Default for ImportConfig {
             rename_template: "$filename.$n.$ext".to_string(),
             path_template: "$year/$mon-$day/$device/$filename".to_string(),
             allowed_extensions: vec![
-                "jpg".to_string(), "jpeg".to_string(),
-                "heic".to_string(), "heif".to_string(),
+                "jpg".to_string(),
+                "jpeg".to_string(),
+                "heic".to_string(),
+                "heif".to_string(),
                 "dng".to_string(),
-                "cr2".to_string(), "cr3".to_string(),
-                "nef".to_string(), "nrw".to_string(),
+                "cr2".to_string(),
+                "cr3".to_string(),
+                "nef".to_string(),
+                "nrw".to_string(),
                 "arw".to_string(),
                 "raf".to_string(),
                 "orf".to_string(),
                 "rw2".to_string(),
                 "pef".to_string(),
                 "iiq".to_string(),
-                "png".to_string(), "tiff".to_string(), "tif".to_string(),
-                "mp4".to_string(), "mov".to_string(), "avi".to_string(), "mkv".to_string(),
+                "png".to_string(),
+                "tiff".to_string(),
+                "tif".to_string(),
+                "mp4".to_string(),
+                "mov".to_string(),
+                "avi".to_string(),
+                "mkv".to_string(),
             ],
         }
     }
@@ -316,16 +328,22 @@ mod tests {
     #[test]
     fn default_config_has_expected_values() {
         let cfg = Config::default();
-        
+
         // Global config defaults
         assert_eq!(cfg.global.sync_strategy.0.len(), 1);
-        assert!(matches!(cfg.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        
+        assert!(matches!(
+            cfg.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+
         // Import config defaults
         assert!(!cfg.import.store_exif);
         assert_eq!(cfg.import.rename_template, "$filename.$n.$ext");
-        assert_eq!(cfg.import.path_template, "$year/$mon-$day/$device/$filename");
-        
+        assert_eq!(
+            cfg.import.path_template,
+            "$year/$mon-$day/$device/$filename"
+        );
+
         // Should have default extensions
         assert!(!cfg.import.allowed_extensions.is_empty());
         assert!(cfg.import.allowed_extensions.contains(&"jpg".to_string()));
@@ -336,17 +354,17 @@ mod tests {
     fn default_extensions_include_common_formats() {
         let cfg = Config::default();
         let exts = &cfg.import.allowed_extensions;
-        
+
         // Image formats
         assert!(exts.contains(&"jpg".to_string()));
         assert!(exts.contains(&"jpeg".to_string()));
         assert!(exts.contains(&"heic".to_string()));
-        
+
         // RAW formats
         assert!(exts.contains(&"dng".to_string()));
         assert!(exts.contains(&"cr2".to_string()));
         assert!(exts.contains(&"arw".to_string()));
-        
+
         // Video formats
         assert!(exts.contains(&"mp4".to_string()));
         assert!(exts.contains(&"mov".to_string()));
@@ -360,11 +378,11 @@ mod tests {
     fn config_serializes_to_valid_toml() {
         let cfg = Config::default();
         let toml_str = toml::to_string_pretty(&cfg).expect("should serialize");
-        
+
         // Should contain expected sections
         assert!(toml_str.contains("[global]"));
         assert!(toml_str.contains("[import]"));
-        
+
         // Should contain default values (hash field removed from config model)
         assert!(toml_str.contains("sync_strategy"));
         assert!(toml_str.contains("allowed_extensions"));
@@ -375,10 +393,16 @@ mod tests {
         let original = Config::default();
         let toml_str = toml::to_string_pretty(&original).unwrap();
         let loaded: Config = toml::from_str(&toml_str).expect("should deserialize");
-        
+
         // Verify key values roundtrip
-        assert_eq!(loaded.import.rename_template, original.import.rename_template);
-        assert_eq!(loaded.import.allowed_extensions, original.import.allowed_extensions);
+        assert_eq!(
+            loaded.import.rename_template,
+            original.import.rename_template
+        );
+        assert_eq!(
+            loaded.import.allowed_extensions,
+            original.import.allowed_extensions
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -395,7 +419,7 @@ mod tests {
 path_template = "$year/$filename"
 allowed_extensions = ["jpg", "png"]
 "#;
-        
+
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
         assert_eq!(cfg.import.path_template, "$year/$filename");
         assert_eq!(cfg.import.allowed_extensions, vec!["jpg", "png"]);
@@ -411,12 +435,21 @@ sync_strategy = ["reflink", "hardlink", "copy"]
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let cfg: Config = toml::from_str(toml).expect("should parse strategy list");
         assert_eq!(cfg.global.sync_strategy.0.len(), 3);
-        assert!(matches!(cfg.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        assert!(matches!(cfg.global.sync_strategy.0[1], TransferStrategyArg::Hardlink));
-        assert!(matches!(cfg.global.sync_strategy.0[2], TransferStrategyArg::Copy));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[1],
+            TransferStrategyArg::Hardlink
+        ));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[2],
+            TransferStrategyArg::Copy
+        ));
     }
 
     #[test]
@@ -429,11 +462,17 @@ sync_strategy = "reflink,hardlink"
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let cfg: Config = toml::from_str(toml).expect("should parse comma-separated strategy");
         assert_eq!(cfg.global.sync_strategy.0.len(), 2);
-        assert!(matches!(cfg.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        assert!(matches!(cfg.global.sync_strategy.0[1], TransferStrategyArg::Hardlink));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[1],
+            TransferStrategyArg::Hardlink
+        ));
     }
 
     #[test]
@@ -446,7 +485,7 @@ store_exif = true
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let cfg: Config = toml::from_str(toml).expect("should parse store_exif");
         assert!(cfg.import.store_exif);
     }
@@ -461,7 +500,7 @@ rename_template = "$filename-conflict-$n.$ext"
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let cfg: Config = toml::from_str(toml).expect("should parse rename template");
         assert_eq!(cfg.import.rename_template, "$filename-conflict-$n.$ext");
     }
@@ -480,7 +519,7 @@ sync_strategy = ["reflink", "magic_copy"]
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let result: Result<Config, _> = toml::from_str(toml);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -497,7 +536,7 @@ sync_strategy = "reflink,magic_copy"
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let result: Result<Config, _> = toml::from_str(toml);
         assert!(result.is_err());
     }
@@ -508,7 +547,7 @@ allowed_extensions = ["jpg"]
 [global]
 hash = "sha256"
 "#;
-        
+
         // Missing [import] section - should fail
         let result: Result<Config, _> = toml::from_str(toml);
         assert!(result.is_err());
@@ -525,7 +564,7 @@ path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
         // Missing closing bracket on [global]
-        
+
         let result: Result<Config, _> = toml::from_str(toml);
         assert!(result.is_err());
     }
@@ -541,7 +580,7 @@ path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
         // Strategy should be string or list, not number
-        
+
         let result: Result<Config, _> = toml::from_str(toml);
         assert!(result.is_err());
     }
@@ -553,17 +592,17 @@ allowed_extensions = ["jpg"]
     #[test]
     fn write_and_load_config_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        
+
         // Write default config
         Config::write_default(dir.path()).expect("should write config");
-        
+
         // Verify file exists
         let config_path = dir.path().join(CONFIG_FILE);
         assert!(config_path.exists());
-        
+
         // Load it back
         let loaded = Config::load(dir.path()).expect("should load config");
-        
+
         // Verify values
         assert!(!loaded.import.store_exif);
     }
@@ -571,7 +610,7 @@ allowed_extensions = ["jpg"]
     #[test]
     fn load_returns_error_for_missing_file() {
         let dir = tempfile::tempdir().unwrap();
-        
+
         let result = Config::load(dir.path());
         assert!(result.is_err());
     }
@@ -580,10 +619,10 @@ allowed_extensions = ["jpg"]
     fn load_returns_error_for_invalid_toml() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join(CONFIG_FILE);
-        
+
         // Write invalid TOML
         std::fs::write(&config_path, "this is not valid toml {{").unwrap();
-        
+
         let result = Config::load(dir.path());
         assert!(result.is_err());
     }
@@ -591,7 +630,7 @@ allowed_extensions = ["jpg"]
     #[test]
     fn preserves_custom_config_after_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        
+
         // Write a custom config manually
         let custom_toml = r#"
 [global]
@@ -603,10 +642,10 @@ rename_template = "custom-$n.$ext"
 path_template = "$device/$filename"
 allowed_extensions = ["cr2", "nef", "arw"]
 "#;
-        
+
         let config_path = dir.path().join(CONFIG_FILE);
         std::fs::write(&config_path, custom_toml).unwrap();
-        
+
         // Load and verify
         let cfg = Config::load(dir.path()).expect("should load custom config");
         assert_eq!(cfg.global.sync_strategy.0.len(), 2);
@@ -628,8 +667,8 @@ allowed_extensions = ["cr2", "nef", "arw"]
 
     #[test]
     fn transfer_strategy_arg_converts_correctly() {
-        use crate::vfs::TransferStrategy;
-        
+        use crate::fs::TransferStrategy;
+
         assert!(matches!(
             TransferStrategyArg::Reflink.to_transfer_strategy(),
             TransferStrategy::Reflink
@@ -650,11 +689,14 @@ allowed_extensions = ["cr2", "nef", "arw"]
             TransferStrategyArg::Reflink,
             TransferStrategyArg::Copy,
         ]);
-        
+
         let converted = strategy.to_transfer_strategies();
         assert_eq!(converted.len(), 2);
-        assert!(matches!(converted[0], crate::vfs::TransferStrategy::Reflink));
-        assert!(matches!(converted[1], crate::vfs::TransferStrategy::StreamCopy));
+        assert!(matches!(converted[0], crate::fs::TransferStrategy::Reflink));
+        assert!(matches!(
+            converted[1],
+            crate::fs::TransferStrategy::StreamCopy
+        ));
     }
 
     #[test]
@@ -668,13 +710,22 @@ sync_strategy = ["reflink", "hardlink", "copy"]
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let cfg: Config = toml::from_str(toml_str).expect("should parse");
         assert_eq!(cfg.global.sync_strategy.0.len(), 3);
-        assert!(matches!(cfg.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        assert!(matches!(cfg.global.sync_strategy.0[1], TransferStrategyArg::Hardlink));
-        assert!(matches!(cfg.global.sync_strategy.0[2], TransferStrategyArg::Copy));
-        
+        assert!(matches!(
+            cfg.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[1],
+            TransferStrategyArg::Hardlink
+        ));
+        assert!(matches!(
+            cfg.global.sync_strategy.0[2],
+            TransferStrategyArg::Copy
+        ));
+
         // Verify roundtrip
         let serialized = toml::to_string(&cfg).expect("should serialize");
         let deserialized: Config = toml::from_str(&serialized).expect("should deserialize");
@@ -692,7 +743,7 @@ sync_strategy = "reflink"
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let toml_upper = r#"
 [global]
 sync_strategy = "REFLINK,HARDLINK"
@@ -701,7 +752,7 @@ sync_strategy = "REFLINK,HARDLINK"
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let toml_mixed = r#"
 [global]
 sync_strategy = ["Reflink", "Hardlink", "Copy"]
@@ -710,16 +761,34 @@ sync_strategy = ["Reflink", "Hardlink", "Copy"]
 path_template = "$year/$filename"
 allowed_extensions = ["jpg"]
 "#;
-        
+
         let cfg_lower: Config = toml::from_str(toml_lower).unwrap();
         let cfg_upper: Config = toml::from_str(toml_upper).unwrap();
         let cfg_mixed: Config = toml::from_str(toml_mixed).unwrap();
-        
-        assert!(matches!(cfg_lower.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        assert!(matches!(cfg_upper.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        assert!(matches!(cfg_upper.global.sync_strategy.0[1], TransferStrategyArg::Hardlink));
-        assert!(matches!(cfg_mixed.global.sync_strategy.0[0], TransferStrategyArg::Reflink));
-        assert!(matches!(cfg_mixed.global.sync_strategy.0[1], TransferStrategyArg::Hardlink));
-        assert!(matches!(cfg_mixed.global.sync_strategy.0[2], TransferStrategyArg::Copy));
+
+        assert!(matches!(
+            cfg_lower.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+        assert!(matches!(
+            cfg_upper.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+        assert!(matches!(
+            cfg_upper.global.sync_strategy.0[1],
+            TransferStrategyArg::Hardlink
+        ));
+        assert!(matches!(
+            cfg_mixed.global.sync_strategy.0[0],
+            TransferStrategyArg::Reflink
+        ));
+        assert!(matches!(
+            cfg_mixed.global.sync_strategy.0[1],
+            TransferStrategyArg::Hardlink
+        ));
+        assert!(matches!(
+            cfg_mixed.global.sync_strategy.0[2],
+            TransferStrategyArg::Copy
+        ));
     }
 }

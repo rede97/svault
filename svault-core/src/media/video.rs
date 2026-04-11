@@ -87,7 +87,7 @@ struct BoxInfo {
 /// Read box header from MP4 file.
 fn read_box_header<R: Read + Seek>(reader: &mut R) -> Result<Option<BoxInfo>> {
     let pos = reader.stream_position().map_err(MediaError::Io)?;
-    
+
     // Read size (4 bytes)
     let mut size_buf = [0u8; 4];
     match reader.read_exact(&mut size_buf) {
@@ -108,14 +108,18 @@ fn read_box_header<R: Read + Seek>(reader: &mut R) -> Result<Option<BoxInfo>> {
     if size == 1 {
         // Extended size (64-bit)
         let mut ext_size_buf = [0u8; 8];
-        reader.read_exact(&mut ext_size_buf).map_err(MediaError::Io)?;
+        reader
+            .read_exact(&mut ext_size_buf)
+            .map_err(MediaError::Io)?;
         final_size = u64::from_be_bytes(ext_size_buf);
         header_size = 16;
     } else if size == 0 {
         // Box extends to end of file
         let current = reader.stream_position().map_err(MediaError::Io)?;
         let end = reader.seek(SeekFrom::End(0)).map_err(MediaError::Io)?;
-        reader.seek(SeekFrom::Start(current)).map_err(MediaError::Io)?;
+        reader
+            .seek(SeekFrom::Start(current))
+            .map_err(MediaError::Io)?;
         final_size = end - pos;
         header_size = 8;
     } else {
@@ -170,7 +174,7 @@ fn parse_moov_box<R: Read + Seek>(reader: &mut R, box_size: u64) -> Result<Video
 }
 
 /// Parse mvhd box to extract creation_time.
-/// 
+///
 /// QuickTime/MP4 time epoch is different from Unix epoch:
 /// - QuickTime epoch: 1904-01-01 00:00:00 UTC
 /// - Unix epoch: 1970-01-01 00:00:00 UTC
@@ -185,22 +189,21 @@ fn parse_mvhd_box<R: Read + Seek>(reader: &mut R, box_size: u64) -> Result<Optio
     let version = ver_flags[0];
 
     // Read creation_time based on version
-    let creation_time: u64;
-    if version == 0 {
+    let creation_time: u64 = if version == 0 {
         // Version 0: 32-bit timestamps
         let mut buf = [0u8; 4];
         reader.read_exact(&mut buf).map_err(MediaError::Io)?;
-        creation_time = u32::from_be_bytes(buf) as u64;
+        u32::from_be_bytes(buf) as u64
     } else {
         // Version 1: 64-bit timestamps
         let mut buf = [0u8; 8];
         reader.read_exact(&mut buf).map_err(MediaError::Io)?;
-        creation_time = u64::from_be_bytes(buf);
-    }
+        u64::from_be_bytes(buf)
+    };
 
     // Skip to end of box
     let current = reader.stream_position().map_err(MediaError::Io)?;
-    let remaining = data_size.saturating_sub((current - start_pos) as u64);
+    let remaining = data_size.saturating_sub(current - start_pos);
     reader
         .seek(SeekFrom::Current(remaining as i64))
         .map_err(MediaError::Io)?;

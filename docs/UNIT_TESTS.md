@@ -10,13 +10,12 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (Unit) | 129 | 129 | 0 | 3 (MTP 需物理设备) |
+| 单元测试 (Unit) | 117 | 117 | 0 | 0 |
 | Python E2E 测试 (Linux) | 242 | — | — | — |
 | **总计** | — | — | — | — |
 
 > **注意：** 
 > - E2E 测试 `pytest --collect-only` 可收集到 241 个，收集阶段已验证；完整测试运行（full run）未在本轮验证。
-> - MTP 相关单元测试 (3个) 因需要物理设备被跳过。
 > - 此前 Windows 测试数据未经验证，已移除。
 
 ---
@@ -130,19 +129,15 @@
 | `parse_exif_datetime_handles_edge_cases` | `src/import/exif.rs` | 边界情况处理 | ✅ |
 | `ymd_days_round_trip` | `src/import/exif.rs` | YMD ↔ 天数往返 | ✅ |
 
-### vfs/transfer 模块 (9 tests)
+### fs 模块 (5 tests)
 
 | 测试名 | 位置 | 描述 | 状态 |
 |--------|------|------|------|
-| `transfer_uses_first_strategy_when_it_succeeds` | `src/vfs/transfer.rs` | 首策略成功时使用 | ✅ |
-| `transfer_falls_back_to_second_strategy_when_first_fails` | `src/vfs/transfer.rs` | 首策略失败时回退 | ✅ |
-| `transfer_falls_back_to_stream_copy_when_all_else_fails` | `src/vfs/transfer.rs` | 全部失败时回退 stream_copy | ✅ |
-| `stream_copy_is_always_final_fallback` | `src/vfs/transfer.rs` | stream_copy 始终兜底 | ✅ |
-| `transfer_with_empty_strategy_list_uses_stream_copy_fallback` | `src/vfs/transfer.rs` | 空策略列表兜底 | ✅ |
-| `transfer_creates_parent_directories` | `src/vfs/transfer.rs` | 自动创建父目录 | ✅ |
-| `transfer_preserves_content_integrity` | `src/vfs/transfer.rs` | 内容完整性保持 | ✅ |
-| `empty_source_file_transfers_successfully` | `src/vfs/transfer.rs` | 空文件传输 | ✅ |
-| `large_file_transfers_successfully` | `src/vfs/transfer.rs` | 大文件传输 (10MB) | ✅ |
+| `transfer_with_empty_strategy_list_uses_stream_copy_fallback` | `src/fs.rs` | 空策略列表兜底 | ✅ |
+| `transfer_creates_parent_directories` | `src/fs.rs` | 自动创建父目录 | ✅ |
+| `transfer_preserves_content_integrity` | `src/fs.rs` | 内容完整性保持 | ✅ |
+| `empty_source_file_transfers_successfully` | `src/fs.rs` | 空文件传输 | ✅ |
+| `large_file_transfers_successfully` | `src/fs.rs` | 大文件传输 (10MB) | ✅ |
 
 ### lock 模块 (1 test)
 
@@ -207,7 +202,7 @@
 | hash | 90% | 🟢 已达成 (22 tests) |
 | config | 90% | 🟢 已达成 (24 tests) |
 | db | 85% | 🟢 已达成 (14 tests) |
-| vfs/transfer | 80% | 🟢 已达成 (9 tests) |
+| fs | 80% | 🟢 已达成 (5 tests) |
 | import | 85% | 🟢 已达成 (14 tests) |
 | pipeline | 80% | 🟡 待补充 |
 | **E2E 测试** | N/A | 🟢 208 passed |
@@ -218,22 +213,33 @@
 
 ### 高优先级
 
-- [ ] `vfs::probe_capabilities` - 测试文件系统能力探测 (reflink/hardlink 支持检测)
+- [ ] `fs::capabilities_for` - 测试文件系统能力探测 (reflink/hardlink 支持检测)
 - [x] `pipeline::scan` - 测试目录扫描和 vault 路径过滤 (E2E: test_scan_import_pipeline.py)
 - [ ] `pipeline::insert` - 测试批量 DB 插入
+- [ ] E2E: `Reporter / output` 语义测试
+  说明：锁定 `--output human/json` 的 `stdout/stderr` 边界，避免 reporter 重构污染最终 JSON 输出
+  方案文档：[docs/E2E_EXPANSION_PLAN.md](/home/mxq/Codes/svault/docs/E2E_EXPANSION_PLAN.md)
+- [ ] E2E: `marker / 测试分组` 自检
+  说明：锁定 `dedup/conflict` 等 marker 的收集语义，防止测试合并后分组漂移
+  方案文档：[docs/E2E_EXPANSION_PLAN.md](/home/mxq/Codes/svault/docs/E2E_EXPANSION_PLAN.md)
 
 ### 中优先级
 
 - [ ] `db::lookup_by_crc32c` - 测试 CRC32C 查询性能
 - [ ] `db::lookup_by_hash` - 测试哈希查询
 - [ ] 并发导入测试 - 多线程安全验证
+- [ ] E2E: `scan -> filter -> import` 流水线补强
+  说明：补空输入、全 duplicate、部分失效输入、空格/中文路径等真实用户工作流边界
+  方案文档：[docs/E2E_EXPANSION_PLAN.md](/home/mxq/Codes/svault/docs/E2E_EXPANSION_PLAN.md)
+- [ ] E2E: `conftest.py` 复用重构
+  说明：提取高频场景 helper，减少重复 setup 与重复断言，优先迁移 `test_import_dedup.py`
+  方案文档：[docs/E2E_CONFTEST_REFACTOR_PLAN.md](/home/mxq/Codes/svault/docs/E2E_CONFTEST_REFACTOR_PLAN.md)
 
 ### 低优先级 (集成测试)
 
 - [ ] 大文件（>4GB）处理测试
 - [ ] 各种文件系统（xfs）行为测试
 - [ ] 网络文件系统（NFS/SMB）行为测试
-- [ ] MTP 真实设备导入测试
 
 ---
 
@@ -281,11 +287,11 @@ uv pip install pytest pillow hypothesis
 | 日期 | 更新内容 |
 |------|----------|
 | 2026-03-31 | 初始版本：记录测试状态 |
-| 2026-04-02 | VFS 重构测试；添加 recheck/re-import E2E；E2E 64 passed |
+| 2026-04-02 | 文件系统模块重构测试；添加 recheck/re-import E2E；E2E 64 passed |
 | 2026-04-02 | 添加 `add`/`reconcile` E2E；Verify 统一；E2E 71 passed |
 | 2026-04-02 | Windows 适配；E2E 72 passed |
 | 2026-04-04 | 策略重构；`history`/`background-hash`；E2E 85 passed |
-| 2026-04-04 | 补充 hash/config/vfs/import 单元测试；总单元测试 117 |
+| 2026-04-04 | 补充 hash/config/fs/import 单元测试；总单元测试 117 |
 | 2026-04-04 | 视频元数据、Live Photo/RAW+JPEG、磁盘空间 E2E 测试 |
 | 2026-04-05 | E2E 测试参数化重构；删除重复代码 ~110 行 |
 | 2026-04-05 | Pipeline 架构实现；CLI 拆分为命令模块；E2E 198 passed |

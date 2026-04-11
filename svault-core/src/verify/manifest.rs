@@ -101,7 +101,9 @@ impl ManifestManager {
     /// Save manifest.
     pub fn save(&self, manifest: &ImportManifest) -> anyhow::Result<PathBuf> {
         self.ensure_dir()?;
-        let path = self.manifests_dir.join(format!("import-{}.json", manifest.session_id));
+        let path = self
+            .manifests_dir
+            .join(format!("import-{}.json", manifest.session_id));
         manifest.save(&path)?;
         Ok(path)
     }
@@ -120,11 +122,11 @@ impl ManifestManager {
         for entry in fs::read_dir(&self.manifests_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                match ImportManifest::load(&path) {
-                    Ok(m) => manifests.push((path, m)),
-                    Err(e) => eprintln!("Warning: failed to load manifest {}: {}", path.display(), e),
-                }
+            if path.extension().is_some_and(|e| e == "json")
+                && let Ok(m) = ImportManifest::load(&path)
+            {
+                manifests.push((path, m));
+                // Silently skip invalid manifests — core does not print to terminal.
             }
         }
 
@@ -162,7 +164,10 @@ pub enum SourceVerifyResult {
     /// Source file is readable and matches vault copy.
     MatchesVault,
     /// Source file differs from vault copy.
-    DiffersFromVault { vault_hash: String, source_hash: String },
+    DiffersFromVault {
+        vault_hash: String,
+        source_hash: String,
+    },
     /// Cannot read source file.
     IoError(String),
 }
@@ -172,7 +177,7 @@ pub fn verify_source_files(
     manifest: &ImportManifest,
     progress_fn: Option<impl Fn(&str)>,
 ) -> anyhow::Result<HashMap<PathBuf, SourceVerifyResult>> {
-    use crate::hash::{xxh3_128_file, sha256_file};
+    use crate::hash::{sha256_file, xxh3_128_file};
 
     let mut results = HashMap::new();
 

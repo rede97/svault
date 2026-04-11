@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
+use crate::fs::DirEntry;
+use crate::fs::walk_stream;
 use crate::pipeline::types::FileEntry;
-use crate::vfs::system::SystemFs;
-use crate::vfs::{DirEntry, VfsBackend};
 
 /// Stream directory entries from a VFS backend.
 ///
@@ -37,12 +37,14 @@ pub fn scan_stream(
     root: &Path,
     exts: &[&str],
 ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<FileEntry>>> {
-    let fs = SystemFs::open(root)?;
     let root = root.to_path_buf();
     let exts: Vec<String> = exts.iter().map(|s| s.to_string()).collect();
 
-    // Get VFS stream
-    let vfs_rx = fs.walk_stream(Path::new(""), &exts.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    let vfs_rx = walk_stream(
+        &root,
+        Path::new(""),
+        &exts.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    )?;
 
     let (tx, rx) = mpsc::channel();
 

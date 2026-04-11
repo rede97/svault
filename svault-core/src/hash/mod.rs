@@ -163,7 +163,7 @@ mod tests {
     fn crc32c_region_reads_from_offset() {
         let content = b"0123456789abcdef";
         let (_dir, path) = temp_file_with(content);
-        
+
         // Offset 10 should read "abcdef"
         let hash = crc32c_region(&path, 10, 1024).unwrap();
         assert_eq!(hash, crc32c(b"abcdef"));
@@ -188,7 +188,7 @@ mod tests {
     fn crc32c_tail_reads_last_bytes() {
         let content = b"0123456789abcdef";
         let (_dir, path) = temp_file_with(content);
-        
+
         // Last 6 bytes: "abcdef"
         let hash = crc32c_tail(&path, 6).unwrap();
         assert_eq!(hash, crc32c(b"abcdef"));
@@ -260,14 +260,20 @@ mod tests {
 
     #[test]
     fn xxh3_digest_to_bytes_little_endian() {
-        let digest = Xxh3Digest { 
-            low: 0x1234_5678_9ABC_DEF0, 
-            high: 0xFEDC_BA98_7654_3210 
+        let digest = Xxh3Digest {
+            low: 0x1234_5678_9ABC_DEF0,
+            high: 0xFEDC_BA98_7654_3210,
         };
         let bytes = digest.to_bytes();
         // Verify little-endian encoding
-        assert_eq!(u64::from_le_bytes(bytes[..8].try_into().unwrap()), digest.low);
-        assert_eq!(u64::from_le_bytes(bytes[8..].try_into().unwrap()), digest.high);
+        assert_eq!(
+            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            digest.low
+        );
+        assert_eq!(
+            u64::from_le_bytes(bytes[8..].try_into().unwrap()),
+            digest.high
+        );
     }
 
     #[test]
@@ -281,7 +287,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // SHA-256: Focus on file I/O, chunking, and our type wrapper  
+    // SHA-256: Focus on file I/O, chunking, and our type wrapper
     // -------------------------------------------------------------------------
 
     #[test]

@@ -26,9 +26,13 @@ pub struct ImportOptions {
     pub full_id: bool,
     /// Show duplicate files that were skipped during import.
     pub show_dup: bool,
-    /// Optional file containing list of paths to import (one per line).
-    /// If provided, source is treated as the base directory and only these files are imported.
-    pub files_from: Option<PathBuf>,
+    /// Pre-parsed list of paths to import.
+    ///
+    /// When `Some`, the source directory is not scanned; only these paths are processed.
+    /// The CLI layer is responsible for reading and parsing any file-list input before
+    /// constructing `ImportOptions`.
+    /// When `None`, `source` is scanned recursively.
+    pub files_from: Option<Vec<PathBuf>>,
 }
 
 /// Per-file status after Stage B.

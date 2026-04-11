@@ -1,48 +1,61 @@
-//! Scan command - output file status for import pipeline.
+//! Scan command — output file status in svault's pipeable text format.
+//!
+//! Delegates entirely to [`ImportOptions::run_scan`] with a [`PipeReporterBuilder`]
+//! so the scan logic is never duplicated relative to the import pipeline.
+//!
+//! # Output format
+//! ```text
+//! SCAN:/absolute/source/path
+//! new:DCIM/IMG_0001.jpg
+//! dup:DCIM/IMG_0003.jpg
+//! fail:DCIM/broken.dng
+//! ```
+//!
+//! # Example usage
+//! ```bash
+//! # Scan and pipe directly into import
+//! svault scan /mnt/sdcard | svault import /mnt/sdcard --files-from -
+//!
+//! # Show duplicates in output
+//! svault scan /mnt/sdcard --show-dup
+//! ```
 
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
+use crate::reporting::PipeReporterBuilder;
+use svault_core::config::SyncStrategy;
 use svault_core::context::VaultContext;
-use svault_core::import::scan::{run_scan, ScanOptions};
+use svault_core::import::ImportOptions;
 
-/// Run the scan command.
-///
-/// Scans a directory and outputs file status in pipeable format:
-///   SCAN:<source_path> new:<rel_path> dup:<rel_path> fail:<rel_path>
-///
-/// Uses shared pipeline stages (scan + crc) with import command for consistency.
-///
-/// # Output Format
-/// Single line per scan with space-separated status:file entries:
-/// ```
-/// SCAN:/mnt/sdcard new:DCIM/IMG_0001.jpg new:DCIM/IMG_0002.jpg dup:DCIM/IMG_0003.jpg
-/// ```
-///
-/// # Example Usage
-/// ```bash
-/// # Scan and pipe to import
-/// svault scan /mnt/sdcard | svault import /mnt/sdcard --files-from -
-///
-/// # Scan with duplicate visibility
-/// svault scan /mnt/sdcard --show-dup
-/// ```
 pub fn run(_output: OutputFormat, source: PathBuf, show_dup: bool) -> anyhow::Result<()> {
-    // Open vault context for config and duplicate checking
-    let vault_ctx = VaultContext::open(None, &std::env::current_dir()?).ok();
+    // Vault context is optional: without a vault we can still scan, but
+    // duplicate detection is disabled and the default extension list is used.
+    let vault_ctx = VaultContext::open(None, &source).ok();
     let db = vault_ctx.as_ref().map(|ctx| ctx.db());
 
-    let opts = ScanOptions {
+    let opts = ImportOptions {
         source,
+        vault_root: vault_ctx
+            .as_ref()
+            .map(|ctx| ctx.vault_root().to_path_buf())
+            // Empty PathBuf → canonicalize fails → no vault path filtered out
+            .unwrap_or_default(),
+        strategy: SyncStrategy::default(),
+        dry_run: false,
+        yes: false,
+        import_config: vault_ctx
+            .as_ref()
+            .map(|ctx| ctx.config().import.clone())
+            .unwrap_or_default(),
+        force: false,
+        full_id: false,
         show_dup,
-        collect_results: true,
+        files_from: None,
     };
 
-    let summary = run_scan(opts, db, vault_ctx.as_ref())?;
-
-    if summary.failed > 0 {
-        std::process::exit(1);
-    }
+    let reporter_builder = PipeReporterBuilder::new(show_dup);
+    opts.run_scan(db, &reporter_builder)?;
 
     Ok(())
 }

@@ -4,11 +4,9 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
-
 use crate::db::Db;
 use crate::hash::sha256_file;
+use crate::reporting::{BackgroundHashReporter, ReporterBuilder};
 
 /// Options for background hash computation.
 pub struct BackgroundHashOptions {
@@ -28,7 +26,11 @@ pub struct BackgroundHashSummary {
 }
 
 /// Compute missing SHA-256 hashes for files in the vault.
-pub fn run_background_hash(opts: BackgroundHashOptions, db: &Db) -> anyhow::Result<BackgroundHashSummary> {
+pub fn run_background_hash<RB: ReporterBuilder>(
+    opts: BackgroundHashOptions,
+    db: &Db,
+    reporter_builder: &RB,
+) -> anyhow::Result<BackgroundHashSummary> {
     let files = db.get_files_pending_sha256(opts.limit)?;
     let total = files.len();
 
@@ -36,24 +38,18 @@ pub fn run_background_hash(opts: BackgroundHashOptions, db: &Db) -> anyhow::Resu
         return Ok(BackgroundHashSummary::default());
     }
 
-    let bar = ProgressBar::new(total as u64);
-    bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.green} [{bar:40}] {pos}/{len}  {msg}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    bar.set_prefix("Hashing");
+    let reporter = reporter_builder.background_hash_reporter(total as u64);
+    reporter.started(total as u64);
 
     let mut summary = BackgroundHashSummary::default();
 
-    for file in files {
-        let display_path = Path::new(&file.path)
+    for (idx, file) in files.iter().enumerate() {
+        let rel_path = Path::new(&file.path)
             .strip_prefix(&opts.vault_root)
-            .unwrap_or(Path::new(&file.path))
-            .display()
-            .to_string();
-        bar.set_message(display_path.clone());
+            .unwrap_or(Path::new(&file.path));
         let full_path = Path::new(&opts.vault_root).join(&file.path);
+
+        reporter.progress((idx + 1) as u64, total as u64, rel_path);
 
         match sha256_file(&full_path) {
             Ok(digest) => {
@@ -61,56 +57,38 @@ pub fn run_background_hash(opts: BackgroundHashOptions, db: &Db) -> anyhow::Resu
                 let payload = serde_json::json!({
                     "path": file.path,
                     "sha256": digest.to_hex(),
-                }).to_string();
+                })
+                .to_string();
 
-                if let Err(e) = db.append_event(
-                    "file.sha256_resolved",
-                    "file",
-                    file.id,
-                    &payload,
-                    |conn| {
+                if let Err(e) =
+                    db.append_event("file.sha256_resolved", "file", file.id, &payload, |conn| {
                         conn.execute(
                             "UPDATE files SET sha256 = ?1 WHERE id = ?2",
                             rusqlite::params![hash_bytes, file.id],
                         )?;
                         Ok(())
-                    },
-                ) {
-                    bar.println(format!(
-                        "  {} {}: {}",
-                        style("Error").red(),
-                        style(&display_path),
-                        e
-                    ));
+                    })
+                {
+                    reporter.error(rel_path, &e.to_string());
                     summary.failed += 1;
                 } else {
-                    bar.println(format!(
-                        "  {} {}",
-                        style("Hashing").green(),
-                        style(&display_path)
-                    ));
+                    reporter.hashed(rel_path);
                     summary.processed += 1;
                 }
             }
             Err(e) => {
-                bar.println(format!(
-                    "  {} {}: {}",
-                    style("Error").red(),
-                    style(&display_path),
-                    e
-                ));
+                reporter.error(rel_path, &e.to_string());
                 summary.failed += 1;
             }
         }
-
-        bar.inc(1);
 
         if opts.nice {
             thread::sleep(Duration::from_millis(10));
         }
     }
 
-    bar.finish_and_clear();
+    reporter.finish();
+    reporter.summary(summary.processed, summary.failed);
 
     Ok(summary)
 }

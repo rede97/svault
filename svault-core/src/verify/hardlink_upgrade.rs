@@ -16,7 +16,7 @@ pub fn is_hardlinked(path: &Path) -> io::Result<bool> {
 pub fn is_hardlinked(path: &Path) -> io::Result<bool> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
     let file = fs::File::open(path)?;
@@ -47,12 +47,15 @@ pub fn is_hardlinked(_path: &Path) -> io::Result<bool> {
 /// the inode is no longer shared with the source file.
 pub fn upgrade_to_binary_copy(path: &Path) -> io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "invalid file path")
-    })?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid file path"))?;
 
     // Use a hidden temp name in the same directory to guarantee atomic rename.
-    let tmp = parent.join(format!(".svault_upgrade_tmp_{}", file_name.to_string_lossy()));
+    let tmp = parent.join(format!(
+        ".svault_upgrade_tmp_{}",
+        file_name.to_string_lossy()
+    ));
 
     // Stream copy to avoid any OS-level copy optimisation that might preserve a hard link.
     {

@@ -182,7 +182,7 @@ svault-cli/src/
 └── commands/        # 命令实现模块
     ├── mod.rs       # 共享函数 (find_vault_root, format_bytes, 信号处理)
     ├── init.rs      # init 命令
-    ├── import.rs    # import 命令 (本地 + MTP)
+    ├── import.rs    # import 命令 (本地文件系统)
     ├── recheck.rs   # recheck 命令
     ├── add.rs       # add 命令
     ├── sync.rs      # sync 命令 (stub)
@@ -191,7 +191,6 @@ svault-cli/src/
     ├── status.rs    # status 命令
     ├── history.rs   # history 命令
     ├── clone.rs     # clone 命令 (stub)
-    ├── mtp.rs       # mtp ls/tree 子命令
     └── db.rs        # db 子命令
 ```
 
@@ -201,15 +200,11 @@ svault-cli/src/
 - 全局参数（`output`, `dry_run`, `yes`）在 `main.rs` 提取后传递给命令
 - 避免在命令模块中直接引用 `&Cli`（防止 borrow checker 问题）
 
-### VFS 架构
+### 文件系统模块
 
 | 模块 | 用途 |
 |------|------|
-| `vfs/mod.rs` | `VfsBackend` trait、核心类型 |
-| `vfs/transfer.rs` | `TransferEngine`：跨后端文件传输编排 |
-| `vfs/system.rs` | `SystemFs`：本地文件系统原子操作 |
-| `vfs/mtp.rs` | `MtpFs`：MTP 设备后端（单流） |
-| `vfs/manager.rs` | `VfsManager`：URL 路由与发现 |
+| `fs.rs` | 本地文件系统扫描与传输（reflink/hardlink/copy fallback） |
 
 ### Pipeline 架构 (2026-04-05 新增)
 
@@ -244,8 +239,7 @@ svault-core/src/pipeline/
 ## 已知限制
 
 1. **Windows 支持** - 基础功能可用，但 reflink 需要额外实现
-2. **MTP 导入稳定性** - `svault mtp ls/tree` 可用，`import mtp://` 存在稳定性问题
-3. **内存使用** - 导入大量文件时进度条可能占用较多内存
+2. **内存使用** - 导入大量文件时进度条可能占用较多内存
 
 ---
 
@@ -254,7 +248,7 @@ svault-core/src/pipeline/
 | 日期 | 更新内容 |
 |------|----------|
 | 2026-03-31 | 添加 AGENTS.md 和 UNIT_TESTS.md |
-| 2026-04-02 | VFS 重构：解耦 transfer strategy；`--force` 替换 `--ignore-duplicate`；导入自保护；E2E 新增至 64 个 |
+| 2026-04-02 | 文件传输策略重构：解耦 transfer strategy；`--force` 替换 `--ignore-duplicate`；导入自保护；E2E 新增至 64 个 |
 | 2026-04-04 | `--strategy` 移除 `auto`，默认改为 `reflink`；支持逗号组合（如 `reflink,hardlink`）；`copy` 始终兜底；hardlink 不再出现在默认策略中 |
 | 2026-04-04 | 实现 `history` / `background-hash` / `verify --upgrade-links`；支持将 hardlink 原地升级为二进制复制 |
 | 2026-04-05 | CLI 重构：拆分 main.rs 为 13 个命令模块；新增 pipeline 架构供 import/add 共享；所有 198 E2E 测试通过 |

@@ -178,14 +178,13 @@ fn extract_fingerprint(regions: &[u8]) -> Fingerprint
 
 ## 网络文件系统优化策略
 
-VFS 后端通过 `capabilities()` 声明存储类型，核心库据此选择流水线终止阶段：
+核心库根据存储类型选择流水线终止阶段：
 
 | 存储类型 | 默认终止阶段 | 说明 |
 |----------|-------------|------|
 | 本地 SSD / NVMe | Stage 4 (SHA-256) | IO 代价低，直接全哈希 |
 | 本地 HDD | Stage 4 (SHA-256) | 顺序读效率高，可接受 |
 | 网络挂载 (SMB/NFS) | Stage 3 (64KB) | 减少网络 IO，止步于高置信度 |
-| MTP 设备 | Stage 3 (64KB) | MTP 无随机访问，减少传输次数 |
 
 用户可通过 `--compare-level` 覆盖默认策略：
 

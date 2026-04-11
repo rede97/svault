@@ -27,6 +27,7 @@ from conftest import (
     create_minimal_mp4,
     create_minimal_raw,
     EXIFTOOL_AVAILABLE,
+    parse_json_summary,
 )
 
 
@@ -69,7 +70,7 @@ class TestScanFilterImportPipeline:
         assert result.returncode == 0
         
         # Verify files imported
-        data = json.loads(result.stdout)
+        data = parse_json_summary(result.stdout)
         assert data["imported"] == 2, f"Expected 2 files imported, got {data}"
         
         rows = vault.db_files()
@@ -86,7 +87,7 @@ class TestScanFilterImportPipeline:
         result1 = vault.run("import", str(vault.source_dir), "--files-from", "-", "--yes",
                            "--output", "json", input=scan_result1.stdout)
         assert result1.returncode == 0
-        assert json.loads(result1.stdout)["imported"] == 2
+        assert parse_json_summary(result1.stdout)["imported"] == 2
         
         # Second import via pipeline should have no new files
         scan_result2 = vault.run("scan", str(vault.source_dir))
@@ -175,7 +176,7 @@ class TestScanFilterImportPipeline:
                           "--output", "json", input=scan_result.stdout)
         assert result.returncode == 0
         
-        data = json.loads(result.stdout)
+        data = parse_json_summary(result.stdout)
         assert data["imported"] == 3, f"Expected 3 files imported, got {data}"
         
         # Verify nested paths preserved
@@ -206,7 +207,7 @@ class TestScanFilterImportPipeline:
                           "--output", "json", input=scan_result.stdout)
         assert result.returncode == 0
         
-        data = json.loads(result.stdout)
+        data = parse_json_summary(result.stdout)
         assert data["imported"] == 20, f"Expected 20 files imported, got {data}"
 
 
@@ -256,7 +257,7 @@ class TestImportFilesFrom:
                           "--output", "json")
         assert result.returncode == 0
         
-        data = json.loads(result.stdout)
+        data = parse_json_summary(result.stdout)
         assert data["imported"] == 2
 
     def test_import_files_from_ignores_dups(self, vault: VaultEnv) -> None:
@@ -280,5 +281,5 @@ class TestImportFilesFrom:
                           "--output", "json", input=scan_output)
         assert result.returncode == 0
         
-        data = json.loads(result.stdout)
+        data = parse_json_summary(result.stdout)
         assert data["imported"] == 1  # Only new_file2.jpg

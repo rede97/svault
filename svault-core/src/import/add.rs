@@ -7,12 +7,12 @@
 //! - Stage D: Hash (pipeline::hash)
 //! - Stage E: Insert (pipeline::insert)
 
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
-
 use crate::config::Config;
 use crate::db::Db;
 use crate::pipeline;
+use crate::reporting::{
+    AddSummaryReporter, HashReporter, ItemStatus, ReporterBuilder, ScanReporter,
+};
 
 /// Summary of an `add` operation.
 #[derive(Debug, Default)]
@@ -35,11 +35,14 @@ pub struct AddOptions {
 }
 
 /// Use shared check_duplicate function from import module.
-/// Note: add command uses the same logic but with different handling for moves.
 pub use super::check_duplicate;
 
 /// Run `add` on a directory inside the vault.
-pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
+pub fn run_add<RB: ReporterBuilder>(
+    opts: AddOptions,
+    db: &Db,
+    reporter_builder: &RB,
+) -> anyhow::Result<AddSummary> {
     let config = Config::load(&opts.vault_root)?;
     let exts: Vec<&str> = config
         .import
@@ -49,43 +52,37 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         .collect();
 
     // ------------------------------------------------------------------
-    // Stage A+B+C: Scan + CRC + Lookup (parallel pipeline with real-time output)
+    // Stage A+B+C: Scan + CRC + Lookup
     // ------------------------------------------------------------------
     let scan_rx = pipeline::scan::scan_stream(&opts.path, &exts)?;
-    
-    // Progress bar for scanning phase
-    let scan_bar = ProgressBar::new_spinner();
-    scan_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.cyan} {spinner} {pos} files ({per_sec})")
-            .unwrap(),
-    );
-    scan_bar.set_prefix("Scanning");
+    let scan_reporter = reporter_builder.scan_reporter(&opts.path);
+    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
 
-    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx, Some(scan_bar.clone()));
-
-    // Stage C: Lookup (serial from channel) with real-time output
     let mut lookup_results = Vec::new();
-    let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new(); // (current_path, old_path)
+    let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new();
     let mut total_files = 0usize;
-    
+    let mut scan_count: u64 = 0;
+
     for result in crc_rx {
         total_files += 1;
-        scan_bar.inc(1);
-        
-        // Handle CRC errors
+        scan_count += 1;
+        scan_reporter.progress(scan_count);
+
         let crc = match result.crc {
             Ok(c) => c,
             Err(e) => {
-                scan_bar.println(format!("  {} {} - {}", 
-                    style("Error").red(), 
-                    style(&result.file.path.display()),
-                    e));
+                scan_reporter.error(
+                    &format!("CRC computation failed: {}", e),
+                    Some(&result.file.path),
+                );
                 continue;
             }
         };
-        
-        // Build CrcEntry
-        let ext = result.file.path.extension()
+
+        let ext = result
+            .file
+            .path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
         let raw_unique_id = if crate::media::raw_id::is_raw_file(ext) {
@@ -94,7 +91,7 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         } else {
             None
         };
-        
+
         let entry = pipeline::types::CrcEntry {
             file: pipeline::types::FileEntry {
                 path: result.file.path.clone(),
@@ -106,93 +103,51 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
             raw_unique_id,
             precomputed_hash: None,
         };
-        
-        // Immediate DB lookup and real-time output
-        let rel_path = entry.file.path.strip_prefix(&opts.vault_root)
-            .unwrap_or(&entry.file.path);
+
         let check_result = check_duplicate(&entry, db, &opts.vault_root, None);
-        
+        let item_status = match &check_result {
+            pipeline::CheckResult::New | pipeline::CheckResult::Recover { .. } => ItemStatus::New,
+            pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,
+            pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
+        };
+        scan_reporter.classified(&result.file.path, item_status, None);
+
         match check_result {
             pipeline::CheckResult::Duplicate => {
-                scan_bar.println(format!("  {} {}",
-                    style("Duplicate").yellow(),
-                    style(rel_path.display())));
-                lookup_results.push(pipeline::types::LookupResult { 
-                    entry, 
-                    status: pipeline::types::FileStatus::LikelyCacheDuplicate 
+                lookup_results.push(pipeline::types::LookupResult {
+                    entry,
+                    status: pipeline::types::FileStatus::LikelyCacheDuplicate,
                 });
             }
             pipeline::CheckResult::Moved { old_path } => {
-                scan_bar.println(format!("  {} {} {}",
-                    style("Moved").cyan(),
-                    style(rel_path.display()),
-                    style(format!("(from: {})", old_path)).dim()));
                 moved_files.push((result.file.path, old_path));
-                // Don't add to lookup_results - will be handled separately
+                // Not added to lookup_results — handled separately
             }
-            pipeline::CheckResult::Recover { .. } => {
-                // For add command, recovery is treated as new file
-                scan_bar.println(format!("  {} {}",
-                    style("Found").green(),
-                    style(rel_path.display())));
-                lookup_results.push(pipeline::types::LookupResult { 
-                    entry, 
-                    status: pipeline::types::FileStatus::LikelyNew 
-                });
-            }
-            pipeline::CheckResult::New => {
-                scan_bar.println(format!("  {} {}",
-                    style("Found").green(),
-                    style(rel_path.display())));
-                lookup_results.push(pipeline::types::LookupResult { 
-                    entry, 
-                    status: pipeline::types::FileStatus::LikelyNew 
+            pipeline::CheckResult::Recover { .. } | pipeline::CheckResult::New => {
+                lookup_results.push(pipeline::types::LookupResult {
+                    entry,
+                    status: pipeline::types::FileStatus::LikelyNew,
                 });
             }
         }
     }
-    scan_bar.finish_and_clear();
+
+    scan_reporter.finish();
+    drop(scan_reporter);
 
     let (new_files, dup_files) = pipeline::lookup::filter_new(lookup_results, false);
     let likely_dup = dup_files.len();
     let moved_count = moved_files.len();
-    let failed_b = total_files.saturating_sub(new_files.len() + dup_files.len() + moved_count);
+    let failed_scan = total_files.saturating_sub(new_files.len() + dup_files.len() + moved_count);
 
-    // Pre-flight
-    eprintln!();
-    eprintln!("{}", style("Pre-flight:").bold());
-    eprintln!("  {}  {}",
-        style(format!("Likely new:       {:>6}", new_files.len())).green(),
-        style("will be added"));
-    if likely_dup > 0 {
-        eprintln!("  {}  {}",
-            style(format!("Likely duplicate: {:>6}", likely_dup)).yellow(),
-            style("already in vault"));
-    }
-    if moved_count > 0 {
-        eprintln!("  {}  {}",
-            style(format!("Moved:            {:>6}", moved_count)).cyan(),
-            style("vault-internal move detected"));
-    }
+    // Pre-flight via AddSummaryReporter
+    let summary_reporter = reporter_builder.add_summary_reporter(&opts.vault_root);
+    summary_reporter.preflight(new_files.len(), likely_dup, moved_count);
 
-    // If only moved files detected, suggest reconcile and exit
+    // Early exit: only moved files, nothing to add
     if new_files.is_empty() && moved_count > 0 {
-        eprintln!();
-        eprintln!("{}", style("Note:").bold().cyan());
-        eprintln!("  {} file(s) appear to have been moved within the vault.",
-            style(moved_count).cyan());
-        eprintln!("  Use {} to update their paths:", style("svault update").bold());
-        
-        for (_, (current, old)) in moved_files.iter().take(3).enumerate() {
-            let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);
-            eprintln!("    {} → {}", 
-                style(old).dim(),
-                style(current_rel.display()).cyan());
-        }
-        if moved_files.len() > 3 {
-            eprintln!("    ... and {} more", moved_files.len() - 3);
-        }
-        
+        summary_reporter.only_moved(&moved_files, &opts.vault_root);
+        summary_reporter.finish();
         return Ok(AddSummary {
             total: total_files,
             skipped: likely_dup,
@@ -204,21 +159,26 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
     // ------------------------------------------------------------------
     // Stage D: Hash
     // ------------------------------------------------------------------
-    let hash_bar = ProgressBar::new(new_files.len() as u64);
-    hash_bar.set_style(
-        ProgressStyle::with_template("{prefix:.bold.yellow} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
-    hash_bar.set_prefix("Hashing  ");
+    let hash_total = new_files.len() as u64;
+    let hash_reporter = reporter_builder.hash_reporter(&opts.path, hash_total);
+    let hash_progress = std::sync::atomic::AtomicU64::new(0);
+    let hash_progress_cb = || {
+        let done = hash_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        hash_reporter.progress(done, hash_total);
+    };
 
-    // Compute SHA-256 for --full-id mode
-    let hash_results = pipeline::hash::compute_hashes(new_files, opts.full_id, Some(&hash_bar));
-    hash_bar.finish_and_clear();
+    let hash_results =
+        pipeline::hash::compute_hashes(new_files, opts.full_id, Some(&hash_progress_cb));
+
+    let done = hash_progress.load(std::sync::atomic::Ordering::Relaxed);
+    if done < hash_total {
+        hash_reporter.progress(done, hash_total);
+    }
+    hash_reporter.finish();
+    drop(hash_reporter);
 
     // Check duplicates (allow same path re-add)
-    let hash_results = pipeline::hash::check_duplicates(
-        hash_results, db, &opts.vault_root, true)?;
+    let hash_results = pipeline::hash::check_duplicates(hash_results, db, &opts.vault_root, true)?;
 
     // ------------------------------------------------------------------
     // Stage E: Insert
@@ -232,48 +192,29 @@ pub fn run_add(opts: AddOptions, db: &Db) -> anyhow::Result<AddSummary> {
         force: false,
     };
 
-    let summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, None)?;
+    let pipeline_summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, None)?;
 
-    // Print summary
-    eprintln!(
-        "{} {} file(s) added",
-        style("Finished:").bold().green(),
-        style(summary.added).green()
+    // Summary
+    summary_reporter.summary(
+        total_files,
+        pipeline_summary.added,
+        pipeline_summary.duplicate + likely_dup,
+        pipeline_summary.failed + failed_scan,
     );
-    if summary.duplicate > 0 {
-        eprintln!("         {} duplicate(s) skipped",
-            style(summary.duplicate).yellow());
-    }
-    if summary.failed > 0 {
-        eprintln!("         {} file(s) failed",
-            style(summary.failed).red());
+
+    // Post-insert moved hint (if mixed with new files)
+    if !moved_files.is_empty() {
+        summary_reporter.moved_hint(&moved_files, &opts.vault_root);
     }
 
-    // Suggest reconcile for vault-internal moves (when mixed with new files)
-    if !moved_files.is_empty() {
-        eprintln!();
-        eprintln!("{}", style("Note:").bold().cyan());
-        eprintln!("  {} file(s) appear to have been moved within the vault.",
-            style(moved_files.len()).cyan());
-        eprintln!("  Use {} to update their paths:", style("svault update").bold());
-        
-        for (_, (current, old)) in moved_files.iter().take(3).enumerate() {
-            let current_rel = current.strip_prefix(&opts.vault_root).unwrap_or(current);
-            eprintln!("    {} → {}", 
-                style(old).dim(),
-                style(current_rel.display()).cyan());
-        }
-        if moved_files.len() > 3 {
-            eprintln!("    ... and {} more", moved_files.len() - 3);
-        }
-    }
+    summary_reporter.finish();
 
     Ok(AddSummary {
         total: total_files,
-        added: summary.added,
-        duplicate: summary.duplicate + likely_dup,
-        skipped: summary.skipped,
-        failed: summary.failed + failed_b,
+        added: pipeline_summary.added,
+        duplicate: pipeline_summary.duplicate + likely_dup,
+        skipped: pipeline_summary.skipped,
+        failed: pipeline_summary.failed + failed_scan,
         moved: moved_count,
     })
 }
