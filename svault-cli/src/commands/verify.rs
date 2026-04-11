@@ -29,6 +29,10 @@ pub fn run(
         let _summary =
             background_hash::run_background_hash(opts, ctx.db(), reporter_builder.as_ref())?;
         // Summary is printed by reporter
+        // If only background-hash is requested (no other flags), return early
+        if !upgrade_links && recent.is_none() && file.is_none() {
+            return Ok(());
+        }
     }
 
     if upgrade_links {

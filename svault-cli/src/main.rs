@@ -21,10 +21,20 @@ pub mod commands;
 pub mod reporting;
 
 use clap::Parser;
-use cli::{Cli, Command, DbCommand, DebugCommand};
+use cli::{Cli, Command, DbCommand};
+#[cfg(debug_assertions)]
+use cli::DebugCommand;
 use commands::setup_signal_handler;
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    // Configure Rayon thread pool if specified
+    if cli.threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cli.threads)
+            .build_global()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize Rayon thread pool: {}", e))?;
+    }
+
     // Extract global flags before matching on command
     let output = cli.output;
     let dry_run = cli.dry_run;
@@ -86,6 +96,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 limit,
             } => commands::db::run_dump(tables, format, limit),
         },
+        #[cfg(debug_assertions)]
         Command::Debug { command } => match command {
             DebugCommand::Reporter {
                 count,

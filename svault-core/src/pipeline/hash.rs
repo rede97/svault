@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
+use crate::reporting::HashReporter;
 
 /// Compute strong hashes for all entries in parallel.
 ///
@@ -17,74 +18,84 @@ use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
 /// # Arguments
 /// * `entries` - CRC entries (from lookup stage)
 /// * `compute_sha256` - If true, also compute SHA-256 for definitive identity
-/// * `progress_cb` - Optional callback for progress updates
+/// * `reporter` - Optional reporter for progress tracking
 ///
 /// # Returns
 /// List of hash results (errors preserved in result with dup_reason)
-pub fn compute_hashes(
+pub fn compute_hashes<R: HashReporter>(
     entries: Vec<CrcEntry>,
     compute_sha256: bool,
-    progress_cb: Option<&(dyn Fn() + Send + Sync)>,
+    reporter: Option<&R>,
 ) -> Vec<HashResult> {
     entries
         .into_par_iter()
         .map(|entry| {
             let abs_path = &entry.file.path;
+            let size = entry.file.size;
+
+            // Signal start of hashing this file
+            if let Some(r) = reporter {
+                r.item_started(abs_path, size);
+            }
 
             // Always compute XXH3-128 for deduplication
             let xxh3_128 = match xxh3_128_file(abs_path) {
                 Ok(h) => h.to_bytes().to_vec(),
                 Err(e) => {
-                    if let Some(cb) = progress_cb {
-                        cb();
+                    let err_msg = format!("xxh3_128 error: {e}");
+                    if let Some(r) = reporter {
+                        r.item_finished(abs_path, Some(&err_msg));
                     }
                     return HashResult {
                         path: abs_path.clone(),
                         src_path: entry.src_path.clone(),
-                        size: entry.file.size,
+                        size,
                         mtime_ms: entry.file.mtime_ms,
                         crc32c: entry.crc32c,
                         raw_unique_id: entry.raw_unique_id.clone(),
                         hash: FileHash::Fast(vec![]), // Empty hash indicates error
                         is_duplicate: false,
-                        dup_reason: Some(format!("xxh3_128 error: {e}")),
+                        dup_reason: Some(err_msg),
                     };
                 }
             };
 
             // Optionally compute SHA-256 for definitive identity
-            let hash = if compute_sha256 {
+            let (hash, err) = if compute_sha256 {
                 match sha256_file(abs_path) {
-                    Ok(h) => FileHash::Full(xxh3_128, h.to_bytes().to_vec()),
+                    Ok(h) => (FileHash::Full(xxh3_128, h.to_bytes().to_vec()), None),
                     Err(e) => {
-                        if let Some(cb) = progress_cb {
-                            cb();
-                        }
-                        return HashResult {
-                            path: abs_path.clone(),
-                            src_path: entry.src_path.clone(),
-                            size: entry.file.size,
-                            mtime_ms: entry.file.mtime_ms,
-                            crc32c: entry.crc32c,
-                            raw_unique_id: entry.raw_unique_id.clone(),
-                            hash: FileHash::Fast(xxh3_128),
-                            is_duplicate: false,
-                            dup_reason: Some(format!("sha256 error: {e}")),
-                        };
+                        let err_msg = format!("sha256 error: {e}");
+                        (FileHash::Fast(xxh3_128), Some(err_msg))
                     }
                 }
             } else {
-                FileHash::Fast(xxh3_128)
+                (FileHash::Fast(xxh3_128), None)
             };
 
-            if let Some(cb) = progress_cb {
-                cb();
+            // Signal end of hashing this file
+            if let Some(r) = reporter {
+                r.item_finished(abs_path, err.as_deref());
+            }
+            
+            if let Some(err_msg) = err {
+                return HashResult {
+                    path: abs_path.clone(),
+                    src_path: entry.src_path.clone(),
+                    size,
+                    mtime_ms: entry.file.mtime_ms,
+                    crc32c: entry.crc32c,
+                    raw_unique_id: entry.raw_unique_id.clone(),
+                    hash,
+                    is_duplicate: false,
+                    dup_reason: Some(err_msg),
+                };
             }
 
             HashResult {
                 path: abs_path.clone(),
                 src_path: entry.src_path,
-                size: entry.file.size,
+                size,
                 mtime_ms: entry.file.mtime_ms,
                 crc32c: entry.crc32c,
                 raw_unique_id: entry.raw_unique_id,

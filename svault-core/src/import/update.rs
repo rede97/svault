@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use crate::db::Db;
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::reporting::{
-    Interactor, MatchConfidence, ReporterBuilder, UpdateApplyReporter, UpdateHashReporter,
+    HashReporter, Interactor, MatchConfidence, ReporterBuilder, UpdateApplyReporter,
 };
 
 /// Summary of an `update` operation.
@@ -109,73 +109,80 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
     }
 
     // 3. Hash all disk files and look for matches
-    let hash_reporter = reporter_builder.update_hash_reporter(scanned as u64);
+    let hash_reporter = reporter_builder.update_hash_reporter(&opts.vault_root, scanned as u64);
 
     let matches: Vec<(UpdateMatch, MatchConfidence)> = disk_entries
         .into_par_iter()
-        .enumerate()
-        .filter_map(|(idx, path)| {
-            // Always compute xxh3_128 first (fast)
-            let xxh3_result = xxh3_128_file(&path).map(|h| hex_encode(&h.to_bytes()));
+        .filter_map(|path| {
+            // Get file size for reporter
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            
+            // Signal start of hashing this file
+            hash_reporter.item_started(&path, size);
 
-            hash_reporter.progress((idx + 1) as u64, scanned as u64);
-            let xxh3_str = match xxh3_result {
-                Ok(h) => h,
-                Err(_) => return None,
-            };
+            // Helper closure to ensure item_finished is called
+            let (result, error): (Option<(UpdateMatch, MatchConfidence)>, Option<String>) = 
+                match (|| -> Option<(UpdateMatch, MatchConfidence)> {
+                    // Always compute xxh3_128 first (fast)
+                    let xxh3_str = xxh3_128_file(&path)
+                        .map(|h| hex_encode(&h.to_bytes()))
+                        .ok()?;
 
-            // TODO: Try definitive match first (sha256) if available
-            // This requires computing SHA-256 of the disk file and comparing
-            // with candidates that have SHA-256 in the database
+                    // First: try fast match by xxh3_128
+                    let candidates = missing_by_xxh3.get(&xxh3_str)?;
+                    let meta = fs::metadata(&path).ok()?;
 
-            // First: try fast match by xxh3_128
-            if let Some(candidates) = missing_by_xxh3.get(&xxh3_str) {
-                let meta = fs::metadata(&path).ok()?;
+                    for candidate in candidates {
+                        if candidate.size == meta.len() as i64 {
+                            let rel_new = path.strip_prefix(&opts.vault_root).unwrap_or(&path);
 
-                for candidate in candidates {
-                    if candidate.size == meta.len() as i64 {
-                        let rel_new = path.strip_prefix(&opts.vault_root).unwrap_or(&path);
+                            // If candidate has sha256, compute and verify for definitive match
+                            let confidence = if candidate.sha256.is_some() {
+                                match sha256_file(&path) {
+                                    Ok(sha256_hash) => {
+                                        let disk_sha256 = sha256_hash.to_hex();
+                                        let candidate_sha256 = candidate
+                                            .sha256
+                                            .as_ref()
+                                            .map(|b| hex_encode(b))
+                                            .unwrap_or_default();
 
-                        // If candidate has sha256, compute and verify for definitive match
-                        let confidence = if candidate.sha256.is_some() {
-                            match sha256_file(&path) {
-                                Ok(sha256_hash) => {
-                                    let disk_sha256 = sha256_hash.to_hex();
-                                    let candidate_sha256 = candidate
-                                        .sha256
-                                        .as_ref()
-                                        .map(|b| hex_encode(b))
-                                        .unwrap_or_default();
-
-                                    if disk_sha256 == candidate_sha256 {
-                                        MatchConfidence::Definitive
-                                    } else {
-                                        // SHA-256 mismatch - this is a collision or corruption
-                                        continue;
+                                        if disk_sha256 == candidate_sha256 {
+                                            MatchConfidence::Definitive
+                                        } else {
+                                            // SHA-256 mismatch - this is a collision or corruption
+                                            continue;
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Can't compute sha256, fall back to fast match
+                                        MatchConfidence::Fast
                                     }
                                 }
-                                Err(_) => {
-                                    // Can't compute sha256, fall back to fast match
-                                    MatchConfidence::Fast
-                                }
-                            }
-                        } else {
-                            // No sha256 in DB, use fast match
-                            MatchConfidence::Fast
-                        };
+                            } else {
+                                // No sha256 in DB, use fast match
+                                MatchConfidence::Fast
+                            };
 
-                        return Some((
-                            UpdateMatch {
-                                old_path: candidate.path.clone(),
-                                new_path: rel_new.to_string_lossy().into_owned(),
-                                file_id: candidate.id,
-                            },
-                            confidence,
-                        ));
+                            return Some((
+                                UpdateMatch {
+                                    old_path: candidate.path.clone(),
+                                    new_path: rel_new.to_string_lossy().into_owned(),
+                                    file_id: candidate.id,
+                                },
+                                confidence,
+                            ));
+                        }
                     }
-                }
-            }
-            None
+                    None
+                })() {
+                Some(m) => (Some(m), None),
+                None => (None, None), // No match found is not an error
+            };
+
+            // Signal end of hashing this file
+            hash_reporter.item_finished(&path, error.as_deref());
+            result
         })
         .collect();
 

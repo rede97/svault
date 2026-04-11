@@ -149,7 +149,7 @@ fn show_session_history(
                 style(format!("[{}]", i + 1)).cyan().bold(),
                 status_icon,
                 style(datetime.format("%Y-%m-%d %H:%M:%S")).bright(),
-                style(&session_id[..session_id.len().min(8)]).dim()
+                style(&session_id[..session_id.len().min(8)]).italic()
             );
 
             println!("  Source: {}", style(source).blue());

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::db::Db;
 use crate::hash::sha256_file;
-use crate::reporting::{BackgroundHashReporter, ReporterBuilder};
+use crate::reporting::{HashReporter, ReporterBuilder};
 
 /// Options for background hash computation.
 pub struct BackgroundHashOptions {
@@ -34,24 +34,24 @@ pub fn run_background_hash<RB: ReporterBuilder>(
     let files = db.get_files_pending_sha256(opts.limit)?;
     let total = files.len();
 
+    // Always create reporter, even when no files pending
+    // Use a dummy source path since background hash doesn't have a source directory
+    let dummy_source = std::path::PathBuf::from(".");
+    let reporter = reporter_builder.hash_reporter(&dummy_source, total as u64);
+
     if total == 0 {
+        reporter.finish();
         return Ok(BackgroundHashSummary::default());
     }
 
-    let reporter = reporter_builder.background_hash_reporter(total as u64);
-    reporter.started(total as u64);
-
     let mut summary = BackgroundHashSummary::default();
 
-    for (idx, file) in files.iter().enumerate() {
-        let rel_path = Path::new(&file.path)
-            .strip_prefix(&opts.vault_root)
-            .unwrap_or(Path::new(&file.path));
+    for file in files.iter() {
         let full_path = Path::new(&opts.vault_root).join(&file.path);
 
-        reporter.progress((idx + 1) as u64, total as u64, rel_path);
+        reporter.item_started(&full_path, file.size as u64);
 
-        match sha256_file(&full_path) {
+        let error = match sha256_file(&full_path) {
             Ok(digest) => {
                 let hash_bytes = digest.to_bytes();
                 let payload = serde_json::json!({
@@ -69,18 +69,20 @@ pub fn run_background_hash<RB: ReporterBuilder>(
                         Ok(())
                     })
                 {
-                    reporter.error(rel_path, &e.to_string());
                     summary.failed += 1;
+                    Some(e.to_string())
                 } else {
-                    reporter.hashed(rel_path);
                     summary.processed += 1;
+                    None
                 }
             }
             Err(e) => {
-                reporter.error(rel_path, &e.to_string());
                 summary.failed += 1;
+                Some(e.to_string())
             }
-        }
+        };
+
+        reporter.item_finished(&full_path, error.as_deref());
 
         if opts.nice {
             thread::sleep(Duration::from_millis(10));
@@ -88,7 +90,6 @@ pub fn run_background_hash<RB: ReporterBuilder>(
     }
 
     reporter.finish();
-    reporter.summary(summary.processed, summary.failed);
 
     Ok(summary)
 }

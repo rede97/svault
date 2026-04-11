@@ -25,6 +25,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub quiet: bool,
 
+    /// Number of Rayon worker threads (0 = use Rayon default)
+    #[arg(long, global = true, default_value = "0")]
+    pub threads: usize,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -242,13 +246,15 @@ pub enum Command {
         command: DbCommand,
     },
 
-    /// Debug utilities
+    /// Debug utilities (debug builds only)
+    #[cfg(debug_assertions)]
     Debug {
         #[command(subcommand)]
         command: DebugCommand,
     },
 }
 
+#[cfg(debug_assertions)]
 #[derive(Subcommand)]
 pub enum DebugCommand {
     /// Test reporter output with simulated import

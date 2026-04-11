@@ -1,13 +1,12 @@
 //! JSON reporter for machine-readable output.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use svault_core::reporting::{
-    AddSummaryReporter, BackgroundHashReporter, CopyReporter, HashReporter, InsertReporter,
-    ItemStatus, MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter,
-    UpdateApplyReporter, UpdateHashReporter, VerifyReporter,
+    AddSummaryReporter, CopyReporter, HashReporter, InsertReporter,
+    ItemStatus, RecheckReporter, ReporterBuilder, ScanReporter,
+    UpdateApplyReporter, VerifyReporter,
 };
 use svault_core::verify::VerifySummary;
 
@@ -28,16 +27,14 @@ impl ReporterBuilder for JsonReporterBuilder {
     type Insert = JsonInsertReporter;
     type AddSummary = JsonAddSummaryReporter;
     type Recheck = JsonRecheckReporter;
-    type UpdateHash = JsonUpdateHashReporter;
     type UpdateApply = JsonUpdateApplyReporter;
     type Verify = JsonVerifyReporter;
-    type BackgroundHash = JsonBackgroundHashReporter;
 
     fn scan_reporter(&self, _source: &Path) -> JsonScanReporter {
         JsonScanReporter::new()
     }
 
-    fn copy_reporter(&self, _source: &Path, _total: u64) -> JsonCopyReporter {
+    fn copy_reporter(&self, _source: &Path, _vault_root: &Path, _total: u64) -> JsonCopyReporter {
         JsonCopyReporter::new()
     }
 
@@ -57,8 +54,8 @@ impl ReporterBuilder for JsonReporterBuilder {
         JsonRecheckReporter::new(total)
     }
 
-    fn update_hash_reporter(&self, total: u64) -> JsonUpdateHashReporter {
-        JsonUpdateHashReporter::new(total)
+    fn update_hash_reporter(&self, _source: &Path, _total: u64) -> JsonHashReporter {
+        JsonHashReporter::new()
     }
 
     fn update_apply_reporter(&self, total: u64) -> JsonUpdateApplyReporter {
@@ -67,10 +64,6 @@ impl ReporterBuilder for JsonReporterBuilder {
 
     fn verify_reporter(&self, total: u64) -> JsonVerifyReporter {
         JsonVerifyReporter::new(total)
-    }
-
-    fn background_hash_reporter(&self, total: u64) -> JsonBackgroundHashReporter {
-        JsonBackgroundHashReporter::new(total)
     }
 }
 
@@ -103,7 +96,7 @@ impl ScanReporter for JsonScanReporter {
         }));
     }
 
-    fn classified(&self, path: &Path, status: ItemStatus, _detail: Option<&str>) {
+    fn classified(&self, path: &Path, size: u64, status: ItemStatus, _detail: Option<&str>) {
         let status_str = match status {
             ItemStatus::New => "new",
             ItemStatus::Duplicate => "duplicate",
@@ -114,6 +107,7 @@ impl ScanReporter for JsonScanReporter {
         emit_json!(json!({
             "event": "file_classified",
             "path": path.display().to_string(),
+            "size": size,
             "status": status_str
         }));
     }
@@ -188,25 +182,20 @@ impl JsonCopyReporter {
 }
 
 impl CopyReporter for JsonCopyReporter {
-    fn item_started(&self, path: &Path, _bytes_total: Option<u64>) {
+    fn item_started(&self, src_abs: &Path, dest_abs: &Path, bytes_total: u64) {
         emit_json!(json!({
             "event": "copy_item_started",
-            "path": path.display().to_string()
+            "src": src_abs.display().to_string(),
+            "dest": dest_abs.display().to_string(),
+            "size": bytes_total
         }));
     }
 
-    fn item_finished(&self, path: &Path) {
+    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, _bytes_total: u64) {
         emit_json!(json!({
             "event": "copy_item_finished",
-            "path": path.display().to_string()
-        }));
-    }
-
-    fn progress(&self, completed: u64, total: u64) {
-        emit_json!(json!({
-            "event": "copy_progress",
-            "completed": completed,
-            "total": total
+            "src": src_abs.display().to_string(),
+            "dest": dest_abs.display().to_string()
         }));
     }
 
@@ -237,11 +226,19 @@ impl JsonHashReporter {
 }
 
 impl HashReporter for JsonHashReporter {
-    fn progress(&self, completed: u64, total: u64) {
+    fn item_started(&self, abs_path: &Path, bytes_total: u64) {
         emit_json!(json!({
-            "event": "hash_progress",
-            "completed": completed,
-            "total": total
+            "event": "hash_item_started",
+            "path": abs_path.display().to_string(),
+            "size": bytes_total
+        }));
+    }
+
+    fn item_finished(&self, abs_path: &Path, error: Option<&str>) {
+        emit_json!(json!({
+            "event": "hash_item_finished",
+            "path": abs_path.display().to_string(),
+            "error": error
         }));
     }
 
@@ -430,55 +427,6 @@ impl RecheckReporter for JsonRecheckReporter {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Update hash reporter
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub struct JsonUpdateHashReporter {
-    total: u64,
-    matches: Arc<Mutex<Vec<(String, String, MatchConfidence)>>>,
-}
-
-impl JsonUpdateHashReporter {
-    fn new(total: u64) -> Self {
-        emit_json!(json!({"event": "update_hash_started", "total": total}));
-        Self {
-            total,
-            matches: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-}
-
-impl UpdateHashReporter for JsonUpdateHashReporter {
-    fn progress(&self, completed: u64, _total: u64) {
-        emit_json!(json!({
-            "event": "update_hash_progress",
-            "completed": completed,
-            "total": self.total
-        }));
-    }
-
-    fn matched(&self, old_path: &str, new_path: &str, confidence: MatchConfidence) {
-        let conf_str = match confidence {
-            MatchConfidence::Definitive => "definitive",
-            MatchConfidence::Fast => "fast",
-        };
-        emit_json!(json!({
-            "event": "update_matched",
-            "old_path": old_path,
-            "new_path": new_path,
-            "confidence": conf_str
-        }));
-        self.matches
-            .lock()
-            .unwrap()
-            .push((old_path.to_string(), new_path.to_string(), confidence));
-    }
-
-    fn finish(&self) {
-        emit_json!(json!({"event": "update_hash_finished"}));
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Update apply reporter
@@ -597,56 +545,4 @@ impl VerifyReporter for JsonVerifyReporter {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Background hash reporter
-// ─────────────────────────────────────────────────────────────────────────────
 
-pub struct JsonBackgroundHashReporter {
-    total: u64,
-}
-
-impl JsonBackgroundHashReporter {
-    fn new(total: u64) -> Self {
-        emit_json!(json!({"event": "background_hash_started", "total": total}));
-        Self { total }
-    }
-}
-
-impl BackgroundHashReporter for JsonBackgroundHashReporter {
-    fn started(&self, _total: u64) {}
-
-    fn progress(&self, completed: u64, _total: u64, _current_path: &Path) {
-        emit_json!(json!({
-            "event": "background_hash_progress",
-            "completed": completed,
-            "total": self.total
-        }));
-    }
-
-    fn hashed(&self, path: &Path) {
-        emit_json!(json!({
-            "event": "file_hashed",
-            "path": path.display().to_string()
-        }));
-    }
-
-    fn error(&self, path: &Path, message: &str) {
-        emit_json!(json!({
-            "event": "background_hash_error",
-            "path": path.display().to_string(),
-            "message": message
-        }));
-    }
-
-    fn finish(&self) {
-        emit_json!(json!({"event": "background_hash_finished"}));
-    }
-
-    fn summary(&self, processed: usize, failed: usize) {
-        emit_json!(json!({
-            "event": "background_hash_summary",
-            "processed": processed,
-            "failed": failed
-        }));
-    }
-}

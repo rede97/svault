@@ -251,7 +251,7 @@ fn classify_and_emit<SR: ScanReporter>(
 
     let should_emit = !matches!(item_status, ItemStatus::Duplicate) || show_dup;
     if should_emit {
-        scan_reporter.classified(&entry.file.path, item_status, None);
+        scan_reporter.classified(&entry.file.path, entry.file.size, item_status, None);
     }
 
     process_lookup_result(entry, check_result, state);
@@ -665,8 +665,7 @@ impl ImportOptions {
         let transfer_strategies = strategy.to_transfer_strategies();
 
         let copied = {
-            let reporter = reporter_builder.copy_reporter(source_canon, total);
-            let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let reporter = reporter_builder.copy_reporter(source_canon, vault_root, total);
 
             let result: Vec<pipeline::types::CrcEntry> = prepared
                 .into_par_iter()
@@ -675,24 +674,19 @@ impl ImportOptions {
                         && let Err(e) = fs::create_dir_all(parent)
                     {
                         let msg = e.to_string();
-                        let done =
-                            progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         reporter.error(&msg, Some(parent));
-                        reporter.progress(done, total);
                         copy_errors.lock().unwrap().insert(src.clone(), msg);
                         return None;
                     }
 
-                    let rel = src.strip_prefix(source_canon).unwrap_or(&src);
-                    reporter.item_started(rel, Some(size));
+                    // reporter 内部会计算相对路径，这里传入绝对路径
+                    reporter.item_started(&src, &dest, size);
 
-                    let done = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-
-                    match transfer_file(source_canon, rel, vault_root, &dest, &transfer_strategies)
+                    let src_rel = src.strip_prefix(source_canon).unwrap_or(&src);
+                    match transfer_file(source_canon, src_rel, vault_root, &dest, &transfer_strategies)
                     {
                         Ok(_) => {
-                            reporter.progress(done, total);
-                            reporter.item_finished(rel);
+                            reporter.item_finished(&src, &dest, size);
                             Some(pipeline::types::CrcEntry {
                                 file: pipeline::types::FileEntry {
                                     path: dest,
@@ -706,7 +700,7 @@ impl ImportOptions {
                             })
                         }
                         Err(e) => {
-                            reporter.progress(done, total);
+                            reporter.item_finished(&src, &dest, size);
                             copy_errors.lock().unwrap().insert(src, e.to_string());
                             None
                         }
@@ -737,20 +731,10 @@ impl ImportOptions {
         let total = copied.len() as u64;
         let hash_results = {
             let reporter = reporter_builder.hash_reporter(source_canon, total);
-            let progress = std::sync::atomic::AtomicU64::new(0);
-            let progress_cb = || {
-                let done = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                reporter.progress(done, total);
-            };
 
             let results =
-                pipeline::hash::compute_hashes(copied, force || full_id, Some(&progress_cb));
+                pipeline::hash::compute_hashes(copied, force || full_id, Some(&reporter));
 
-            // Flush any remaining progress
-            let done = progress.load(std::sync::atomic::Ordering::Relaxed);
-            if done < total {
-                reporter.progress(done, total);
-            }
             reporter.finish();
             results
         }; // reporter dropped → bar cleared
@@ -860,7 +844,7 @@ mod tests {
         fn discovered(&self, path: &Path, _size: u64, _mtime_ms: i64) {
             self.0.lock().unwrap().discovered.push(path.to_path_buf());
         }
-        fn classified(&self, path: &Path, status: ItemStatus, _detail: Option<&str>) {
+        fn classified(&self, path: &Path, _size: u64, status: ItemStatus, _detail: Option<&str>) {
             self.0
                 .lock()
                 .unwrap()
@@ -911,7 +895,7 @@ mod tests {
         fn scan_reporter(&self, _source: &Path) -> TestScanReporter {
             TestScanReporter(Arc::clone(&self.log))
         }
-        fn copy_reporter(&self, _source: &Path, _total: u64) -> Noop {
+        fn copy_reporter(&self, _source: &Path, _vault_root: &Path, _total: u64) -> Noop {
             Noop
         }
         fn hash_reporter(&self, _source: &Path, _total: u64) -> Noop {
@@ -950,7 +934,7 @@ mod tests {
         };
         let reporter = rb.scan_reporter(Path::new("/source"));
         reporter.discovered(Path::new("/source/photo.jpg"), 1024, 0);
-        reporter.classified(Path::new("/source/photo.jpg"), ItemStatus::New, None);
+        reporter.classified(Path::new("/source/photo.jpg"), 1024, ItemStatus::New, None);
         reporter.finish();
 
         let log = log.lock().unwrap();

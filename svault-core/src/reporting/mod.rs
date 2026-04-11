@@ -50,19 +50,22 @@ pub enum ItemStatus {
 /// is dropped.
 pub trait ScanReporter: Send + Sync {
     /// A file was discovered during the directory walk.
-    fn discovered(&self, path: &Path, size: u64, mtime_ms: i64);
+    /// `abs_path` is the absolute path of the file.
+    fn discovered(&self, abs_path: &Path, size: u64, mtime_ms: i64);
 
     /// A file was classified after a DB duplicate check.
-    fn classified(&self, path: &Path, status: ItemStatus, detail: Option<&str>);
+    /// `abs_path` is the absolute path of the file.
+    /// `size` is the file size in bytes.
+    fn classified(&self, abs_path: &Path, size: u64, status: ItemStatus, detail: Option<&str>);
 
     /// Periodic progress counter — number of files visited so far.
     fn progress(&self, completed: u64);
 
     /// A non-fatal warning associated with an optional path.
-    fn warning(&self, message: &str, path: Option<&Path>);
+    fn warning(&self, message: &str, abs_path: Option<&Path>);
 
     /// A file could not be read or hashed.
-    fn error(&self, message: &str, path: Option<&Path>);
+    fn error(&self, message: &str, abs_path: Option<&Path>);
 
     /// Pre-flight summary emitted after scan and before the user is asked
     /// to confirm.  Core provides raw counts; formatting is up to the
@@ -88,24 +91,40 @@ pub trait ScanReporter: Send + Sync {
 /// Reporter for the copy phase (Stage C: file transfer).
 pub trait CopyReporter: Send + Sync {
     /// A file is about to be transferred.
-    fn item_started(&self, path: &Path, bytes_total: Option<u64>);
+    /// `src_abs` is the absolute source path.
+    /// `dest_abs` is the absolute destination path.
+    /// `bytes_total` is the file size in bytes.
+    fn item_started(&self, src_abs: &Path, dest_abs: &Path, bytes_total: u64);
 
     /// A file was successfully transferred.
-    fn item_finished(&self, path: &Path);
-
-    /// Parallel-safe progress update.
-    fn progress(&self, completed: u64, total: u64);
+    /// `src_abs` is the absolute source path, `dest_abs` is the absolute destination path.
+    /// `bytes_total` is the file size in bytes.
+    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, bytes_total: u64);
 
     /// A file could not be transferred.
-    fn error(&self, message: &str, path: Option<&Path>);
+    fn error(&self, message: &str, abs_path: Option<&Path>);
 
     /// The copy phase is complete.
     fn finish(&self);
 }
 
 /// Reporter for the hash phase (Stage D: XXH3-128 / SHA-256 computation).
+/// Also used for the `update` command's hash-and-match phase.
 pub trait HashReporter: Send + Sync {
-    fn progress(&self, completed: u64, total: u64);
+    /// A file has started hashing.
+    /// `abs_path` is the absolute path of the file.
+    /// `bytes_total` is the file size in bytes.
+    fn item_started(&self, abs_path: &Path, bytes_total: u64);
+
+    /// A file has finished hashing.
+    /// `abs_path` is the absolute path of the file.
+    /// `error` is None if successful, or contains an error message.
+    fn item_finished(&self, abs_path: &Path, error: Option<&str>);
+
+    /// A relocate match was found (for `update` command).
+    /// Default implementation does nothing.
+    fn matched(&self, _old_path: &str, _new_path: &str, _confidence: MatchConfidence) {}
+
     fn finish(&self);
 }
 
@@ -219,26 +238,7 @@ pub trait VerifyReporter: Send + Sync {
     fn summary(&self, summary: &crate::verify::VerifySummary);
 }
 
-/// Reporter for the background hash computation phase.
-pub trait BackgroundHashReporter: Send + Sync {
-    /// Called once at the start.
-    fn started(&self, total: u64);
 
-    /// Progress update for current file.
-    fn progress(&self, completed: u64, total: u64, current_path: &Path);
-
-    /// A file was successfully hashed and stored.
-    fn hashed(&self, path: &Path);
-
-    /// A file failed to hash.
-    fn error(&self, path: &Path, message: &str);
-
-    /// The hashing phase is complete.
-    fn finish(&self);
-
-    /// Final summary.
-    fn summary(&self, processed: usize, failed: usize);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // update command reporters
@@ -251,20 +251,6 @@ pub enum MatchConfidence {
     Definitive,
     /// Matched by XXH3-128 only — fast but theoretically collidable.
     Fast,
-}
-
-/// Reporter for the `update` command's hash-and-match phase.
-///
-/// Hashes files on disk to find DB records whose paths are now stale.
-pub trait UpdateHashReporter: Send + Sync {
-    fn progress(&self, completed: u64, total: u64);
-
-    /// A relocate match was found between `old_path` (DB record) and
-    /// `new_path` (current disk location).
-    fn matched(&self, old_path: &str, new_path: &str, confidence: MatchConfidence);
-
-    /// The hash phase is complete; also shows the collected match list.
-    fn finish(&self);
 }
 
 /// Reporter for the `update` command's path-apply phase.
@@ -314,7 +300,7 @@ pub trait ReporterBuilder: Send + Sync {
     type Insert: InsertReporter;
 
     fn scan_reporter(&self, source: &Path) -> Self::Scan;
-    fn copy_reporter(&self, source: &Path, total: u64) -> Self::Copy;
+    fn copy_reporter(&self, source: &Path, vault_root: &Path, total: u64) -> Self::Copy;
     fn hash_reporter(&self, source: &Path, total: u64) -> Self::Hash;
     fn insert_reporter(&self, source: &Path, total: u64) -> Self::Insert;
 
@@ -329,18 +315,15 @@ pub trait ReporterBuilder: Send + Sync {
     fn recheck_reporter(&self, total: u64) -> Self::Recheck;
 
     // ── update command ────────────────────────────────────────────────────
-    type UpdateHash: UpdateHashReporter;
     type UpdateApply: UpdateApplyReporter;
 
-    fn update_hash_reporter(&self, total: u64) -> Self::UpdateHash;
+    fn update_hash_reporter(&self, source: &Path, total: u64) -> Self::Hash;
     fn update_apply_reporter(&self, total: u64) -> Self::UpdateApply;
 
     // ── verify command ────────────────────────────────────────────────────
     type Verify: VerifyReporter;
-    type BackgroundHash: BackgroundHashReporter;
 
     fn verify_reporter(&self, total: u64) -> Self::Verify;
-    fn background_hash_reporter(&self, total: u64) -> Self::BackgroundHash;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,7 +340,7 @@ pub struct Noop;
 
 impl ScanReporter for Noop {
     fn discovered(&self, _: &Path, _: u64, _: i64) {}
-    fn classified(&self, _: &Path, _: ItemStatus, _: Option<&str>) {}
+    fn classified(&self, _: &Path, _: u64, _: ItemStatus, _: Option<&str>) {}
     fn progress(&self, _: u64) {}
     fn warning(&self, _: &str, _: Option<&Path>) {}
     fn error(&self, _: &str, _: Option<&Path>) {}
@@ -367,15 +350,15 @@ impl ScanReporter for Noop {
 }
 
 impl CopyReporter for Noop {
-    fn item_started(&self, _: &Path, _: Option<u64>) {}
-    fn item_finished(&self, _: &Path) {}
-    fn progress(&self, _: u64, _: u64) {}
+    fn item_started(&self, _: &Path, _: &Path, _: u64) {}
+    fn item_finished(&self, _: &Path, _: &Path, _: u64) {}
     fn error(&self, _: &str, _: Option<&Path>) {}
     fn finish(&self) {}
 }
 
 impl HashReporter for Noop {
-    fn progress(&self, _: u64, _: u64) {}
+    fn item_started(&self, _: &Path, _: u64) {}
+    fn item_finished(&self, _: &Path, _: Option<&str>) {}
     fn finish(&self) {}
 }
 
@@ -412,12 +395,6 @@ impl RecheckReporter for Noop {
     }
 }
 
-impl UpdateHashReporter for Noop {
-    fn progress(&self, _: u64, _: u64) {}
-    fn matched(&self, _: &str, _: &str, _: MatchConfidence) {}
-    fn finish(&self) {}
-}
-
 impl UpdateApplyReporter for Noop {
     fn progress(&self, _: u64, _: u64) {}
     fn error(&self, _: &str, _: &str) {}
@@ -435,15 +412,6 @@ impl VerifyReporter for Noop {
     fn summary(&self, _: &crate::verify::VerifySummary) {}
 }
 
-impl BackgroundHashReporter for Noop {
-    fn started(&self, _: u64) {}
-    fn progress(&self, _: u64, _: u64, _: &Path) {}
-    fn hashed(&self, _: &Path) {}
-    fn error(&self, _: &Path, _: &str) {}
-    fn finish(&self) {}
-    fn summary(&self, _: usize, _: usize) {}
-}
-
 /// No-op builder — all phases use [`Noop`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopReporterBuilder;
@@ -455,15 +423,13 @@ impl ReporterBuilder for NoopReporterBuilder {
     type Insert = Noop;
     type AddSummary = Noop;
     type Recheck = Noop;
-    type UpdateHash = Noop;
     type UpdateApply = Noop;
     type Verify = Noop;
-    type BackgroundHash = Noop;
 
     fn scan_reporter(&self, _: &Path) -> Noop {
         Noop
     }
-    fn copy_reporter(&self, _: &Path, _: u64) -> Noop {
+    fn copy_reporter(&self, _: &Path, _: &Path, _: u64) -> Noop {
         Noop
     }
     fn hash_reporter(&self, _: &Path, _: u64) -> Noop {
@@ -478,16 +444,13 @@ impl ReporterBuilder for NoopReporterBuilder {
     fn recheck_reporter(&self, _: u64) -> Noop {
         Noop
     }
-    fn update_hash_reporter(&self, _: u64) -> Noop {
+    fn update_hash_reporter(&self, _: &Path, _: u64) -> Noop {
         Noop
     }
     fn update_apply_reporter(&self, _: u64) -> Noop {
         Noop
     }
     fn verify_reporter(&self, _: u64) -> Noop {
-        Noop
-    }
-    fn background_hash_reporter(&self, _: u64) -> Noop {
         Noop
     }
 }

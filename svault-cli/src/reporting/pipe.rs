@@ -64,7 +64,7 @@ impl PipeScanReporter {
 impl ScanReporter for PipeScanReporter {
     fn discovered(&self, _path: &Path, _size: u64, _mtime_ms: i64) {}
 
-    fn classified(&self, path: &Path, status: ItemStatus, _detail: Option<&str>) {
+    fn classified(&self, path: &Path, _size: u64, status: ItemStatus, _detail: Option<&str>) {
         match status {
             ItemStatus::New | ItemStatus::Recover => {
                 self.print_line("new", path);
@@ -141,10 +141,8 @@ impl ReporterBuilder for PipeReporterBuilder {
     type Insert = Noop;
     type AddSummary = Noop;
     type Recheck = Noop;
-    type UpdateHash = Noop;
     type UpdateApply = Noop;
     type Verify = Noop;
-    type BackgroundHash = Noop;
 
     fn scan_reporter(&self, src: &Path) -> PipeScanReporter {
         // Canonicalise so strip_prefix works correctly against absolute paths
@@ -160,7 +158,7 @@ impl ReporterBuilder for PipeReporterBuilder {
         }
     }
 
-    fn copy_reporter(&self, _source: &Path, _total: u64) -> Noop {
+    fn copy_reporter(&self, _source: &Path, _vault_root: &Path, _total: u64) -> Noop {
         Noop
     }
 
@@ -180,7 +178,7 @@ impl ReporterBuilder for PipeReporterBuilder {
         Noop
     }
 
-    fn update_hash_reporter(&self, _total: u64) -> Noop {
+    fn update_hash_reporter(&self, _source: &Path, _total: u64) -> Noop {
         Noop
     }
 
@@ -189,10 +187,6 @@ impl ReporterBuilder for PipeReporterBuilder {
     }
 
     fn verify_reporter(&self, _total: u64) -> Noop {
-        Noop
-    }
-
-    fn background_hash_reporter(&self, _total: u64) -> Noop {
         Noop
     }
 }

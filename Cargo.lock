@@ -1307,6 +1307,7 @@ dependencies = [
  "ctrlc",
  "env_logger",
  "indicatif",
+ "rayon",
  "serde_json",
  "svault-core",
 ]

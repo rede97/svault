@@ -110,7 +110,7 @@ pub fn run_add<RB: ReporterBuilder>(
             pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,
             pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
         };
-        scan_reporter.classified(&result.file.path, item_status, None);
+        scan_reporter.classified(&result.file.path, result.file.size, item_status, None);
 
         match check_result {
             pipeline::CheckResult::Duplicate => {
@@ -161,19 +161,10 @@ pub fn run_add<RB: ReporterBuilder>(
     // ------------------------------------------------------------------
     let hash_total = new_files.len() as u64;
     let hash_reporter = reporter_builder.hash_reporter(&opts.path, hash_total);
-    let hash_progress = std::sync::atomic::AtomicU64::new(0);
-    let hash_progress_cb = || {
-        let done = hash_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        hash_reporter.progress(done, hash_total);
-    };
 
     let hash_results =
-        pipeline::hash::compute_hashes(new_files, opts.full_id, Some(&hash_progress_cb));
+        pipeline::hash::compute_hashes(new_files, opts.full_id, Some(&hash_reporter));
 
-    let done = hash_progress.load(std::sync::atomic::Ordering::Relaxed);
-    if done < hash_total {
-        hash_reporter.progress(done, hash_total);
-    }
     hash_reporter.finish();
     drop(hash_reporter);
 

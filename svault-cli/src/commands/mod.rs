@@ -3,6 +3,7 @@
 pub mod add;
 pub mod clone;
 pub mod db;
+#[cfg(debug_assertions)]
 pub mod debug_reporter;
 pub mod history;
 pub mod import;
