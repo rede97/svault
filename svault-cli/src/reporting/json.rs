@@ -8,7 +8,7 @@ use svault_core::reporting::{
     ItemStatus, RecheckReporter, ReporterBuilder, ScanReporter,
     UpdateApplyReporter, VerifyReporter,
 };
-use svault_core::verify::VerifySummary;
+use svault_core::verify::{VerifyResult, VerifySummary};
 
 /// JSON reporter builder that outputs structured JSON lines.
 #[derive(Debug, Clone, Default)]
@@ -144,6 +144,17 @@ impl ScanReporter for JsonScanReporter {
         failed_count: usize,
         source: &Path,
     ) {
+        // If nothing to import, emit special event
+        if new_count == 0 {
+            emit_json!(json!({
+                "event": "nothing_to_import",
+                "total": total_scanned,
+                "duplicate": duplicate_count,
+                "moved": moved_count
+            }));
+            return;
+        }
+
         emit_json!(json!({
             "event": "preflight",
             "total_scanned": total_scanned,
@@ -152,14 +163,6 @@ impl ScanReporter for JsonScanReporter {
             "moved": moved_count,
             "failed": failed_count,
             "source": source.display().to_string()
-        }));
-    }
-
-    fn nothing_to_import(&self, total: usize, duplicate: usize) {
-        emit_json!(json!({
-            "event": "nothing_to_import",
-            "total": total,
-            "duplicate": duplicate
         }));
     }
 
@@ -388,11 +391,29 @@ impl RecheckReporter for JsonRecheckReporter {
         }));
     }
 
-    fn progress(&self, completed: u64, _total: u64) {
+    fn item_started(&self, src_path: &Path, vault_path: &Path) {
         emit_json!(json!({
-            "event": "recheck_progress",
-            "completed": completed,
-            "total": self.total
+            "event": "recheck_item_started",
+            "src_path": src_path.display().to_string(),
+            "vault_path": vault_path.display().to_string()
+        }));
+    }
+
+    fn item_finished(&self, src_path: &Path, vault_path: &Path, status: &svault_core::import::RecheckStatus) {
+        let status_str = match status {
+            svault_core::import::RecheckStatus::Ok => "ok",
+            svault_core::import::RecheckStatus::SourceModified => "source_modified",
+            svault_core::import::RecheckStatus::VaultCorrupted => "vault_corrupted",
+            svault_core::import::RecheckStatus::BothDiverged => "both_diverged",
+            svault_core::import::RecheckStatus::SourceDeleted => "source_deleted",
+            svault_core::import::RecheckStatus::VaultDeleted => "vault_deleted",
+            svault_core::import::RecheckStatus::Error(_) => "error",
+        };
+        emit_json!(json!({
+            "event": "recheck_item_finished",
+            "src_path": src_path.display().to_string(),
+            "vault_path": vault_path.display().to_string(),
+            "status": status_str
         }));
     }
 
@@ -512,19 +533,45 @@ impl JsonVerifyReporter {
 impl VerifyReporter for JsonVerifyReporter {
     fn started(&self, _total: u64) {}
 
-    fn progress(&self, completed: u64, _total: u64) {
+    fn item_started(&self, path: &Path) {
         emit_json!(json!({
-            "event": "verify_progress",
-            "completed": completed,
-            "total": self.total
+            "event": "verify_item_started",
+            "path": path.display().to_string()
         }));
     }
 
-    fn verified(&self, path: &Path) {
-        emit_json!(json!({
-            "event": "file_verified",
-            "path": path.display().to_string()
-        }));
+    fn item_finished(&self, path: &Path, result: &VerifyResult) {
+        let (status, details) = match result {
+            VerifyResult::Ok => ("ok", None),
+            VerifyResult::Missing => ("missing", None),
+            VerifyResult::SizeMismatch { expected, actual } => (
+                "size_mismatch",
+                Some(json!({"expected": expected, "actual": actual}))
+            ),
+            VerifyResult::HashMismatch { algo } => (
+                "hash_mismatch",
+                Some(json!({"algorithm": format!("{:?}", algo)}))
+            ),
+            VerifyResult::IoError(e) => (
+                "io_error",
+                Some(json!({"error": e}))
+            ),
+            VerifyResult::HashNotAvailable => ("hash_not_available", None),
+        };
+        
+        let mut event = json!({
+            "event": "verify_item_finished",
+            "path": path.display().to_string(),
+            "status": status
+        });
+        
+        if let Some(d) = details {
+            if let Some(obj) = event.as_object_mut() {
+                obj.insert("details".to_string(), d);
+            }
+        }
+        
+        emit_json!(event);
     }
 
     fn finish(&self) {

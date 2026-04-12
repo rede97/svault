@@ -171,6 +171,33 @@ impl ScanReporter for TerminalScanReporter {
         failed_count: usize,
         source: &Path,
     ) {
+        // Nothing to import - all files were duplicates, moved, or failed
+        if new_count == 0 {
+            let mut output = String::new();
+            output.push_str(&format!(
+                "{} Scanned {} files from {}\n",
+                style("Finished:").bold().green(),
+                style(total_scanned).green(),
+                style(source.display()).color256(244),
+            ));
+            output.push('\n');
+            if duplicate_count > 0 {
+                output.push_str(&format!(
+                    "All {} files matched cache (no new files detected).\n",
+                    style(duplicate_count).cyan()
+                ));
+            } else if moved_count > 0 {
+                output.push_str(&format!(
+                    "Found {} moved files. Run `svault update` to fix paths.\n",
+                    style(moved_count).cyan()
+                ));
+            } else {
+                output.push_str("No files to import.\n");
+            }
+            self.println(output);
+            return;
+        }
+
         let mut output = String::new();
         output.push_str(&format!(
             "{} Scanned {} files from {}\n",
@@ -204,13 +231,6 @@ impl ScanReporter for TerminalScanReporter {
             ));
         }
         self.println(output);
-    }
-
-    fn nothing_to_import(&self, total: usize, _duplicate: usize) {
-        self.println(format!(
-            "All {} files matched cache (no new files detected).",
-            style(total).cyan()
-        ));
     }
 
     fn finish(&self) {
@@ -586,17 +606,54 @@ impl VerifyReporter for TerminalVerifyReporter {
         self.pb.set_message("Verifying...");
     }
 
-    fn progress(&self, completed: u64, _total: u64) {
-        self.pb.set_position(completed);
+    fn item_started(&self, _path: &Path) {
+        // Progress bar is updated in item_finished
     }
 
-    fn verified(&self, path: &Path) {
-        if let Some(name) = path.file_name() {
-            self.pb.println(format!(
-                "  {} {}",
-                style("Verified").green(),
-                style(name.to_string_lossy()),
-            ));
+    fn item_finished(&self, path: &Path, result: &svault_core::verify::VerifyResult) {
+        self.pb.inc(1);
+        
+        // Output failure details
+        match result {
+            svault_core::verify::VerifyResult::Ok => {
+                // Success - show minimal output or nothing
+                // Could optionally show verified files with verbose flag
+            }
+            svault_core::verify::VerifyResult::Missing => {
+                self.pb.println(format!(
+                    "  {} {}",
+                    style("Missing").red(),
+                    style(path.display()).red(),
+                ));
+            }
+            svault_core::verify::VerifyResult::SizeMismatch { expected, actual } => {
+                self.pb.println(format!(
+                    "  {} {} (expected {} bytes, actual {} bytes)",
+                    style("Size mismatch").red(),
+                    style(path.display()),
+                    expected,
+                    actual,
+                ));
+            }
+            svault_core::verify::VerifyResult::HashMismatch { algo } => {
+                self.pb.println(format!(
+                    "  {} {} (hash algorithm: {:?})",
+                    style("Hash mismatch").red(),
+                    style(path.display()),
+                    algo,
+                ));
+            }
+            svault_core::verify::VerifyResult::IoError(e) => {
+                self.pb.println(format!(
+                    "  {} {}: {}",
+                    style("IO error").red(),
+                    style(path.display()),
+                    e,
+                ));
+            }
+            svault_core::verify::VerifyResult::HashNotAvailable => {
+                // Silent - hash not available is not a failure
+            }
         }
     }
 
@@ -905,8 +962,62 @@ impl RecheckReporter for TerminalRecheckReporter {
         self.println(output);
     }
 
-    fn progress(&self, completed: u64, _total: u64) {
-        self.pb.set_position(completed);
+    fn item_started(&self, _src_path: &std::path::Path, _vault_path: &std::path::Path) {
+        // Progress bar is updated in item_finished
+    }
+
+    fn item_finished(&self, src_path: &std::path::Path, _vault_path: &std::path::Path, status: &svault_core::import::RecheckStatus) {
+        self.pb.inc(1);
+        
+        // Output failure details
+        match status {
+            svault_core::import::RecheckStatus::Ok => {
+                // Success - silent
+            }
+            svault_core::import::RecheckStatus::SourceModified => {
+                self.println(format!(
+                    "  {} {}",
+                    style("Source modified").yellow(),
+                    style(src_path.display()),
+                ));
+            }
+            svault_core::import::RecheckStatus::VaultCorrupted => {
+                self.println(format!(
+                    "  {} {}",
+                    style("Vault corrupted").red(),
+                    style(src_path.display()),
+                ));
+            }
+            svault_core::import::RecheckStatus::BothDiverged => {
+                self.println(format!(
+                    "  {} {}",
+                    style("Both diverged").red().bold(),
+                    style(src_path.display()),
+                ));
+            }
+            svault_core::import::RecheckStatus::SourceDeleted => {
+                self.println(format!(
+                    "  {} {}",
+                    style("Source deleted").yellow(),
+                    style(src_path.display()),
+                ));
+            }
+            svault_core::import::RecheckStatus::VaultDeleted => {
+                self.println(format!(
+                    "  {} {}",
+                    style("Vault deleted").red(),
+                    style(src_path.display()),
+                ));
+            }
+            svault_core::import::RecheckStatus::Error(e) => {
+                self.println(format!(
+                    "  {} {}: {}",
+                    style("Error").red().bold(),
+                    style(src_path.display()),
+                    e,
+                ));
+            }
+        }
     }
 
     fn finish(&self) {

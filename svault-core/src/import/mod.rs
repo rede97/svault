@@ -30,6 +30,9 @@ pub mod utils;
 
 pub use types::{FileStatus, ImportOptions, ImportSummary, ScanEntry};
 
+// Re-export recheck types for easier access from reporting module
+pub use recheck::{RecheckStatus, RecheckResult, RecheckOptions};
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -180,22 +183,6 @@ fn process_lookup_result(
             });
         }
     }
-}
-
-fn handle_no_new_files<SR: ScanReporter>(
-    total_files: usize,
-    likely_dup: usize,
-    reporter: &SR,
-) -> anyhow::Result<ImportSummary> {
-    reporter.nothing_to_import(total_files, likely_dup);
-    reporter.finish();
-    Ok(ImportSummary {
-        total: total_files,
-        duplicate: likely_dup,
-        failed: 0,
-        all_cache_hit: true,
-        ..Default::default()
-    })
 }
 
 /// Build a `CrcEntry` from a file path (reads metadata + computes CRC32C).
@@ -550,10 +537,6 @@ impl ImportOptions {
         let (new_files, dup_files) = pipeline::lookup::filter_new(state.lookup_results, self.force);
         let likely_dup = dup_files.len();
 
-        if new_files.is_empty() {
-            return handle_no_new_files(state.total_files, likely_dup, &scan_reporter);
-        }
-
         scan_reporter.preflight(
             state.total_files,
             new_files.len(),
@@ -564,6 +547,17 @@ impl ImportOptions {
         );
         scan_reporter.finish();
         drop(scan_reporter); // clear progress bar before prompt
+
+        // Nothing to import - all files were duplicates, moved, or failed
+        if new_files.is_empty() {
+            return Ok(ImportSummary {
+                total: state.total_files,
+                duplicate: likely_dup,
+                failed: 0,
+                all_cache_hit: true,
+                ..Default::default()
+            });
+        }
 
         if !self.yes && !self.dry_run && !interactor.confirm("Proceed with import?") {
             return Ok(ImportSummary {
@@ -864,7 +858,6 @@ mod tests {
             _source: &Path,
         ) {
         }
-        fn nothing_to_import(&self, _total: usize, _duplicate: usize) {}
         fn finish(&self) {
             self.0.lock().unwrap().finished = true;
         }
@@ -887,10 +880,8 @@ mod tests {
         type Insert = Noop;
         type AddSummary = Noop;
         type Recheck = Noop;
-        type UpdateHash = Noop;
         type UpdateApply = Noop;
         type Verify = Noop;
-        type BackgroundHash = Noop;
 
         fn scan_reporter(&self, _source: &Path) -> TestScanReporter {
             TestScanReporter(Arc::clone(&self.log))
@@ -910,16 +901,13 @@ mod tests {
         fn recheck_reporter(&self, _total: u64) -> Noop {
             Noop
         }
-        fn update_hash_reporter(&self, _total: u64) -> Noop {
+        fn update_hash_reporter(&self, _source: &Path, _total: u64) -> Noop {
             Noop
         }
         fn update_apply_reporter(&self, _total: u64) -> Noop {
             Noop
         }
         fn verify_reporter(&self, _total: u64) -> Noop {
-            Noop
-        }
-        fn background_hash_reporter(&self, _total: u64) -> Noop {
             Noop
         }
     }

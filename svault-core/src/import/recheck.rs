@@ -75,14 +75,15 @@ pub fn run_recheck<RB: ReporterBuilder>(
     let reporter = reporter_builder.recheck_reporter(total as u64);
     reporter.started(total, &manifest.session_id, &manifest.source_root);
 
-    let progress_counter = std::sync::atomic::AtomicU64::new(0);
-
     let results: Vec<RecheckResult> = manifest
         .files
         .clone()
         .into_par_iter()
         .map(|record| {
             let vault_abs = opts.vault_root.join(&record.dest_path);
+
+            // Signal start of rechecking this file pair
+            reporter.item_started(&record.src_path, &vault_abs);
 
             let has_sha256 = record.sha256.is_some();
             let expected_hash = if has_sha256 {
@@ -95,13 +96,12 @@ pub fn run_recheck<RB: ReporterBuilder>(
                 match compute_hash(&record.src_path, has_sha256) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        let done =
-                            progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        reporter.progress(done, total as u64);
+                        let status = RecheckStatus::Error(format!("source read error: {e}"));
+                        reporter.item_finished(&record.src_path, &vault_abs, &status);
                         return RecheckResult {
                             src_path: record.src_path,
                             vault_path: vault_abs,
-                            status: RecheckStatus::Error(format!("source read error: {e}")),
+                            status,
                             used_sha256: has_sha256,
                         };
                     }
@@ -114,13 +114,12 @@ pub fn run_recheck<RB: ReporterBuilder>(
                 match compute_hash(&vault_abs, has_sha256) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        let done =
-                            progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        reporter.progress(done, total as u64);
+                        let status = RecheckStatus::Error(format!("vault read error: {e}"));
+                        reporter.item_finished(&record.src_path, &vault_abs, &status);
                         return RecheckResult {
                             src_path: record.src_path,
                             vault_path: vault_abs,
-                            status: RecheckStatus::Error(format!("vault read error: {e}")),
+                            status,
                             used_sha256: has_sha256,
                         };
                     }
@@ -144,8 +143,7 @@ pub fn run_recheck<RB: ReporterBuilder>(
                 }
             };
 
-            let done = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            reporter.progress(done, total as u64);
+            reporter.item_finished(&record.src_path, &vault_abs, &status);
 
             RecheckResult {
                 src_path: record.src_path,

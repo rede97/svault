@@ -102,8 +102,6 @@ impl ScanReporter for PipeScanReporter {
     ) {
     }
 
-    fn nothing_to_import(&self, _total: usize, _duplicate: usize) {}
-
     fn finish(&self) {
         // No progress bar to clear.
     }

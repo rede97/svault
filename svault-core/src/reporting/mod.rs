@@ -68,8 +68,11 @@ pub trait ScanReporter: Send + Sync {
     fn error(&self, message: &str, abs_path: Option<&Path>);
 
     /// Pre-flight summary emitted after scan and before the user is asked
-    /// to confirm.  Core provides raw counts; formatting is up to the
+    /// to confirm. Core provides raw counts; formatting is up to the
     /// implementation.
+    /// 
+    /// If `new_count == 0`, the implementation should report that nothing
+    /// needs to be imported (all files were duplicates, moved, or failed).
     fn preflight(
         &self,
         total_scanned: usize,
@@ -80,10 +83,7 @@ pub trait ScanReporter: Send + Sync {
         source: &Path,
     );
 
-    /// All scanned files were already in the vault — nothing to import.
-    fn nothing_to_import(&self, total: usize, duplicate: usize);
-
-    /// The scan phase is complete.  Implementations should print any
+    /// The scan phase is complete. Implementations should print any
     /// completion summary and clear progress indicators.
     fn finish(&self);
 }
@@ -195,8 +195,11 @@ pub trait RecheckReporter: Send + Sync {
     /// Called once at the start with the total number of file pairs to check.
     fn started(&self, total: usize, session_id: &str, source: &Path);
 
-    /// Parallel-safe progress update.
-    fn progress(&self, completed: u64, total: u64);
+    /// A recheck item has started.
+    fn item_started(&self, src_path: &Path, vault_path: &Path);
+
+    /// A recheck item has finished.
+    fn item_finished(&self, src_path: &Path, vault_path: &Path, status: &crate::import::RecheckStatus);
 
     /// The check phase is complete (clears progress indicator).
     fn finish(&self);
@@ -226,11 +229,11 @@ pub trait VerifyReporter: Send + Sync {
     /// Called once at the start with the total number of files to verify.
     fn started(&self, total: u64);
 
-    /// Parallel-safe progress update.
-    fn progress(&self, completed: u64, total: u64);
+    /// A file verification has started.
+    fn item_started(&self, path: &Path);
 
-    /// A file was successfully verified.
-    fn verified(&self, path: &Path);
+    /// A file verification has finished.
+    fn item_finished(&self, path: &Path, result: &crate::verify::VerifyResult);
 
     /// The verification phase is complete.
     fn finish(&self);
@@ -346,7 +349,6 @@ impl ScanReporter for Noop {
     fn warning(&self, _: &str, _: Option<&Path>) {}
     fn error(&self, _: &str, _: Option<&Path>) {}
     fn preflight(&self, _: usize, _: usize, _: usize, _: usize, _: usize, _: &Path) {}
-    fn nothing_to_import(&self, _: usize, _: usize) {}
     fn finish(&self) {}
 }
 
@@ -379,7 +381,8 @@ impl AddSummaryReporter for Noop {
 
 impl RecheckReporter for Noop {
     fn started(&self, _: usize, _: &str, _: &Path) {}
-    fn progress(&self, _: u64, _: u64) {}
+    fn item_started(&self, _: &Path, _: &Path) {}
+    fn item_finished(&self, _: &Path, _: &Path, _: &crate::import::RecheckStatus) {}
     fn finish(&self) {}
     fn summary(
         &self,
@@ -407,8 +410,8 @@ impl UpdateApplyReporter for Noop {
 
 impl VerifyReporter for Noop {
     fn started(&self, _: u64) {}
-    fn progress(&self, _: u64, _: u64) {}
-    fn verified(&self, _: &Path) {}
+    fn item_started(&self, _: &Path) {}
+    fn item_finished(&self, _: &Path, _: &crate::verify::VerifyResult) {}
     fn finish(&self) {}
     fn summary(&self, _: &crate::verify::VerifySummary) {}
 }

@@ -138,13 +138,11 @@ pub fn verify_all<RB: ReporterBuilder>(
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
-        .enumerate()
-        .map(|(idx, file)| {
+        .map(|file| {
+            let path = Path::new(&file.path);
+            reporter.item_started(path);
             let result = verify_file(&vault_root, &file);
-            if result.is_ok() {
-                reporter.verified(Path::new(&file.path));
-            }
-            reporter.progress((idx + 1) as u64, total as u64);
+            reporter.item_finished(path, &result);
             (file.path, result)
         })
         .collect();
@@ -202,13 +200,11 @@ pub fn verify_recent<RB: ReporterBuilder>(
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
-        .enumerate()
-        .map(|(idx, file)| {
+        .map(|file| {
+            let path = Path::new(&file.path);
+            reporter.item_started(path);
             let result = verify_file(&vault_root, &file);
-            if result.is_ok() {
-                reporter.verified(Path::new(&file.path));
-            }
-            reporter.progress((idx + 1) as u64, total as u64);
+            reporter.item_finished(path, &result);
             (file.path, result)
         })
         .collect();
