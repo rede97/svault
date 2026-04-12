@@ -39,26 +39,31 @@ pub fn query_items<R: HistoryItemsReporter>(
             // Parse status filter if provided
             let status_filter = query.status.as_ref().and_then(|s| parse_status_filter(s));
             
-            manifest.files.into_iter()
-                .filter(|f| {
-                    // Apply status filter if specified
-                    if let Some(filter) = status_filter {
-                        f.status == filter
-                    } else {
-                        true
-                    }
-                })
-                .map(|f| {
-                    HistoryItemRow {
-                        source_path: f.src_path.to_string_lossy().to_string(),
-                        vault_path: f.dest_path.as_ref()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                        status: f.status.to_string(),
-                        size: f.size,
-                        mtime_ms: f.mtime_ms,
-                    }
-                }).collect()
+            // If user specified a status but it's invalid, return empty
+            if query.status.is_some() && status_filter.is_none() {
+                Vec::new()
+            } else {
+                manifest.files.into_iter()
+                    .filter(|f| {
+                        // Apply status filter if specified
+                        if let Some(filter) = status_filter {
+                            f.status == filter
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|f| {
+                        HistoryItemRow {
+                            source_path: f.src_path.to_string_lossy().to_string(),
+                            vault_path: f.dest_path.as_ref()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                            status: f.status.to_string(),
+                            size: f.size,
+                            mtime_ms: f.mtime_ms,
+                        }
+                    }).collect()
+            }
         }
         Err(_) => {
             // Manifest not found, return empty

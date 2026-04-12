@@ -3,7 +3,18 @@
 use crate::db::Db;
 use crate::reporting::{HistorySessionsQuery, HistorySessionsReporter, HistorySessionRow, HistorySessionsSummary};
 
+/// Maximum events to fetch for filtering.
+/// This is a safety limit to prevent unbounded queries.
+const MAX_EVENTS_TO_SCAN: usize = 10000;
+
 /// Query import sessions (batches) from event log.
+/// 
+/// Pagination semantics:
+/// - All matching events are scanned (up to MAX_EVENTS_TO_SCAN)
+/// - Source filter is applied to all events
+/// - `summary.total` = total matching events (before pagination)
+/// - `summary.returned` = events in current page
+/// - `summary.has_more` = true if there are more matching events beyond this page
 pub fn query_sessions<R: HistorySessionsReporter>(
     db: &Db,
     query: &HistorySessionsQuery,
@@ -11,16 +22,24 @@ pub fn query_sessions<R: HistorySessionsReporter>(
 ) -> anyhow::Result<HistorySessionsSummary> {
     reporter.started(query);
 
-    // Query batch.imported events from the events table
+    // Query a large batch of events for accurate filtering and pagination
+    // We fetch more than limit+offset to ensure has_more is accurate
+    let fetch_limit = if query.offset + query.limit > MAX_EVENTS_TO_SCAN {
+        MAX_EVENTS_TO_SCAN
+    } else {
+        (query.offset + query.limit).saturating_mul(2).min(MAX_EVENTS_TO_SCAN)
+    };
+    
     let events = db.get_events(
-        query.limit + query.offset,
+        fetch_limit,
         Some("batch.imported"),
         query.from_ms,
         query.to_ms,
         None,
     )?;
 
-    let mut rows = Vec::new();
+    // Collect all matching rows (apply source filter)
+    let mut all_matching_rows: Vec<HistorySessionRow> = Vec::new();
     
     for event in events {
         // Parse payload
@@ -57,21 +76,35 @@ pub fn query_sessions<R: HistorySessionsReporter>(
             skipped: payload["skipped"].as_u64().unwrap_or(0) as usize,
         };
         
-        rows.push(row);
+        all_matching_rows.push(row);
     }
 
-    // Apply offset and limit
-    let total = rows.len();
-    let offset_rows: Vec<_> = rows.into_iter().skip(query.offset).take(query.limit).collect();
-    let returned = offset_rows.len();
+    // Calculate total matching (before pagination)
+    let total_matching = all_matching_rows.len();
+    
+    // Apply offset and limit for current page
+    let page_rows: Vec<_> = all_matching_rows
+        .into_iter()
+        .skip(query.offset)
+        .take(query.limit)
+        .collect();
+    let returned = page_rows.len();
 
-    // Report rows
-    for row in offset_rows {
+    // Report rows for current page
+    for row in page_rows {
         reporter.item(&row);
     }
 
-    let has_more = total > query.offset + returned;
-    let summary = HistorySessionsSummary { total, returned, has_more };
+    // has_more is true if we couldn't return all matching rows
+    // OR if we hit the fetch limit (indicating there might be more in DB)
+    let has_more = total_matching > query.offset + returned 
+        || (total_matching == fetch_limit && query.offset + returned >= fetch_limit);
+    
+    let summary = HistorySessionsSummary { 
+        total: total_matching, 
+        returned, 
+        has_more 
+    };
     reporter.finish(&summary);
     
     Ok(summary)
