@@ -129,7 +129,7 @@ pub fn run(
             thread::sleep(work_time);
 
             // Signal end of hashing (no error)
-            reporter.item_finished(&file_path, None);
+            reporter.item_finished(&file_path, None, size);
         });
 
         reporter.finish();

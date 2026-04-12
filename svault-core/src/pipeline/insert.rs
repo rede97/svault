@@ -72,10 +72,16 @@ pub fn batch_insert(
         let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
         let rel_str = rel_path.to_string_lossy().into_owned();
 
-        // Skip if already tracked by path (unless force mode)
-        if !opts.force && db.get_file_by_path(&rel_str).is_ok_and(|r| r.is_some()) {
-            summary.skipped += 1;
-            continue;
+        // Skip if already tracked by path (unless force mode or the existing file is 'missing')
+        // 'missing' files should be allowed to recover (re-import with same path)
+        if !opts.force {
+            if let Ok(Some(existing)) = db.get_file_by_path(&rel_str) {
+                if existing.status != "missing" {
+                    summary.skipped += 1;
+                    continue;
+                }
+                // 'missing' status: allow to proceed for recovery
+            }
         }
 
         // Handle errors

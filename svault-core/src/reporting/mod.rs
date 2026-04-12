@@ -119,7 +119,8 @@ pub trait HashReporter: Send + Sync {
     /// A file has finished hashing.
     /// `abs_path` is the absolute path of the file.
     /// `error` is None if successful, or contains an error message.
-    fn item_finished(&self, abs_path: &Path, error: Option<&str>);
+    /// `bytes_total` is the file size in bytes (for speed calculation).
+    fn item_finished(&self, abs_path: &Path, error: Option<&str>, bytes_total: u64);
 
     /// A relocate match was found (for `update` command).
     /// Default implementation does nothing.
@@ -358,7 +359,7 @@ impl CopyReporter for Noop {
 
 impl HashReporter for Noop {
     fn item_started(&self, _: &Path, _: u64) {}
-    fn item_finished(&self, _: &Path, _: Option<&str>) {}
+    fn item_finished(&self, _: &Path, _: Option<&str>, _: u64) {}
     fn finish(&self) {}
 }
 

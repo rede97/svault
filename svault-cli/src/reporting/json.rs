@@ -234,7 +234,7 @@ impl HashReporter for JsonHashReporter {
         }));
     }
 
-    fn item_finished(&self, abs_path: &Path, error: Option<&str>) {
+    fn item_finished(&self, abs_path: &Path, error: Option<&str>, _bytes_total: u64) {
         emit_json!(json!({
             "event": "hash_item_finished",
             "path": abs_path.display().to_string(),

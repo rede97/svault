@@ -29,14 +29,15 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use svault_core::reporting::{
-    AddSummaryReporter, CopyReporter, HashReporter, InsertReporter,
-    Interactor, ItemStatus, MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter,
-    UpdateApplyReporter, VerifyReporter,
+    AddSummaryReporter, CopyReporter, HashReporter, InsertReporter, Interactor, ItemStatus,
+    MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter, UpdateApplyReporter,
+    VerifyReporter,
 };
 
 /// Braille pattern spinner characters for progress bars.
@@ -366,6 +367,10 @@ pub struct TerminalHashReporter {
     pb: ProgressBar,
     total: u64,
     matches: Mutex<Vec<(String, String, MatchConfidence)>>,
+    /// Bytes processed so far
+    bytes_processed: AtomicU64,
+    /// Start time for speed calculation
+    start_time: Instant,
 }
 
 impl TerminalHashReporter {
@@ -376,25 +381,36 @@ impl TerminalHashReporter {
 }
 
 impl HashReporter for TerminalHashReporter {
-    fn item_started(&self, _abs_path: &Path, bytes_total: u64) {
-        // Update bytes count for bytes/sec calculation
-        self.pb.inc_length(bytes_total);
-    }
+    fn item_started(&self, _abs_path: &Path, _bytes_total: u64) {}
 
-    fn item_finished(&self, abs_path: &Path, error: Option<&str>) {
+    fn item_finished(&self, abs_path: &Path, error: Option<&str>, bytes_total: u64) {
         // Print error if any
         if let Some(err) = error {
             let name = abs_path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| abs_path.display().to_string());
-            self.println(format!(
-                "  {} {}: {}",
-                style("Error").red(),
-                name,
-                err
-            ));
+            self.println(format!("  {} {}: {}", style("Error").red(), name, err));
         }
+
+        // Update bytes processed
+        let processed = self
+            .bytes_processed
+            .fetch_add(bytes_total, Ordering::Relaxed)
+            + bytes_total;
+
+        // Calculate speed (bytes per second)
+        let elapsed = self.start_time.elapsed().as_secs_f64();
+        let speed = if elapsed > 0.0 {
+            processed as f64 / elapsed
+        } else {
+            0.0
+        };
+
+        // Update progress bar message with bytes info
+        let msg = format!("{} /s", format_bytes(speed as u64));
+        self.pb.set_message(msg);
+
         // Increment progress (file count)
         self.pb.inc(1);
     }
@@ -408,7 +424,7 @@ impl HashReporter for TerminalHashReporter {
 
     fn finish(&self) {
         let matches = self.matches.lock().unwrap();
-        
+
         // Build output
         let mut output = String::new();
         output.push_str(&format!(
@@ -416,7 +432,7 @@ impl HashReporter for TerminalHashReporter {
             self.pb.position(),
             self.total
         ));
-        
+
         // Print matches if any
         if !matches.is_empty() {
             output.push('\n');
@@ -453,7 +469,7 @@ impl HashReporter for TerminalHashReporter {
                 ));
             }
         }
-        
+
         self.println(output);
         self.pb.finish_and_clear();
     }
@@ -530,7 +546,10 @@ impl InsertReporter for TerminalInsertReporter {
             ));
         }
         if let Some(p) = manifest_path {
-            output.push_str(&format!("  Manifest: {}\n", style(p.display()).italic().bold()));
+            output.push_str(&format!(
+                "  Manifest: {}\n",
+                style(p.display()).italic().bold()
+            ));
         }
         self.println(output);
     }
@@ -1119,9 +1138,7 @@ impl ReporterBuilder for TerminalReporterBuilder {
         let pb = self.add_managed_bar(total, |pb| {
             pb.set_style(
                 ProgressStyle::default_bar()
-                    .template(
-                        "  {prefix:.cyan.bold} [{bar:40}] {pos}/{len} ({percent}%) {bytes} ({binary_bytes_per_sec})",
-                    )
+                    .template("  {prefix:.cyan.bold} [{bar:40}] {pos}/{len} ({percent}%) {msg}")
                     .unwrap()
                     .progress_chars("=> "),
             );
@@ -1131,6 +1148,8 @@ impl ReporterBuilder for TerminalReporterBuilder {
             pb,
             total,
             matches: Mutex::new(Vec::new()),
+            bytes_processed: AtomicU64::new(0),
+            start_time: Instant::now(),
         }
     }
 
@@ -1173,9 +1192,7 @@ impl ReporterBuilder for TerminalReporterBuilder {
         let pb = self.add_managed_bar(total, |pb| {
             pb.set_style(
                 ProgressStyle::default_bar()
-                    .template(
-                        "  {prefix:.cyan.bold} [{bar:40}] {pos}/{len} ({percent}%) {bytes} ({binary_bytes_per_sec})",
-                    )
+                    .template("  {prefix:.cyan.bold} [{bar:40}] {pos}/{len} ({percent}%) {msg}")
                     .unwrap()
                     .progress_chars("=> "),
             );
@@ -1185,6 +1202,8 @@ impl ReporterBuilder for TerminalReporterBuilder {
             pb,
             total,
             matches: Mutex::new(Vec::new()),
+            bytes_processed: AtomicU64::new(0),
+            start_time: Instant::now(),
         }
     }
 
@@ -1213,7 +1232,6 @@ impl ReporterBuilder for TerminalReporterBuilder {
         });
         TerminalVerifyReporter { pb }
     }
-
 }
 
 impl Default for TerminalReporterBuilder {

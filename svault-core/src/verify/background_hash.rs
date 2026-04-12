@@ -82,7 +82,7 @@ pub fn run_background_hash<RB: ReporterBuilder>(
             }
         };
 
-        reporter.item_finished(&full_path, error.as_deref());
+        reporter.item_finished(&full_path, error.as_deref(), file.size as u64);
 
         if opts.nice {
             thread::sleep(Duration::from_millis(10));

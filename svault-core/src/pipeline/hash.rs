@@ -44,7 +44,7 @@ pub fn compute_hashes<R: HashReporter>(
                 Err(e) => {
                     let err_msg = format!("xxh3_128 error: {e}");
                     if let Some(r) = reporter {
-                        r.item_finished(abs_path, Some(&err_msg));
+                        r.item_finished(abs_path, Some(&err_msg), size);
                     }
                     return HashResult {
                         path: abs_path.clone(),
@@ -75,7 +75,7 @@ pub fn compute_hashes<R: HashReporter>(
 
             // Signal end of hashing this file
             if let Some(r) = reporter {
-                r.item_finished(abs_path, err.as_deref());
+                r.item_finished(abs_path, err.as_deref(), size);
             }
             
             if let Some(err_msg) = err {
@@ -148,6 +148,19 @@ pub fn check_duplicates(
 
             // For add command: allow re-adding same path
             let is_same_file = allow_same_path && vault_path == r.path;
+
+            // For recover: allow re-importing if the existing file is 'missing'
+            // This handles the case where:
+            // - DB has a 'missing' record (file was previously imported then marked missing)
+            // - File is being re-imported (vault file may or may not exist yet)
+            let is_missing = row.status == "missing";
+
+            // If the DB record is 'missing', this is a recover scenario - allow it
+            if is_missing {
+                // Allow recovery to proceed - the file in vault may have just been
+                // copied by the current import operation
+                continue;
+            }
 
             if !is_same_file && vault_path.exists() {
                 r.is_duplicate = true;

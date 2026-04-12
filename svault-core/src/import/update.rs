@@ -181,7 +181,7 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
             };
 
             // Signal end of hashing this file
-            hash_reporter.item_finished(&path, error.as_deref());
+            hash_reporter.item_finished(&path, error.as_deref(), size);
             result
         })
         .collect();
