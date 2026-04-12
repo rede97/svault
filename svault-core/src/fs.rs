@@ -1,12 +1,16 @@
 //! Local filesystem primitives used by import/update pipelines.
 
+use crate::reporting::CopyReporter;
+
 use std::{
     fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
 };
+
+#[cfg(not(target_os = "windows"))]
+use std::io::Write;
 
 /// File transfer strategies, ordered from most to least efficient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,33 +53,33 @@ pub struct DirEntry {
 
 /// Errors from filesystem operations.
 #[derive(Debug)]
-pub enum VfsError {
+pub enum FsError {
     NotFound(PathBuf),
     Unsupported(&'static str),
     Io(std::io::Error),
     Other(String),
 }
 
-impl std::fmt::Display for VfsError {
+impl std::fmt::Display for FsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VfsError::NotFound(p) => write!(f, "not found: {}", p.display()),
-            VfsError::Unsupported(op) => write!(f, "operation not supported: {op}"),
-            VfsError::Io(e) => write!(f, "io error: {e}"),
-            VfsError::Other(s) => write!(f, "{s}"),
+            FsError::NotFound(p) => write!(f, "not found: {}", p.display()),
+            FsError::Unsupported(op) => write!(f, "operation not supported: {op}"),
+            FsError::Io(e) => write!(f, "io error: {e}"),
+            FsError::Other(s) => write!(f, "{s}"),
         }
     }
 }
 
-impl std::error::Error for VfsError {}
+impl std::error::Error for FsError {}
 
-impl From<std::io::Error> for VfsError {
+impl From<std::io::Error> for FsError {
     fn from(e: std::io::Error) -> Self {
-        VfsError::Io(e)
+        FsError::Io(e)
     }
 }
 
-pub type VfsResult<T> = Result<T, VfsError>;
+pub type FsResult<T> = Result<T, FsError>;
 
 fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -85,11 +89,11 @@ fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn ensure_root_exists(root: &Path) -> VfsResult<()> {
+fn ensure_root_exists(root: &Path) -> FsResult<()> {
     if root.exists() {
         Ok(())
     } else {
-        Err(VfsError::NotFound(root.to_path_buf()))
+        Err(FsError::NotFound(root.to_path_buf()))
     }
 }
 
@@ -98,7 +102,7 @@ pub fn walk_stream(
     root: &Path,
     dir: &Path,
     extensions: &[&str],
-) -> VfsResult<mpsc::Receiver<VfsResult<DirEntry>>> {
+) -> FsResult<mpsc::Receiver<FsResult<DirEntry>>> {
     ensure_root_exists(root)?;
     let full_root = resolve_path(root, dir);
     let exts: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
@@ -115,7 +119,7 @@ fn walk_stream_recursive(
     root: &Path,
     current: &Path,
     exts: &[String],
-    tx: &mpsc::Sender<VfsResult<DirEntry>>,
+    tx: &mpsc::Sender<FsResult<DirEntry>>,
 ) {
     for entry_result in jwalk::WalkDir::new(current)
         .skip_hidden(false)
@@ -171,12 +175,12 @@ fn walk_stream_recursive(
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(VfsError::Io(std::io::Error::other(e))));
+                        let _ = tx.send(Err(FsError::Io(std::io::Error::other(e))));
                     }
                 }
             }
             Err(e) => {
-                let _ = tx.send(Err(VfsError::Io(std::io::Error::other(e))));
+                let _ = tx.send(Err(FsError::Io(std::io::Error::other(e))));
             }
         }
     }
@@ -189,7 +193,67 @@ pub fn transfer_file(
     dst_root: &Path,
     dst_path: &Path,
     strategies: &[TransferStrategy],
-) -> VfsResult<()> {
+) -> FsResult<()> {
+    transfer_file_with_reporter(src_root, src_path, dst_root, dst_path, strategies, None::<&NoopCopyReporter>)
+}
+
+/// No-op copy reporter for use when progress is not needed.
+pub struct NoopCopyReporter;
+
+impl CopyReporter for NoopCopyReporter {
+    fn item_started(&self, _: &Path, _: &Path, _: u64) {}
+    fn item_progress(&self, _: &Path, _: u64, _: u64) {}
+    fn item_finished(&self, _: &Path, _: &Path, _: &crate::reporting::CopyItemResult) {}
+    fn finish(&self) {}
+}
+
+/// Transfer one file with progress reporting.
+pub fn transfer_file_with_reporter<R: CopyReporter>(
+    src_root: &Path,
+    src_path: &Path,
+    dst_root: &Path,
+    dst_path: &Path,
+    strategies: &[TransferStrategy],
+    reporter: Option<&R>,
+) -> FsResult<()> {
+    let src_full = resolve_path(src_root, src_path);
+    let dst_full = resolve_path(dst_root, dst_path);
+    let file_size = fs::metadata(&src_full).map_err(FsError::Io)?.len();
+    
+    // Report start
+    if let Some(r) = reporter {
+        r.item_started(&src_full, &dst_full, file_size);
+    }
+    
+    let result = try_transfer_with_reporter(
+        src_root, src_path, dst_root, dst_path, 
+        strategies, reporter
+    );
+    
+    // Report finish
+    if let Some(r) = reporter {
+        let copy_result = match &result {
+            Ok(_) => crate::reporting::CopyItemResult::Ok,
+            Err(e) => crate::reporting::CopyItemResult::Failed { message: e.to_string() },
+        };
+        r.item_finished(&src_full, &dst_full, &copy_result);
+    }
+    
+    result
+}
+
+fn try_transfer_with_reporter<R: CopyReporter>(
+    src_root: &Path,
+    src_path: &Path,
+    dst_root: &Path,
+    dst_path: &Path,
+    strategies: &[TransferStrategy],
+    reporter: Option<&R>,
+) -> FsResult<()> {
+    // Get file info for progress reporting
+    let src_full = resolve_path(src_root, src_path);
+    let file_size = fs::metadata(&src_full).map_err(FsError::Io)?.len();
+    
     for strategy in strategies {
         match strategy {
             TransferStrategy::Reflink => {
@@ -203,60 +267,204 @@ pub fn transfer_file(
                 }
             }
             TransferStrategy::StreamCopy => {
-                return stream_copy(src_root, src_path, dst_root, dst_path);
+                return stream_copy_with_progress(
+                    src_root, src_path, dst_root, dst_path,
+                    reporter, &src_full, file_size
+                );
             }
         }
     }
-    stream_copy(src_root, src_path, dst_root, dst_path)
+    
+    // Fallback to stream copy
+    stream_copy_with_progress(
+        src_root, src_path, dst_root, dst_path,
+        reporter, &src_full, file_size
+    )
 }
 
-fn open_read(root: &Path, path: &Path) -> VfsResult<Box<dyn Read>> {
-    let f = fs::File::open(resolve_path(root, path)).map_err(VfsError::Io)?;
-    Ok(Box::new(f))
-}
-
-fn open_write(root: &Path, path: &Path) -> VfsResult<Box<dyn Write>> {
+#[cfg(not(target_os = "windows"))]
+fn open_write(root: &Path, path: &Path) -> FsResult<Box<dyn Write>> {
     let full = resolve_path(root, path);
     if let Some(parent) = full.parent() {
-        fs::create_dir_all(parent).map_err(VfsError::Io)?;
+        fs::create_dir_all(parent).map_err(FsError::Io)?;
     }
-    let f = fs::File::create(&full).map_err(VfsError::Io)?;
+    let f = fs::File::create(&full).map_err(FsError::Io)?;
     Ok(Box::new(f))
 }
 
-fn reflink_to(src_root: &Path, src: &Path, dst_root: &Path, dst: &Path) -> VfsResult<()> {
+fn reflink_to(src_root: &Path, src: &Path, dst_root: &Path, dst: &Path) -> FsResult<()> {
     let src_full = resolve_path(src_root, src);
     let dst_full = resolve_path(dst_root, dst);
     if let Some(parent) = dst_full.parent() {
-        fs::create_dir_all(parent).map_err(VfsError::Io)?;
+        fs::create_dir_all(parent).map_err(FsError::Io)?;
     }
     if try_reflink(&src_full, &dst_full)? {
         Ok(())
     } else {
-        Err(VfsError::Io(std::io::Error::other(
+        Err(FsError::Io(std::io::Error::other(
             "reflink not supported by filesystem",
         )))
     }
 }
 
-fn hard_link_to(src_root: &Path, src: &Path, dst_root: &Path, dst: &Path) -> VfsResult<()> {
+fn hard_link_to(src_root: &Path, src: &Path, dst_root: &Path, dst: &Path) -> FsResult<()> {
     let src_full = resolve_path(src_root, src);
     let dst_full = resolve_path(dst_root, dst);
     if let Some(parent) = dst_full.parent() {
-        fs::create_dir_all(parent).map_err(VfsError::Io)?;
+        fs::create_dir_all(parent).map_err(FsError::Io)?;
     }
-    fs::hard_link(&src_full, &dst_full).map_err(VfsError::Io)
+    fs::hard_link(&src_full, &dst_full).map_err(FsError::Io)
 }
 
-fn stream_copy(
+/// Copy a file with optional progress reporting.
+/// 
+/// - Windows: Uses CopyFileExW for native progress callbacks
+/// - Linux/macOS: Uses std::io::copy (no per-file progress)
+fn stream_copy_with_progress<R: CopyReporter>(
     src_root: &Path,
     src_path: &Path,
     dst_root: &Path,
     dst_path: &Path,
-) -> VfsResult<()> {
-    let mut reader = open_read(src_root, src_path)?;
+    reporter: Option<&R>,
+    src_abs: &Path,
+    total_size: u64,
+) -> FsResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        stream_copy_windows_with_progress(src_root, src_path, dst_root, dst_path, reporter, src_abs, total_size)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (reporter, src_abs, total_size); // Unused on non-Windows
+        stream_copy_unix(src_root, src_path, dst_root, dst_path)
+    }
+}
+
+/// Unix/Linux/macOS: Standard library copy (no per-file progress).
+#[cfg(not(target_os = "windows"))]
+fn stream_copy_unix(
+    src_root: &Path,
+    src_path: &Path,
+    dst_root: &Path,
+    dst_path: &Path,
+) -> FsResult<()> {
+    let mut reader = fs::File::open(resolve_path(src_root, src_path)).map_err(FsError::Io)?;
     let mut writer = open_write(dst_root, dst_path)?;
-    std::io::copy(&mut reader, &mut writer).map_err(VfsError::Io)?;
+    std::io::copy(&mut reader, &mut writer).map_err(FsError::Io)?;
+    Ok(())
+}
+
+/// Windows: CopyFileExW with progress callback.
+#[cfg(target_os = "windows")]
+fn stream_copy_windows_with_progress<R: CopyReporter>(
+    src_root: &Path,
+    src_path: &Path,
+    dst_root: &Path,
+    dst_path: &Path,
+    reporter: Option<&R>,
+    src_abs: &Path,
+    total_size: u64,
+) -> FsResult<()> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::CopyFileExW;
+    
+    let src_full = resolve_path(src_root, src_path);
+    let dst_full = resolve_path(dst_root, dst_path);
+    
+    // Create parent directory if needed
+    if let Some(parent) = dst_full.parent() {
+        fs::create_dir_all(parent).map_err(FsError::Io)?;
+    }
+    
+    // Convert paths to wide strings
+    let src_wide: Vec<u16> = OsStr::new(&src_full)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let dst_wide: Vec<u16> = OsStr::new(&dst_full)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    
+    // If no reporter, use simple copy
+    if reporter.is_none() {
+        let success = unsafe {
+            CopyFileExW(
+                src_wide.as_ptr(),
+                dst_wide.as_ptr(),
+                None, // No progress callback
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if success == 0 {
+            return Err(FsError::Io(std::io::Error::last_os_error()));
+        }
+        return Ok(());
+    }
+    
+    // Copy with progress callback
+    struct ProgressContext<'a, R: CopyReporter> {
+        reporter: &'a R,
+        src_abs: &'a Path,
+        last_reported: std::sync::atomic::AtomicU64,
+    }
+    
+    unsafe extern "system" fn progress_callback<R: CopyReporter>(
+        total_file_size: i64,
+        total_bytes_transferred: i64,
+        _stream_size: i64,
+        _stream_bytes_transferred: i64,
+        _dw_stream_number: u32,
+        _dw_callback_reason: u32,
+        _h_source_file: isize,
+        _h_destination_file: isize,
+        lp_data: *const std::ffi::c_void,
+    ) -> u32 {
+        let ctx = unsafe { &*(lp_data as *const ProgressContext<R>) };
+        let copied = total_bytes_transferred as u64;
+        let total = total_file_size as u64;
+        
+        // Throttle progress reports to every 1% or 1MB
+        let last = ctx.last_reported.load(std::sync::atomic::Ordering::Relaxed);
+        let threshold = (total / 100).max(1024 * 1024);
+        
+        if copied >= last + threshold || copied == total {
+            ctx.last_reported.store(copied, std::sync::atomic::Ordering::Relaxed);
+            ctx.reporter.item_progress(ctx.src_abs, copied, total);
+        }
+        
+        0 // PROGRESS_CONTINUE
+    }
+    
+    let ctx = ProgressContext {
+        reporter: reporter.unwrap(),
+        src_abs,
+        last_reported: std::sync::atomic::AtomicU64::new(0),
+    };
+    
+    let success = unsafe {
+        CopyFileExW(
+            src_wide.as_ptr(),
+            dst_wide.as_ptr(),
+            Some(progress_callback::<R>),
+            &ctx as *const _ as *const _,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    
+    if success == 0 {
+        return Err(FsError::Io(std::io::Error::last_os_error()));
+    }
+    
+    // Report final progress
+    if let Some(r) = reporter {
+        r.item_progress(src_abs, total_size, total_size);
+    }
+    
     Ok(())
 }
 
@@ -265,7 +473,7 @@ fn stream_copy(
 // ---------------------------------------------------------------------------
 
 /// Probe the filesystem capabilities for the mount point containing `path`.
-pub fn capabilities_for(path: &Path) -> VfsResult<FsCapabilities> {
+pub fn capabilities_for(path: &Path) -> FsResult<FsCapabilities> {
     let fs_type = detect_fs_type(path);
     let reflink = probe_reflink_support(path, &fs_type);
     let hardlink = probe_hardlink_support(path);
@@ -350,28 +558,28 @@ fn probe_hardlink_support(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn try_reflink(src: &Path, dst: &Path) -> VfsResult<bool> {
+fn try_reflink(src: &Path, dst: &Path) -> FsResult<bool> {
     use std::os::unix::io::AsRawFd;
-    let src_file = fs::File::open(src).map_err(VfsError::Io)?;
-    let dst_file = fs::File::create(dst).map_err(VfsError::Io)?;
+    let src_file = fs::File::open(src).map_err(FsError::Io)?;
+    let dst_file = fs::File::create(dst).map_err(FsError::Io)?;
     const FICLONE: u64 = 0x40049409;
     let ret = unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
     Ok(ret == 0)
 }
 
 #[cfg(target_os = "macos")]
-fn try_reflink(src: &Path, dst: &Path) -> VfsResult<bool> {
+fn try_reflink(src: &Path, dst: &Path) -> FsResult<bool> {
     use std::ffi::CString;
     let src_c = CString::new(src.as_os_str().as_encoded_bytes())
-        .map_err(|e| VfsError::Other(e.to_string()))?;
+        .map_err(|e| FsError::Other(e.to_string()))?;
     let dst_c = CString::new(dst.as_os_str().as_encoded_bytes())
-        .map_err(|e| VfsError::Other(e.to_string()))?;
+        .map_err(|e| FsError::Other(e.to_string()))?;
     let ret = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
     Ok(ret == 0)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn try_reflink(_src: &Path, _dst: &Path) -> VfsResult<bool> {
+fn try_reflink(_src: &Path, _dst: &Path) -> FsResult<bool> {
     Ok(false)
 }
 

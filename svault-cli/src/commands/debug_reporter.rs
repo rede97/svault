@@ -14,7 +14,7 @@
 //!
 //! # Multi-threaded Hash Phase (using Rayon)
 //!
-//! The Hash phase also uses Rayon parallel processing to simulate concurrent
+//! The Copy phase also uses Rayon parallel processing to simulate concurrent
 //! hash computation.
 
 use std::path::PathBuf;

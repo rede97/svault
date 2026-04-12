@@ -30,7 +30,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -81,6 +81,7 @@ struct ScanCounters {
 pub struct TerminalScanReporter {
     pb: ProgressBar,
     counters: Mutex<ScanCounters>,
+    source: PathBuf,
 }
 
 impl TerminalScanReporter {
@@ -108,6 +109,58 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+impl TerminalScanReporter {
+    /// Compute relative path from source (case-insensitive on Windows).
+    fn relative_to_source(&self, abs_path: &Path) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            use std::path::Component;
+            let source_components: Vec<_> = self.source.components().collect();
+            let abs_components: Vec<_> = abs_path.components().collect();
+            
+            if source_components.len() > abs_components.len() {
+                return abs_path.display().to_string();
+            }
+            
+            for (i, src_comp) in source_components.iter().enumerate() {
+                let abs_comp = &abs_components[i];
+                let matches = match (src_comp, abs_comp) {
+                    (Component::Prefix(p1), Component::Prefix(p2)) => {
+                        p1.as_os_str().to_string_lossy().to_lowercase() == 
+                        p2.as_os_str().to_string_lossy().to_lowercase()
+                    }
+                    (Component::RootDir, Component::RootDir) => true,
+                    (c1, c2) => c1.as_os_str().to_string_lossy().to_lowercase() == 
+                               c2.as_os_str().to_string_lossy().to_lowercase(),
+                };
+                if !matches {
+                    return abs_path.display().to_string();
+                }
+            }
+            
+            let rel_components = &abs_components[source_components.len()..];
+            if rel_components.is_empty() {
+                return abs_path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| abs_path.display().to_string());
+            }
+            
+            let mut result = PathBuf::new();
+            for comp in rel_components {
+                result.push(comp.as_os_str());
+            }
+            result.display().to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            abs_path.strip_prefix(&self.source)
+                .unwrap_or(abs_path)
+                .display()
+                .to_string()
+        }
+    }
+}
+
 impl ScanReporter for TerminalScanReporter {
     fn item(
         &self,
@@ -117,10 +170,7 @@ impl ScanReporter for TerminalScanReporter {
         status: ItemStatus,
         error: Option<&str>,
     ) {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+        let rel_path = self.relative_to_source(path);
         let size_str = format_bytes(size);
 
         {
@@ -157,12 +207,12 @@ impl ScanReporter for TerminalScanReporter {
             self.println(format!(
                 "  {} {} ({}) - {}",
                 label_style,
-                name,
+                rel_path,
                 size_str,
                 style(err).red()
             ));
         } else {
-            self.println(format!("  {} {} ({})", label_style, name, size_str));
+            self.println(format!("  {} {} ({})", label_style, rel_path, size_str));
         }
     }
 
@@ -267,7 +317,8 @@ impl Drop for TerminalScanReporter {
 /// Terminal reporter for the copy phase.
 /// Tracks currently copying files across multiple threads for display.
 pub struct TerminalCopyReporter {
-    pb: ProgressBar,
+    /// Main progress bar for overall completion
+    main_pb: ProgressBar,
     total: u64,
     /// Source root path (for computing relative paths)
     source: PathBuf,
@@ -280,7 +331,7 @@ pub struct TerminalCopyReporter {
 impl TerminalCopyReporter {
     /// Print a line through the progress bar for synchronized output.
     fn println<S: AsRef<str>>(&self, s: S) {
-        self.pb.println(s);
+        self.main_pb.println(s);
     }
 
     /// Update the progress bar message with current active files.
@@ -289,22 +340,68 @@ impl TerminalCopyReporter {
         let files = self.active_files.lock().unwrap();
         // Join all files with comma, wide_msg will auto-truncate if too long
         let msg = files.join(", ");
-        self.pb.set_message(msg);
+        self.main_pb.set_message(msg);
     }
 
-    /// Compute relative path from source root.
-    fn relative_to_source(&self, abs_path: &Path) -> String {
-        abs_path
-            .strip_prefix(&self.source)
-            .unwrap_or(abs_path)
-            .display()
-            .to_string()
+    /// Compute relative path from source root (case-insensitive on Windows).
+    pub fn relative_to_source(&self, abs_path: &Path) -> String {
+        self.compute_relative_path(abs_path, &self.source)
     }
 
-    /// Compute relative path from vault root.
-    fn relative_to_vault(&self, abs_path: &Path) -> String {
+    /// Compute relative path from vault root (case-insensitive on Windows).
+    pub fn relative_to_vault(&self, abs_path: &Path) -> String {
+        self.compute_relative_path(abs_path, &self.vault_root)
+    }
+
+    /// Compute relative path with platform-appropriate prefix matching.
+    #[cfg(target_os = "windows")]
+    fn compute_relative_path(&self, abs_path: &Path, base: &Path) -> String {
+        use std::path::Component;
+        
+        // Normalize both paths: convert to components and compare
+        let abs_components: Vec<_> = abs_path.components().collect();
+        let base_components: Vec<_> = base.components().collect();
+        
+        // Check if base is a prefix of abs (case-insensitive for Windows)
+        if base_components.len() > abs_components.len() {
+            return abs_path.display().to_string();
+        }
+        
+        for (i, base_comp) in base_components.iter().enumerate() {
+            let abs_comp = &abs_components[i];
+            let matches = match (base_comp, abs_comp) {
+                (Component::Prefix(p1), Component::Prefix(p2)) => {
+                    p1.as_os_str().to_string_lossy().to_lowercase() == 
+                    p2.as_os_str().to_string_lossy().to_lowercase()
+                }
+                (Component::RootDir, Component::RootDir) => true,
+                (c1, c2) => c1.as_os_str().to_string_lossy().to_lowercase() == 
+                           c2.as_os_str().to_string_lossy().to_lowercase(),
+            };
+            if !matches {
+                return abs_path.display().to_string();
+            }
+        }
+        
+        // Build relative path from remaining components
+        let rel_components = &abs_components[base_components.len()..];
+        if rel_components.is_empty() {
+            return abs_path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| abs_path.display().to_string());
+        }
+        
+        let mut result = std::path::PathBuf::new();
+        for comp in rel_components {
+            result.push(comp.as_os_str());
+        }
+        result.display().to_string()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn compute_relative_path(&self, abs_path: &Path, base: &Path) -> String {
         abs_path
-            .strip_prefix(&self.vault_root)
+            .strip_prefix(base)
             .unwrap_or(abs_path)
             .display()
             .to_string()
@@ -317,39 +414,47 @@ impl CopyReporter for TerminalCopyReporter {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| src_abs.display().to_string());
+        
         // Compute relative paths and size
         let src_rel = self.relative_to_source(src_abs);
         let dest_rel = self.relative_to_vault(dest_abs);
         let size_str = format_bytes(bytes_total);
-        // Print start message immediately
-        // Copying: cyan.bold, src: normal white, size: normal white, -> dest: dim
+        
+        // Print start message
         self.println(format!(
-            "  {} {} {} -> {}",
+            "  {} {} ({}) -> {}",
             style("Copying").green().bold(),
             src_rel,
-            format!("({})", size_str),
-            style(format!("{}", dest_rel)).color256(244)
+            size_str,
+            style(dest_rel.to_string()).color256(244)
         ));
+        
         // Add to active files for progress bar
         {
             let mut files = self.active_files.lock().unwrap();
-            files.push(name);
+            files.push(name.clone());
         }
         self.update_message();
     }
 
+    fn item_progress(&self, _src_abs: &Path, _bytes_copied: u64, _bytes_total: u64) {
+        // Terminal only shows overall progress, not per-file progress
+        // Progress data is still collected for JSON output or other consumers
+    }
+
     fn item_finished(&self, src_abs: &Path, _dest_abs: &Path, result: &CopyItemResult) {
-        // Remove from active files and update progress
         let name = src_abs
             .file_name()
             .map(|n: &std::ffi::OsStr| n.to_string_lossy().to_string())
             .unwrap_or_else(|| src_abs.display().to_string());
+        
+        // Remove from active files and update progress
         {
             let mut files = self.active_files.lock().unwrap();
             files.retain(|f| f != &name);
         }
         self.update_message();
-        self.pb.inc(1);
+        self.main_pb.inc(1);
 
         // Report failure if any
         if let CopyItemResult::Failed { message } = result {
@@ -363,15 +468,15 @@ impl CopyReporter for TerminalCopyReporter {
     }
 
     fn finish(&self) {
-        let summary = format!("✓ Copy complete ({}/{})", self.pb.position(), self.total);
+        let summary = format!("✓ Copy complete ({}/{})", self.main_pb.position(), self.total);
         self.println(&summary);
-        self.pb.finish_and_clear();
+        self.main_pb.finish_and_clear();
     }
 }
 
 impl Drop for TerminalCopyReporter {
     fn drop(&mut self) {
-        self.pb.finish_and_clear();
+        self.main_pb.finish_and_clear();
     }
 }
 
@@ -829,14 +934,13 @@ impl Drop for TerminalHistoryItemsReporter {
 // ─────────────────────────────────────────────────────────────────────────────
 // Builder
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Builder that creates terminal reporters sharing one `MultiProgress`.
 ///
 /// The `MultiProgress` is cleared on `Drop`, so all remaining bars are
 /// cleaned up when the builder goes out of scope.
 pub struct TerminalReporterBuilder {
     /// The shared `MultiProgress` instance used by all reporters created from this builder.
-    pub multi_progress: MultiProgress,
+    pub multi_progress: Arc<MultiProgress>,
 }
 
 impl TerminalReporterBuilder {
@@ -846,7 +950,7 @@ impl TerminalReporterBuilder {
     /// `MultiProgress`, ensuring coordinated progress bar rendering.
     pub fn new() -> Self {
         Self {
-            multi_progress: MultiProgress::new(),
+            multi_progress: Arc::new(MultiProgress::new()),
         }
     }
 
@@ -1353,6 +1457,7 @@ impl ReporterBuilder for TerminalReporterBuilder {
         TerminalScanReporter {
             pb,
             counters: Mutex::new(ScanCounters::default()),
+            source: source.to_path_buf(),
         }
     }
 
@@ -1369,8 +1474,9 @@ impl ReporterBuilder for TerminalReporterBuilder {
             pb.set_prefix("Copying");
             pb.set_message("");
         });
+        
         TerminalCopyReporter {
-            pb,
+            main_pb: pb,
             total,
             source: source.to_path_buf(),
             vault_root: vault_root.to_path_buf(),
@@ -1512,12 +1618,12 @@ impl Default for TerminalReporterBuilder {
 /// Holds a cloned `MultiProgress` directly rather than the full reporter builder
 /// to reduce coupling.
 pub struct SuspendingInteractor {
-    multi_progress: MultiProgress,
+    multi_progress: Arc<MultiProgress>,
 }
 
 impl SuspendingInteractor {
     /// Create a new interactor that suspends the given `MultiProgress` during prompts.
-    pub fn new(multi_progress: MultiProgress) -> Self {
+    pub fn new(multi_progress: Arc<MultiProgress>) -> Self {
         Self { multi_progress }
     }
 }
@@ -1553,5 +1659,42 @@ mod tests {
             pb.set_style(ProgressStyle::default_bar().template("").unwrap());
         });
         assert!(pb.is_hidden());
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_compute_relative_path_windows() {
+        let builder = TerminalReporterBuilder::new();
+        let reporter = builder.copy_reporter(
+            Path::new(r"C:\Users\rede\Pictures\Nikon Transfer 2"),
+            Path::new(r"D:\Vault"),
+            100,
+        );
+        
+        // Test case 1: Simple relative path
+        let result = reporter.relative_to_source(Path::new(r"C:\Users\rede\Pictures\Nikon Transfer 2\2026-01-31\DSC_1889.NEF"));
+        assert_eq!(result, r"2026-01-31\DSC_1889.NEF");
+        
+        // Test case 2: Case insensitive drive letter
+        let result = reporter.relative_to_source(Path::new(r"c:\Users\rede\Pictures\Nikon Transfer 2\file.jpg"));
+        assert_eq!(result, r"file.jpg");
+        
+        // Test case 3: Different case in path
+        let result = reporter.relative_to_source(Path::new(r"C:\USERS\REDE\PICTURES\NIKON TRANSFER 2\subdir\file.jpg"));
+        assert_eq!(result, r"subdir\file.jpg");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_compute_relative_path_unix() {
+        let builder = TerminalReporterBuilder::new();
+        let reporter = builder.copy_reporter(
+            Path::new("/home/user/Pictures"),
+            Path::new("/home/user/Vault"),
+            100,
+        );
+        
+        let result = reporter.relative_to_source(Path::new("/home/user/Pictures/2024-01-01/file.jpg"));
+        assert_eq!(result, "2024-01-01/file.jpg");
     }
 }

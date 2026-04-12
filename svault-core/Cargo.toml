@@ -25,6 +25,7 @@ sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
 dashmap = "6"
 rayon = "1"
+dunce = "1"
 rich_rust = "0.2"
 kamadak-exif = "0.5"
 regex = "1"

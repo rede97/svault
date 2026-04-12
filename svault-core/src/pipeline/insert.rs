@@ -70,7 +70,7 @@ pub fn batch_insert(
         let rel_str = rel_path.to_string_lossy().into_owned();
         let src_path = r.src_path.clone().unwrap_or_else(|| r.path.clone());
 
-        // Get hashes
+        // Get hashes early for manifest recording
         let (xxh3_hex, sha256_hex) = match &r.hash {
             FileHash::Fast(xxh3) => (Some(bytes_to_hex(xxh3)), None),
             FileHash::Full(xxh3, sha256) => {
@@ -78,29 +78,29 @@ pub fn batch_insert(
             }
         };
 
-        // Check for skip (already tracked)
-        if !opts.force {
-            if let Ok(Some(existing)) = db.get_file_by_path(&rel_str) {
-                if existing.status != "missing" {
-                    summary.skipped += 1;
-                    // Record skipped file to manifest
-                    if let Some(ref mut m) = manifest {
-                        m.files.push(ImportRecord {
-                            src_path,
-                            dest_path: Some(rel_path.to_path_buf()),
-                            size: r.size,
-                            mtime_ms: r.mtime_ms,
-                            crc32c: r.crc32c,
-                            xxh3_128: xxh3_hex,
-                            sha256: sha256_hex,
-                            imported_at: now_ms,
-                            status: ItemStatus::Skipped,
-                            error: None,
-                        });
-                    }
-                    continue;
-                }
+        // Skip if already tracked by path (unless force mode or the existing file is 'missing')
+        // 'missing' files should be allowed to recover (re-import with same path)
+        if !opts.force
+            && let Ok(Some(existing)) = db.get_file_by_path(&rel_str)
+            && existing.status != "missing"
+        {
+            summary.skipped += 1;
+            // Record skipped file to manifest
+            if let Some(ref mut m) = manifest {
+                m.files.push(ImportRecord {
+                    src_path,
+                    dest_path: Some(rel_path.to_path_buf()),
+                    size: r.size,
+                    mtime_ms: r.mtime_ms,
+                    crc32c: r.crc32c,
+                    xxh3_128: xxh3_hex,
+                    sha256: sha256_hex,
+                    imported_at: now_ms,
+                    status: ItemStatus::Skipped,
+                    error: None,
+                });
             }
+            continue;
         }
 
         // Handle errors (hash errors etc.)

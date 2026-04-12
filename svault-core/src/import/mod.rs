@@ -40,7 +40,7 @@ use rayon::prelude::*;
 
 use crate::config::{HashAlgorithm, ImportConfig, SyncStrategy};
 use crate::db::Db;
-use crate::fs::transfer_file;
+use crate::fs::transfer_file_with_reporter;
 use crate::pipeline;
 use crate::reporting::{
     CopyReporter, HashReporter, InsertReporter, Interactor, ItemStatus, ReporterBuilder,
@@ -50,6 +50,30 @@ use crate::reporting::{
 use exif::read_exif_date_device;
 use path::resolve_dest_path;
 use utils::session_id_now;
+
+/// Normalize a path by removing trailing backslashes and quotes.
+/// 
+/// On Windows, PowerShell may add trailing backslashes when auto-completing paths,
+/// which can cause issues when the backslash escapes the closing quote.
+fn normalize_path(path: &Path) -> PathBuf {
+    let path_str = path.as_os_str().to_string_lossy();
+    
+    // Repeatedly strip trailing backslashes and quotes
+    let mut cleaned = path_str.as_ref();
+    loop {
+        let new_cleaned = cleaned
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .trim_end_matches('"')
+            .trim_end_matches('\'');
+        if new_cleaned == cleaned {
+            break;
+        }
+        cleaned = new_cleaned;
+    }
+    
+    PathBuf::from(cleaned)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public helper: duplicate detection (also used by add.rs)
@@ -303,9 +327,13 @@ impl ImportOptions {
         interactor: &I,
     ) -> anyhow::Result<ImportSummary> {
         let source_canon =
-            std::fs::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
+            dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
+        
+        // Normalize path: remove trailing backslashes and quotes (PowerShell quirk)
+        let source_canon = normalize_path(&source_canon);
 
-        let scan_reporter = reporter_builder.scan_reporter(&self.source);
+        // Use normalized source for reporter so path relativization works correctly
+        let scan_reporter = reporter_builder.scan_reporter(&source_canon);
 
         let state = match self.files_from {
             Some(ref paths) => ImportOptions::collect_from_list(
@@ -350,7 +378,7 @@ impl ImportOptions {
         scan_reporter: &SR,
     ) -> anyhow::Result<ImportState> {
         let vault_canon =
-            std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+            dunce::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
         let exts: Vec<&str> = allowed_extensions.iter().map(|s| s.as_str()).collect();
 
         let scan_rx = pipeline::scan::scan_stream(source_canon, &exts)?;
@@ -415,7 +443,7 @@ impl ImportOptions {
         scan_reporter: &SR,
     ) -> anyhow::Result<ImportState> {
         let vault_canon =
-            std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+            dunce::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
 
         let mut state = ImportState::new();
 
@@ -476,7 +504,7 @@ impl ImportOptions {
         reporter_builder: &RB,
     ) -> anyhow::Result<()> {
         let source_canon =
-            std::fs::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
+            dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
 
         let scan_reporter = reporter_builder.scan_reporter(&self.source);
 
@@ -650,22 +678,21 @@ impl ImportOptions {
                 .into_par_iter()
                 .filter_map(|(src, dest, size, mtime, crc, raw_id)| {
                     // Create parent directory
-                    if let Some(parent) = dest.parent() {
-                        if let Err(e) = fs::create_dir_all(parent) {
-                            let msg = e.to_string();
-                            reporter.item_started(&src, &dest, size);
-                            reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Failed { message: msg });
-                            return None;
-                        }
+                    if let Some(parent) = dest.parent()
+                        && let Err(e) = fs::create_dir_all(parent)
+                    {
+                        let msg = e.to_string();
+                        reporter.item_started(&src, &dest, size);
+                        reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Failed { message: msg });
+                        return None;
                     }
 
-                    reporter.item_started(&src, &dest, size);
-
                     let src_rel = src.strip_prefix(source_canon).unwrap_or(&src);
-                    match transfer_file(source_canon, src_rel, vault_root, &dest, &transfer_strategies)
-                    {
+                    match transfer_file_with_reporter(
+                        source_canon, src_rel, vault_root, &dest, 
+                        &transfer_strategies, Some(&reporter)
+                    ) {
                         Ok(_) => {
-                            reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Ok);
                             Some(pipeline::types::CrcEntry {
                                 file: pipeline::types::FileEntry {
                                     path: dest,
@@ -678,10 +705,7 @@ impl ImportOptions {
                                 precomputed_hash: None,
                             })
                         }
-                        Err(e) => {
-                            reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Failed { message: e.to_string() });
-                            None
-                        }
+                        Err(_) => None,
                     }
                 })
                 .collect();

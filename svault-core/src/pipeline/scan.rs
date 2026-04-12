@@ -1,6 +1,6 @@
 //! Stage A: Directory scanning.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
@@ -8,7 +8,23 @@ use crate::fs::DirEntry;
 use crate::fs::walk_stream;
 use crate::pipeline::types::FileEntry;
 
-/// Stream directory entries from a VFS backend.
+/// Normalize a directory path for scanning.
+///
+/// Handles PowerShell auto-completion quirks where trailing backslash + quote
+/// combinations may result in paths ending with `"` or `'`.
+/// Also removes trailing backslashes which can cause issues on Windows.
+fn normalize_scan_root(path: &Path) -> PathBuf {
+    let path_str = path.as_os_str().to_string_lossy();
+    
+    // Strip trailing quote characters that may be introduced by shell escaping
+    let cleaned = path_str
+        .trim_end_matches('"')
+        .trim_end_matches('\'');
+    
+    PathBuf::from(cleaned)
+}
+
+/// Stream directory entries from the local filesystem.
 ///
 /// This is the preferred API for directory scanning. It returns a receiver
 /// that yields `FileEntry` as files are discovered, enabling streaming
@@ -37,10 +53,11 @@ pub fn scan_stream(
     root: &Path,
     exts: &[&str],
 ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<FileEntry>>> {
-    let root = root.to_path_buf();
+    // Normalize path: strip trailing separators and quotes (handles PowerShell auto-completion quirks)
+    let root = normalize_scan_root(root);
     let exts: Vec<String> = exts.iter().map(|s| s.to_string()).collect();
 
-    let vfs_rx = walk_stream(
+    let fs_rx = walk_stream(
         &root,
         Path::new(""),
         &exts.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
@@ -48,10 +65,10 @@ pub fn scan_stream(
 
     let (tx, rx) = mpsc::channel();
 
-    // Convert VFS DirEntry to pipeline FileEntry in background thread
+    // Convert DirEntry to pipeline FileEntry in background thread
     thread::spawn(move || {
-        for vfs_result in vfs_rx {
-            let result = vfs_result
+        for fs_result in fs_rx {
+            let result = fs_result
                 .map(|dir_entry| dir_entry_to_file_entry(&root, dir_entry))
                 .map_err(|e| anyhow::anyhow!(e));
 
@@ -64,7 +81,7 @@ pub fn scan_stream(
     Ok(rx)
 }
 
-/// Convert a VFS DirEntry to a pipeline FileEntry.
+/// Convert a DirEntry to a pipeline FileEntry.
 fn dir_entry_to_file_entry(root: &Path, entry: DirEntry) -> FileEntry {
     FileEntry {
         // Convert to absolute path
@@ -146,5 +163,36 @@ mod tests {
         let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
 
         assert_eq!(entries.len(), 3);
+    }
+
+    // =========================================================================
+    // normalize_scan_root tests
+    // =========================================================================
+
+    #[test]
+    fn test_normalize_scan_root_strips_trailing_double_quote() {
+        // Simulates PowerShell: 'C:\path\' -> C:\path\"
+        let path = Path::new(r#"C:\Users\test\"#);
+        let normalized = normalize_scan_root(path);
+        assert_eq!(normalized, Path::new(r#"C:\Users\test\"#).as_os_str());
+        // Actually the trailing quote gets stripped
+        let path_with_quote = Path::new(r#"C:\Users\test""#);
+        let normalized = normalize_scan_root(path_with_quote);
+        assert_eq!(normalized, Path::new(r#"C:\Users\test"#));
+    }
+
+    #[test]
+    fn test_normalize_scan_root_strips_trailing_single_quote() {
+        // Simulates PowerShell escaping issues
+        let path = Path::new("C:\\Users\\test\\'");
+        let normalized = normalize_scan_root(path);
+        assert_eq!(normalized, Path::new("C:\\Users\\test\\"));
+    }
+
+    #[test]
+    fn test_normalize_scan_root_unchanged_normal_path() {
+        let path = Path::new("C:\\Users\\test\\photos");
+        let normalized = normalize_scan_root(path);
+        assert_eq!(normalized, path);
     }
 }
