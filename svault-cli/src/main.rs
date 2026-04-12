@@ -24,7 +24,6 @@ use clap::Parser;
 use cli::{Cli, Command, DbCommand};
 #[cfg(debug_assertions)]
 use cli::DebugCommand;
-use commands::setup_signal_handler;
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     // Configure Rayon thread pool if specified
@@ -110,9 +109,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 fn main() {
     // Initialize logger (RUST_LOG env var controls level)
     env_logger::init();
-
-    // Setup signal handler for graceful shutdown on Ctrl-C
-    setup_signal_handler();
 
     let cli = Cli::parse();
     if let Err(e) = run(cli) {

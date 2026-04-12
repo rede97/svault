@@ -58,24 +58,4 @@ pub fn format_size(size: u64) -> String {
     }
 }
 
-/// Global flag for shutdown signal
-static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
-/// Check if shutdown has been requested (for periodic checks in long operations)
-pub fn is_shutdown_requested() -> bool {
-    SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Setup signal handler for graceful shutdown on Ctrl-C
-pub fn setup_signal_handler() {
-    ctrlc::set_handler(move || {
-        eprintln!("\n⚠️  Received interrupt signal (Ctrl-C)");
-        eprintln!("   Shutting down, please wait...");
-        SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
-        // Give the program a moment to clean up
-        std::thread::sleep(std::time::Duration::from_millis(800));
-        std::process::exit(130); // 128 + SIGINT(2)
-    })
-    .expect("Error setting Ctrl-C handler");
-}
