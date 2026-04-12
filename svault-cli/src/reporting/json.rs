@@ -354,14 +354,12 @@ impl AddSummaryReporter for JsonAddSummaryReporter {
 // Recheck reporter
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub struct JsonRecheckReporter {
-    total: u64,
-}
+pub struct JsonRecheckReporter;
 
 impl JsonRecheckReporter {
     fn new(total: u64) -> Self {
         emit_json!(json!({"event": "recheck_started", "total": total}));
-        Self { total }
+        Self
     }
 }
 
@@ -503,14 +501,12 @@ impl UpdateApplyReporter for JsonUpdateApplyReporter {
 // Verify reporter
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub struct JsonVerifyReporter {
-    total: u64,
-}
+pub struct JsonVerifyReporter;
 
 impl JsonVerifyReporter {
     fn new(total: u64) -> Self {
         emit_json!(json!({"event": "verify_started", "total": total}));
-        Self { total }
+        Self
     }
 }
 

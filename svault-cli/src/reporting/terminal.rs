@@ -34,10 +34,11 @@ use std::time::{Duration, Instant};
 
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use svault_core::import::RecheckStatus;
 use svault_core::reporting::{
-    AddSummaryReporter, CopyReporter, HashReporter, InsertReporter, Interactor, ItemStatus,
-    MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter, UpdateApplyReporter,
-    VerifyReporter,
+    AddSummaryReporter, CopyItemResult, CopyReporter, HashReporter, InsertReporter, Interactor,
+    ItemStatus, MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter,
+    UpdateApplyReporter, VerifyReporter,
 };
 
 /// Braille pattern spinner characters for progress bars.
@@ -104,7 +105,14 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 impl ScanReporter for TerminalScanReporter {
-    fn item(&self, path: &Path, size: u64, _mtime_ms: i64, status: ItemStatus, error: Option<&str>) {
+    fn item(
+        &self,
+        path: &Path,
+        size: u64,
+        _mtime_ms: i64,
+        status: ItemStatus,
+        error: Option<&str>,
+    ) {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -140,9 +148,15 @@ impl ScanReporter for TerminalScanReporter {
             ItemStatus::Recover => style(label).cyan().bold(),
             ItemStatus::Failed => style(label).red().bold(),
         };
-        
+
         if let Some(err) = error {
-            self.println(format!("  {} {} ({}) - {}", label_style, name, size_str, style(err).red()));
+            self.println(format!(
+                "  {} {} ({}) - {}",
+                label_style,
+                name,
+                size_str,
+                style(err).red()
+            ));
         } else {
             self.println(format!("  {} {} ({})", label_style, name, size_str));
         }
@@ -320,7 +334,7 @@ impl CopyReporter for TerminalCopyReporter {
         self.update_message();
     }
 
-    fn item_finished(&self, src_abs: &Path, _dest_abs: &Path, result: &svault_core::reporting::CopyItemResult) {
+    fn item_finished(&self, src_abs: &Path, _dest_abs: &Path, result: &CopyItemResult) {
         // Remove from active files and update progress
         let name = src_abs
             .file_name()
@@ -332,10 +346,15 @@ impl CopyReporter for TerminalCopyReporter {
         }
         self.update_message();
         self.pb.inc(1);
-        
+
         // Report failure if any
-        if let svault_core::reporting::CopyItemResult::Failed { message } = result {
-            self.println(format!("{} {}: {}", style("Error:").red().bold(), src_abs.display(), message));
+        if let CopyItemResult::Failed { message } = result {
+            self.println(format!(
+                "{} {}: {}",
+                style("Error:").red().bold(),
+                src_abs.display(),
+                message
+            ));
         }
     }
 
@@ -586,7 +605,7 @@ impl VerifyReporter for TerminalVerifyReporter {
 
     fn item_finished(&self, path: &Path, result: &svault_core::verify::VerifyResult) {
         self.pb.inc(1);
-        
+
         // Output failure details
         match result {
             svault_core::verify::VerifyResult::Ok => {
@@ -940,50 +959,55 @@ impl RecheckReporter for TerminalRecheckReporter {
         // Progress bar is updated in item_finished
     }
 
-    fn item_finished(&self, src_path: &std::path::Path, _vault_path: &std::path::Path, status: &svault_core::import::RecheckStatus) {
+    fn item_finished(
+        &self,
+        src_path: &std::path::Path,
+        _vault_path: &std::path::Path,
+        status: &RecheckStatus,
+    ) {
         self.pb.inc(1);
-        
+
         // Output failure details
         match status {
-            svault_core::import::RecheckStatus::Ok => {
+            RecheckStatus::Ok => {
                 // Success - silent
             }
-            svault_core::import::RecheckStatus::SourceModified => {
+            RecheckStatus::SourceModified => {
                 self.println(format!(
                     "  {} {}",
                     style("Source modified").yellow(),
                     style(src_path.display()),
                 ));
             }
-            svault_core::import::RecheckStatus::VaultCorrupted => {
+            RecheckStatus::VaultCorrupted => {
                 self.println(format!(
                     "  {} {}",
                     style("Vault corrupted").red(),
                     style(src_path.display()),
                 ));
             }
-            svault_core::import::RecheckStatus::BothDiverged => {
+            RecheckStatus::BothDiverged => {
                 self.println(format!(
                     "  {} {}",
                     style("Both diverged").red().bold(),
                     style(src_path.display()),
                 ));
             }
-            svault_core::import::RecheckStatus::SourceDeleted => {
+            RecheckStatus::SourceDeleted => {
                 self.println(format!(
                     "  {} {}",
                     style("Source deleted").yellow(),
                     style(src_path.display()),
                 ));
             }
-            svault_core::import::RecheckStatus::VaultDeleted => {
+            RecheckStatus::VaultDeleted => {
                 self.println(format!(
                     "  {} {}",
                     style("Vault deleted").red(),
                     style(src_path.display()),
                 ));
             }
-            svault_core::import::RecheckStatus::Error(e) => {
+            RecheckStatus::Error(e) => {
                 self.println(format!(
                     "  {} {}: {}",
                     style("Error").red().bold(),

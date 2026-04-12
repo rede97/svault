@@ -33,10 +33,8 @@ pub use types::{FileStatus, ImportOptions, ImportSummary, ScanEntry};
 // Re-export recheck types for easier access from reporting module
 pub use recheck::{RecheckStatus, RecheckResult, RecheckOptions};
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
 
@@ -347,7 +345,7 @@ impl ImportOptions {
         source_canon: &Path,
         vault_root: &Path,
         allowed_extensions: &[String],
-        show_dup: bool,
+        _show_dup: bool,
         db: Option<&Db>,
         scan_reporter: &SR,
     ) -> anyhow::Result<ImportState> {
@@ -412,7 +410,7 @@ impl ImportOptions {
     fn collect_from_list<SR: ScanReporter>(
         paths: &[PathBuf],
         vault_root: &Path,
-        show_dup: bool,
+        _show_dup: bool,
         db: Option<&Db>,
         scan_reporter: &SR,
     ) -> anyhow::Result<ImportState> {
