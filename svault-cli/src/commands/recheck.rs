@@ -24,11 +24,11 @@ pub fn run(
 
     // Validate source path if explicitly provided
     if let Some(provided_source) = source {
-        let provided = std::fs::canonicalize(&provided_source)
+        let provided = dunce::canonicalize(&provided_source)
             .unwrap_or(provided_source)
             .to_string_lossy()
             .to_string();
-        let recorded = std::fs::canonicalize(&manifest.source_root)
+        let recorded = dunce::canonicalize(&manifest.source_root)
             .unwrap_or_else(|_| manifest.source_root.clone())
             .to_string_lossy()
             .to_string();

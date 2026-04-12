@@ -104,10 +104,10 @@ impl ScanReporter for JsonScanReporter {
             "status": status_str
         });
         
-        if let Some(err) = error {
-            if let Some(obj) = event.as_object_mut() {
-                obj.insert("error".to_string(), json!(err));
-            }
+        if let Some(err) = error
+            && let Some(obj) = event.as_object_mut()
+        {
+            obj.insert("error".to_string(), json!(err));
         }
         
         emit_json!(event);
@@ -172,6 +172,16 @@ impl CopyReporter for JsonCopyReporter {
         }));
     }
 
+    fn item_progress(&self, src_abs: &Path, bytes_copied: u64, bytes_total: u64) {
+        emit_json!(json!({
+            "event": "copy_item_progress",
+            "src": src_abs.display().to_string(),
+            "bytes_copied": bytes_copied,
+            "bytes_total": bytes_total,
+            "percent": if bytes_total > 0 { (bytes_copied as f64 / bytes_total as f64 * 100.0) as u32 } else { 0 }
+        }));
+    }
+
     fn item_finished(&self, src_abs: &Path, dest_abs: &Path, result: &svault_core::reporting::CopyItemResult) {
         let (status, error) = match result {
             svault_core::reporting::CopyItemResult::Ok => ("ok", None),
@@ -185,10 +195,10 @@ impl CopyReporter for JsonCopyReporter {
             "status": status
         });
         
-        if let Some(err) = error {
-            if let Some(obj) = event.as_object_mut() {
-                obj.insert("error".to_string(), json!(err));
-            }
+        if let Some(err) = error
+            && let Some(obj) = event.as_object_mut()
+        {
+            obj.insert("error".to_string(), json!(err));
         }
         
         emit_json!(event);
@@ -545,10 +555,10 @@ impl VerifyReporter for JsonVerifyReporter {
             "status": status
         });
         
-        if let Some(d) = details {
-            if let Some(obj) = event.as_object_mut() {
-                obj.insert("details".to_string(), d);
-            }
+        if let Some(d) = details
+            && let Some(obj) = event.as_object_mut()
+        {
+            obj.insert("details".to_string(), d);
         }
         
         emit_json!(event);

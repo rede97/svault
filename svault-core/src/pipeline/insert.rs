@@ -74,14 +74,12 @@ pub fn batch_insert(
 
         // Skip if already tracked by path (unless force mode or the existing file is 'missing')
         // 'missing' files should be allowed to recover (re-import with same path)
-        if !opts.force {
-            if let Ok(Some(existing)) = db.get_file_by_path(&rel_str) {
-                if existing.status != "missing" {
-                    summary.skipped += 1;
-                    continue;
-                }
-                // 'missing' status: allow to proceed for recovery
-            }
+        if !opts.force
+            && let Ok(Some(existing)) = db.get_file_by_path(&rel_str)
+            && existing.status != "missing"
+        {
+            summary.skipped += 1;
+            continue;
         }
 
         // Handle errors

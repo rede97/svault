@@ -65,7 +65,7 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
     }
 
     // 2. Scan vault disk for all files.
-    // Keep `.svault` excluded to match the previous VFS-backed traversal behavior.
+    // Keep `.svault` excluded to match the previous traversal behavior.
     let disk_entries: Vec<_> = WalkDir::new(&opts.root)
         .skip_hidden(false)
         .process_read_dir(|_depth, _path, _state, children| {

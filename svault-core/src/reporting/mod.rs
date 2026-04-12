@@ -94,6 +94,13 @@ pub trait CopyReporter: Send + Sync {
     /// `bytes_total` is the file size in bytes.
     fn item_started(&self, src_abs: &Path, dest_abs: &Path, bytes_total: u64);
 
+    /// Progress update for a file being transferred.
+    /// Called periodically during the copy operation.
+    /// `src_abs` is the absolute source path.
+    /// `bytes_copied` is the number of bytes copied so far.
+    /// `bytes_total` is the total file size in bytes.
+    fn item_progress(&self, src_abs: &Path, bytes_copied: u64, bytes_total: u64);
+
     /// A file has finished transferring (success or failure).
     fn item_finished(&self, src_abs: &Path, dest_abs: &Path, result: &CopyItemResult);
 
@@ -343,6 +350,7 @@ impl ScanReporter for Noop {
 
 impl CopyReporter for Noop {
     fn item_started(&self, _: &Path, _: &Path, _: u64) {}
+    fn item_progress(&self, _: &Path, _: u64, _: u64) {}
     fn item_finished(&self, _: &Path, _: &Path, _: &CopyItemResult) {}
     fn finish(&self) {}
 }

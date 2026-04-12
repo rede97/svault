@@ -54,10 +54,60 @@ impl PipeScanReporter {
         }
     }
 
+    /// Compute relative path from source (case-insensitive on Windows).
+    fn relative_to_source(&self, abs_path: &Path) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            use std::path::Component;
+            let source_components: Vec<_> = self.source.components().collect();
+            let abs_components: Vec<_> = abs_path.components().collect();
+            
+            if source_components.len() > abs_components.len() {
+                return abs_path.display().to_string();
+            }
+            
+            for (i, src_comp) in source_components.iter().enumerate() {
+                let abs_comp = &abs_components[i];
+                let matches = match (src_comp, abs_comp) {
+                    (Component::Prefix(p1), Component::Prefix(p2)) => {
+                        p1.as_os_str().to_string_lossy().to_lowercase() == 
+                        p2.as_os_str().to_string_lossy().to_lowercase()
+                    }
+                    (Component::RootDir, Component::RootDir) => true,
+                    (c1, c2) => c1.as_os_str().to_string_lossy().to_lowercase() == 
+                               c2.as_os_str().to_string_lossy().to_lowercase(),
+                };
+                if !matches {
+                    return abs_path.display().to_string();
+                }
+            }
+            
+            let rel_components = &abs_components[source_components.len()..];
+            if rel_components.is_empty() {
+                return abs_path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| abs_path.display().to_string());
+            }
+            
+            let mut result = std::path::PathBuf::new();
+            for comp in rel_components {
+                result.push(comp.as_os_str());
+            }
+            result.display().to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            abs_path.strip_prefix(&self.source)
+                .unwrap_or(abs_path)
+                .display()
+                .to_string()
+        }
+    }
+
     fn print_line(&self, prefix: &str, path: &Path) {
         self.print_header();
-        let rel = path.strip_prefix(&self.source).unwrap_or(path);
-        println!("{}:{}", prefix, Self::escape(&rel.display().to_string()));
+        let rel = self.relative_to_source(path);
+        println!("{}:{}", prefix, Self::escape(&rel));
     }
 }
 
@@ -132,7 +182,7 @@ impl ReporterBuilder for PipeReporterBuilder {
     fn scan_reporter(&self, src: &Path) -> PipeScanReporter {
         // Canonicalise so strip_prefix works correctly against absolute paths
         // emitted by the pipeline walk stages.
-        let source = std::fs::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
+        let source = dunce::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
 
         // Header is printed lazily on first classified file, so empty scans
         // produce no output (matches test expectations).

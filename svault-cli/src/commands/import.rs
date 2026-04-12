@@ -9,6 +9,30 @@ use svault_core::context::VaultContext;
 use svault_core::import::ImportOptions;
 use svault_core::reporting::YesInteractor;
 
+/// Normalize a path by removing trailing backslashes and quotes.
+/// 
+/// On Windows, PowerShell may add trailing backslashes when auto-completing paths,
+/// which can cause issues when the backslash escapes the closing quote.
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let path_str = path.as_os_str().to_string_lossy();
+    
+    // Repeatedly strip trailing backslashes and quotes
+    let mut cleaned = path_str.as_ref();
+    loop {
+        let new_cleaned = cleaned
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .trim_end_matches('"')
+            .trim_end_matches('\'');
+        if new_cleaned == cleaned {
+            break;
+        }
+        cleaned = new_cleaned;
+    }
+    
+    PathBuf::from(cleaned)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     output: OutputFormat,
@@ -46,7 +70,8 @@ pub fn run(
 
             // Parse scan-output format: SCAN:<prefix> new:file1 dup:file2 …
             // Only "new:" entries are imported; relative paths are joined with source.
-            let source_canon = std::fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
+            let source_normalized = normalize_path(&source);
+            let source_canon = dunce::canonicalize(&source_normalized).unwrap_or_else(|_| source_normalized.clone());
             let mut paths: Vec<PathBuf> = Vec::new();
 
             for line in &lines {
@@ -71,7 +96,8 @@ pub fn run(
         }
     };
 
-    let source_canon = std::fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
+    let source_normalized = normalize_path(&source);
+    let source_canon = dunce::canonicalize(&source_normalized).unwrap_or_else(|_| source_normalized.clone());
     let ctx = VaultContext::open(target, &source_canon)?;
 
     let opts = ImportOptions {
