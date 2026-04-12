@@ -20,18 +20,13 @@ use crate::reporting::{
 
 /// Convert a path to Unix-style string (forward slashes) for cross-platform storage.
 fn path_to_unix_string(path: &Path) -> String {
-    let mut result = String::new();
-    for (i, component) in path.components().enumerate() {
-        if i > 0 {
-            result.push('/');
-        }
-        if let Some(s) = component.as_os_str().to_str() {
-            result.push_str(s);
-        } else {
-            result.push_str(&component.as_os_str().to_string_lossy());
-        }
-    }
-    result
+    // First, get the path as a string, replacing any backslashes with forward slashes
+    // This handles Windows paths that may contain backslashes
+    let path_str = path.to_string_lossy();
+    let normalized = path_str.replace('\\', "/");
+    
+    // Remove leading slash if present (from absolute paths)
+    normalized.strip_prefix('/').map(String::from).unwrap_or(normalized)
 }
 
 /// Summary of an `update` operation.
@@ -278,4 +273,33 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
 /// Hex encode bytes.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_to_unix_string_update_module() {
+        // Test that Windows-style paths are converted correctly
+        let windows_path = Path::new("2024\\03\\file.jpg");
+        let result = path_to_unix_string(windows_path);
+        assert_eq!(result, "2024/03/file.jpg");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_unix_stays_unix() {
+        // Unix paths should remain unchanged
+        let unix_path = Path::new("2024/03/file.jpg");
+        let result = path_to_unix_string(unix_path);
+        assert_eq!(result, "2024/03/file.jpg");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_mixed_separators() {
+        // Mixed separators (edge case)
+        let mixed_path = Path::new("2024/03\\file.jpg");
+        let result = path_to_unix_string(mixed_path);
+        assert_eq!(result, "2024/03/file.jpg");
+    }
 }

@@ -12,20 +12,13 @@ use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager, Ite
 /// We store all paths with forward slashes to ensure the database is portable
 /// between Windows and Linux.
 fn path_to_unix_string(path: &Path) -> String {
-    let mut result = String::new();
-    for (i, component) in path.components().enumerate() {
-        if i > 0 {
-            result.push('/');
-        }
-        // Convert each component to string
-        if let Some(s) = component.as_os_str().to_str() {
-            result.push_str(s);
-        } else {
-            // Fallback for non-UTF8 paths (use lossy conversion)
-            result.push_str(&component.as_os_str().to_string_lossy());
-        }
-    }
-    result
+    // First, get the path as a string, replacing any backslashes with forward slashes
+    // This handles Windows paths that may contain backslashes
+    let path_str = path.to_string_lossy();
+    let normalized = path_str.replace('\\', "/");
+    
+    // Remove leading slash if present (from absolute paths)
+    normalized.strip_prefix('/').map(String::from).unwrap_or(normalized)
 }
 
 /// Options for batch insertion.
@@ -309,4 +302,67 @@ pub fn batch_insert(
     }
 
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_to_unix_string_unix_path() {
+        let path = Path::new("/home/user/photos/file.jpg");
+        let result = path_to_unix_string(path);
+        assert_eq!(result, "home/user/photos/file.jpg");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_windows_style_path() {
+        // Simulate Windows path components (as they would appear after strip_prefix)
+        // On Windows: C:\Users\test\vault\2024\file.jpg -> rel_path = "2024\file.jpg"
+        let path = Path::new("2024\\file.jpg");
+        let result = path_to_unix_string(path);
+        // Should convert backslash to forward slash
+        assert_eq!(result, "2024/file.jpg");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_nested_windows_path() {
+        // Simulate nested Windows directory structure
+        let path = Path::new("2024\\03-15\\NIKON\\DSC_0001.JPG");
+        let result = path_to_unix_string(path);
+        assert_eq!(result, "2024/03-15/NIKON/DSC_0001.JPG");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_single_component() {
+        let path = Path::new("file.jpg");
+        let result = path_to_unix_string(path);
+        assert_eq!(result, "file.jpg");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_empty() {
+        let path = Path::new("");
+        let result = path_to_unix_string(path);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_path_to_unix_string_cross_platform_compatibility() {
+        // This test verifies that the same relative path structure
+        // is stored identically regardless of platform
+        
+        // Unix-style input
+        let unix_path = Path::new("2024/03/photo.jpg");
+        let unix_result = path_to_unix_string(unix_path);
+        
+        // Windows-style input (simulated)
+        let windows_path = Path::new("2024\\03\\photo.jpg");
+        let windows_result = path_to_unix_string(windows_path);
+        
+        // Both should produce the same Unix-style output
+        assert_eq!(unix_result, "2024/03/photo.jpg");
+        assert_eq!(windows_result, "2024/03/photo.jpg");
+        assert_eq!(unix_result, windows_result);
+    }
 }
