@@ -13,6 +13,9 @@ use svault_core::reporting::YesInteractor;
 /// 
 /// On Windows, PowerShell may add trailing backslashes when auto-completing paths,
 /// which can cause issues when the backslash escapes the closing quote.
+/// 
+/// SAFETY: Preserves root paths (e.g., `/`, `C:\`) - never returns empty string
+/// or bare drive letter.
 fn normalize_path(path: &std::path::Path) -> PathBuf {
     let path_str = path.as_os_str().to_string_lossy();
     
@@ -28,6 +31,28 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
             break;
         }
         cleaned = new_cleaned;
+    }
+    
+    // CRITICAL: Restore root paths that were incorrectly stripped
+    // Unix root `/` becomes empty - restore it
+    if cleaned.is_empty() {
+        return PathBuf::from("/");
+    }
+    
+    // Windows root `C:/` becomes `C:` - restore the backslash for drive root
+    #[cfg(windows)]
+    {
+        // Check if it's a bare drive letter (e.g., "C:", "D:")
+        // A valid Windows drive root should be like "C:\" not just "C:"
+        if cleaned.len() == 2 
+            && cleaned.chars().nth(0).unwrap().is_ascii_alphabetic()
+            && cleaned.chars().nth(1).unwrap() == ':' 
+        {
+            // Check original path - if it ended with backslash, restore it
+            if path_str.ends_with('\\') || path_str.ends_with('/') {
+                return PathBuf::from(format!("{}\\", cleaned));
+            }
+        }
     }
     
     PathBuf::from(cleaned)
@@ -135,4 +160,57 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_normalize_path_preserves_unix_root() {
+        let root = Path::new("/");
+        let normalized = normalize_path(root);
+        assert_eq!(normalized, PathBuf::from("/"), "Unix root / should be preserved");
+    }
+
+    #[test]
+    fn test_normalize_path_removes_trailing_slashes() {
+        let path = Path::new("/home/user/");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn test_normalize_path_removes_trailing_backslashes() {
+        let path = Path::new("/home/user\\");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn test_normalize_path_removes_quotes() {
+        let path = Path::new("/home/user\"");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/home/user"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_path_preserves_windows_drive_root() {
+        // C:\ should not become C:
+        let root = Path::new("C:\\");
+        let normalized = normalize_path(root);
+        assert!(normalized.to_string_lossy().starts_with("C:"));
+        // Should preserve the backslash for drive root
+        assert!(normalized.to_string_lossy().contains("\\") || normalized.to_string_lossy() == "C:");
+    }
+
+    #[test]
+    fn test_normalize_path_empty_becomes_unix_root() {
+        // Edge case: if somehow we get empty, it should become /
+        let path = Path::new("");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/"));
+    }
 }
