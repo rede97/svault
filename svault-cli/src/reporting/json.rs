@@ -87,16 +87,7 @@ impl JsonScanReporter {
 }
 
 impl ScanReporter for JsonScanReporter {
-    fn discovered(&self, path: &Path, size: u64, mtime_ms: i64) {
-        emit_json!(json!({
-            "event": "file_discovered",
-            "path": path.display().to_string(),
-            "size": size,
-            "mtime_ms": mtime_ms
-        }));
-    }
-
-    fn classified(&self, path: &Path, size: u64, status: ItemStatus, _detail: Option<&str>) {
+    fn item(&self, path: &Path, size: u64, mtime_ms: i64, status: ItemStatus, error: Option<&str>) {
         let status_str = match status {
             ItemStatus::New => "new",
             ItemStatus::Duplicate => "duplicate",
@@ -104,35 +95,22 @@ impl ScanReporter for JsonScanReporter {
             ItemStatus::MovedInVault => "moved",
             ItemStatus::Failed => "failed",
         };
-        emit_json!(json!({
-            "event": "file_classified",
+        
+        let mut event = json!({
+            "event": "scan_item",
             "path": path.display().to_string(),
             "size": size,
+            "mtime_ms": mtime_ms,
             "status": status_str
-        }));
-    }
-
-    fn progress(&self, completed: u64) {
-        emit_json!(json!({
-            "event": "scan_progress",
-            "completed": completed
-        }));
-    }
-
-    fn warning(&self, message: &str, path: Option<&Path>) {
-        emit_json!(json!({
-            "event": "warning",
-            "message": message,
-            "path": path.map(|p| p.display().to_string())
-        }));
-    }
-
-    fn error(&self, message: &str, path: Option<&Path>) {
-        emit_json!(json!({
-            "event": "error",
-            "message": message,
-            "path": path.map(|p| p.display().to_string())
-        }));
+        });
+        
+        if let Some(err) = error {
+            if let Some(obj) = event.as_object_mut() {
+                obj.insert("error".to_string(), json!(err));
+            }
+        }
+        
+        emit_json!(event);
     }
 
     fn preflight(
@@ -194,20 +172,26 @@ impl CopyReporter for JsonCopyReporter {
         }));
     }
 
-    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, _bytes_total: u64) {
-        emit_json!(json!({
+    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, result: &svault_core::reporting::CopyItemResult) {
+        let (status, error) = match result {
+            svault_core::reporting::CopyItemResult::Ok => ("ok", None),
+            svault_core::reporting::CopyItemResult::Failed { message } => ("failed", Some(message.as_str())),
+        };
+        
+        let mut event = json!({
             "event": "copy_item_finished",
             "src": src_abs.display().to_string(),
-            "dest": dest_abs.display().to_string()
-        }));
-    }
-
-    fn error(&self, message: &str, path: Option<&Path>) {
-        emit_json!(json!({
-            "event": "copy_error",
-            "message": message,
-            "path": path.map(|p| p.display().to_string())
-        }));
+            "dest": dest_abs.display().to_string(),
+            "status": status
+        });
+        
+        if let Some(err) = error {
+            if let Some(obj) = event.as_object_mut() {
+                obj.insert("error".to_string(), json!(err));
+            }
+        }
+        
+        emit_json!(event);
     }
 
     fn finish(&self) {

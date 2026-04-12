@@ -49,20 +49,14 @@ pub fn run(
         for i in 0..count {
             let path = PathBuf::from(format!("/source/photo_{:04}.jpg", i + 1));
 
-            reporter.discovered(
-                &path,
-                1024 * 1024 + (i as u64 * 1000),
-                1234567890000 + (i as i64 * 1000),
-            );
-
             let status = if show_dup && i % 3 == 0 {
                 ItemStatus::Duplicate
             } else {
                 ItemStatus::New
             };
             let size = 1024 * 1024 + (i as u64 * 1000);
-            reporter.classified(&path, size, status, None);
-            reporter.progress((i + 1) as u64);
+            let mtime_ms = 1234567890000 + (i as i64 * 1000);
+            reporter.item(&path, size, mtime_ms, status, None);
 
             thread::sleep(delay * 20 / (count as u32));
         }
@@ -100,7 +94,7 @@ pub fn run(
             thread::sleep(work_time);
 
             // Update progress and signal completion
-            reporter.item_finished(&src_path, &dest_path, size);
+            reporter.item_finished(&src_path, &dest_path, &svault_core::reporting::CopyItemResult::Ok);
         });
 
         reporter.finish();

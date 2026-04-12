@@ -44,28 +44,17 @@ pub enum ItemStatus {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Reporter for the scan phase (Stages A + B + C: walk + CRC + DB lookup).
-///
-/// Also handles the pre-flight summary and the "nothing to import" case,
-/// since both are emitted at the end of the scan phase before the reporter
-/// is dropped.
 pub trait ScanReporter: Send + Sync {
-    /// A file was discovered during the directory walk.
-    /// `abs_path` is the absolute path of the file.
-    fn discovered(&self, abs_path: &Path, size: u64, mtime_ms: i64);
-
-    /// A file was classified after a DB duplicate check.
-    /// `abs_path` is the absolute path of the file.
-    /// `size` is the file size in bytes.
-    fn classified(&self, abs_path: &Path, size: u64, status: ItemStatus, detail: Option<&str>);
-
-    /// Periodic progress counter — number of files visited so far.
-    fn progress(&self, completed: u64);
-
-    /// A non-fatal warning associated with an optional path.
-    fn warning(&self, message: &str, abs_path: Option<&Path>);
-
-    /// A file could not be read or hashed.
-    fn error(&self, message: &str, abs_path: Option<&Path>);
+    /// A file has been scanned and classified.
+    /// Called once per file with all relevant information.
+    fn item(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime_ms: i64,
+        status: ItemStatus,
+        error: Option<&str>,
+    );
 
     /// Pre-flight summary emitted after scan and before the user is asked
     /// to confirm. Core provides raw counts; formatting is up to the
@@ -88,6 +77,15 @@ pub trait ScanReporter: Send + Sync {
     fn finish(&self);
 }
 
+/// Result of a single file copy operation.
+#[derive(Debug, Clone)]
+pub enum CopyItemResult {
+    /// File was successfully copied.
+    Ok,
+    /// File copy failed with an error message.
+    Failed { message: String },
+}
+
 /// Reporter for the copy phase (Stage C: file transfer).
 pub trait CopyReporter: Send + Sync {
     /// A file is about to be transferred.
@@ -96,13 +94,8 @@ pub trait CopyReporter: Send + Sync {
     /// `bytes_total` is the file size in bytes.
     fn item_started(&self, src_abs: &Path, dest_abs: &Path, bytes_total: u64);
 
-    /// A file was successfully transferred.
-    /// `src_abs` is the absolute source path, `dest_abs` is the absolute destination path.
-    /// `bytes_total` is the file size in bytes.
-    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, bytes_total: u64);
-
-    /// A file could not be transferred.
-    fn error(&self, message: &str, abs_path: Option<&Path>);
+    /// A file has finished transferring (success or failure).
+    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, result: &CopyItemResult);
 
     /// The copy phase is complete.
     fn finish(&self);
@@ -343,19 +336,14 @@ pub trait ReporterBuilder: Send + Sync {
 pub struct Noop;
 
 impl ScanReporter for Noop {
-    fn discovered(&self, _: &Path, _: u64, _: i64) {}
-    fn classified(&self, _: &Path, _: u64, _: ItemStatus, _: Option<&str>) {}
-    fn progress(&self, _: u64) {}
-    fn warning(&self, _: &str, _: Option<&Path>) {}
-    fn error(&self, _: &str, _: Option<&Path>) {}
+    fn item(&self, _: &Path, _: u64, _: i64, _: ItemStatus, _: Option<&str>) {}
     fn preflight(&self, _: usize, _: usize, _: usize, _: usize, _: usize, _: &Path) {}
     fn finish(&self) {}
 }
 
 impl CopyReporter for Noop {
     fn item_started(&self, _: &Path, _: &Path, _: u64) {}
-    fn item_finished(&self, _: &Path, _: &Path, _: u64) {}
-    fn error(&self, _: &str, _: Option<&Path>) {}
+    fn item_finished(&self, _: &Path, _: &Path, _: &CopyItemResult) {}
     fn finish(&self) {}
 }
 

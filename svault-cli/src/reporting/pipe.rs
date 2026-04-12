@@ -62,9 +62,7 @@ impl PipeScanReporter {
 }
 
 impl ScanReporter for PipeScanReporter {
-    fn discovered(&self, _path: &Path, _size: u64, _mtime_ms: i64) {}
-
-    fn classified(&self, path: &Path, _size: u64, status: ItemStatus, _detail: Option<&str>) {
+    fn item(&self, path: &Path, _size: u64, _mtime_ms: i64, status: ItemStatus, _error: Option<&str>) {
         match status {
             ItemStatus::New | ItemStatus::Recover => {
                 self.print_line("new", path);
@@ -77,17 +75,6 @@ impl ScanReporter for PipeScanReporter {
             ItemStatus::Failed => {
                 self.print_line("fail", path);
             }
-        }
-    }
-
-    fn progress(&self, _completed: u64) {}
-    fn warning(&self, _message: &str, _path: Option<&Path>) {}
-
-    fn error(&self, _message: &str, path: Option<&Path>) {
-        // IO / hash errors also produce a fail line so downstream consumers
-        // know the file was not successfully scanned.
-        if let Some(p) = path {
-            self.print_line("fail", p);
         }
     }
 

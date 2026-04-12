@@ -61,19 +61,19 @@ pub fn run_add<RB: ReporterBuilder>(
     let mut lookup_results = Vec::new();
     let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new();
     let mut total_files = 0usize;
-    let mut scan_count: u64 = 0;
 
     for result in crc_rx {
         total_files += 1;
-        scan_count += 1;
-        scan_reporter.progress(scan_count);
 
         let crc = match result.crc {
             Ok(c) => c,
             Err(e) => {
-                scan_reporter.error(
-                    &format!("CRC computation failed: {}", e),
-                    Some(&result.file.path),
+                scan_reporter.item(
+                    &result.file.path,
+                    result.file.size,
+                    result.file.mtime_ms,
+                    ItemStatus::Failed,
+                    Some(&format!("CRC computation failed: {}", e)),
                 );
                 continue;
             }
@@ -110,7 +110,7 @@ pub fn run_add<RB: ReporterBuilder>(
             pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,
             pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
         };
-        scan_reporter.classified(&result.file.path, result.file.size, item_status, None);
+        scan_reporter.item(&result.file.path, result.file.size, result.file.mtime_ms, item_status, None);
 
         match check_result {
             pipeline::CheckResult::Duplicate => {

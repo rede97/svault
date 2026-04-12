@@ -104,11 +104,7 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 impl ScanReporter for TerminalScanReporter {
-    fn discovered(&self, _path: &Path, _size: u64, _mtime_ms: i64) {
-        // Counted implicitly via progress(); no per-file line for discoveries.
-    }
-
-    fn classified(&self, path: &Path, size: u64, status: ItemStatus, _detail: Option<&str>) {
+    fn item(&self, path: &Path, size: u64, _mtime_ms: i64, status: ItemStatus, error: Option<&str>) {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -126,6 +122,9 @@ impl ScanReporter for TerminalScanReporter {
             }
         }
 
+        // Update progress bar
+        self.pb.inc(1);
+
         // All status labels use cyan.bold, filename uses normal white, size uses dim
         let label = match status {
             ItemStatus::New => "Found",
@@ -141,25 +140,12 @@ impl ScanReporter for TerminalScanReporter {
             ItemStatus::Recover => style(label).cyan().bold(),
             ItemStatus::Failed => style(label).red().bold(),
         };
-        self.println(format!("  {} {} ({})", label_style, name, size_str));
-    }
-
-    fn progress(&self, completed: u64) {
-        self.pb.set_position(completed);
-    }
-
-    fn warning(&self, message: &str, path: Option<&Path>) {
-        let msg = path
-            .map(|p| format!("{}: {}", p.display(), message))
-            .unwrap_or_else(|| message.to_string());
-        self.println(format!("{} {}", style("Warning:").yellow().bold(), msg));
-    }
-
-    fn error(&self, message: &str, path: Option<&Path>) {
-        let msg = path
-            .map(|p| format!("{}: {}", p.display(), message))
-            .unwrap_or_else(|| message.to_string());
-        self.println(format!("{} {}", style("Error:").red().bold(), msg));
+        
+        if let Some(err) = error {
+            self.println(format!("  {} {} ({}) - {}", label_style, name, size_str, style(err).red()));
+        } else {
+            self.println(format!("  {} {} ({})", label_style, name, size_str));
+        }
     }
 
     fn preflight(
@@ -334,7 +320,7 @@ impl CopyReporter for TerminalCopyReporter {
         self.update_message();
     }
 
-    fn item_finished(&self, src_abs: &Path, _dest_abs: &Path, _bytes_total: u64) {
+    fn item_finished(&self, src_abs: &Path, _dest_abs: &Path, result: &svault_core::reporting::CopyItemResult) {
         // Remove from active files and update progress
         let name = src_abs
             .file_name()
@@ -346,23 +332,11 @@ impl CopyReporter for TerminalCopyReporter {
         }
         self.update_message();
         self.pb.inc(1);
-    }
-
-    fn error(&self, message: &str, abs_path: Option<&Path>) {
-        // Remove from active files if present
-        if let Some(p) = abs_path {
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.display().to_string());
-            let mut files = self.active_files.lock().unwrap();
-            files.retain(|f| f != &name);
+        
+        // Report failure if any
+        if let svault_core::reporting::CopyItemResult::Failed { message } = result {
+            self.println(format!("{} {}: {}", style("Error:").red().bold(), src_abs.display(), message));
         }
-        self.update_message();
-        let msg = abs_path
-            .map(|p| format!("{}: {}", p.display(), message))
-            .unwrap_or_else(|| message.to_string());
-        self.println(format!("{} {}", style("Error:").red().bold(), msg));
     }
 
     fn finish(&self) {

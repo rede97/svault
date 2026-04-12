@@ -225,7 +225,6 @@ fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
 fn classify_and_emit<SR: ScanReporter>(
     entry: pipeline::types::CrcEntry,
     check_result: pipeline::CheckResult,
-    show_dup: bool,
     scan_reporter: &SR,
     state: &mut ImportState,
 ) {
@@ -236,10 +235,14 @@ fn classify_and_emit<SR: ScanReporter>(
         pipeline::CheckResult::Recover { .. } => ItemStatus::Recover,
     };
 
-    let should_emit = !matches!(item_status, ItemStatus::Duplicate) || show_dup;
-    if should_emit {
-        scan_reporter.classified(&entry.file.path, entry.file.size, item_status, None);
-    }
+    // Report the item with all information
+    scan_reporter.item(
+        &entry.file.path,
+        entry.file.size,
+        entry.file.mtime_ms,
+        item_status,
+        None,
+    );
 
     process_lookup_result(entry, check_result, state);
 }
@@ -356,30 +359,25 @@ impl ImportOptions {
         let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
 
         let mut state = ImportState::new();
-        let mut scan_count: u64 = 0;
-        const PROGRESS_INTERVAL: u64 = 10;
 
         for result in crc_rx {
-            scan_count += 1;
-
-            if scan_count.is_multiple_of(PROGRESS_INTERVAL) {
-                scan_reporter.progress(scan_count);
-            }
-
             // Skip vault sub-tree
             if result.file.path.ancestors().any(|p| p == vault_canon) {
                 continue;
             }
 
             state.total_files += 1;
-            scan_reporter.discovered(&result.file.path, result.file.size, result.file.mtime_ms);
 
             let crc = match result.crc {
                 Ok(c) => c,
                 Err(e) => {
-                    scan_reporter.error(
-                        &format!("CRC computation failed: {}", e),
-                        Some(&result.file.path),
+                    // Report failed item
+                    scan_reporter.item(
+                        &result.file.path,
+                        result.file.size,
+                        result.file.mtime_ms,
+                        ItemStatus::Failed,
+                        Some(&format!("CRC computation failed: {}", e)),
                     );
                     state.failed_files += 1;
                     continue;
@@ -402,11 +400,8 @@ impl ImportOptions {
                 Some(db) => check_duplicate(&entry, db, vault_root, None),
                 None => pipeline::CheckResult::New,
             };
-            classify_and_emit(entry, check_result, show_dup, scan_reporter, &mut state);
+            classify_and_emit(entry, check_result, scan_reporter, &mut state);
         }
-
-        // Final progress tick
-        scan_reporter.progress(scan_count);
 
         Ok(state)
     }
@@ -425,11 +420,10 @@ impl ImportOptions {
             std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
 
         let mut state = ImportState::new();
-        let mut scan_count: u64 = 0;
 
         for path in paths {
             if !path.exists() {
-                scan_reporter.error("file not found", Some(path));
+                scan_reporter.item(path, 0, 0, ItemStatus::Failed, Some("file not found"));
                 continue;
             }
             if path.is_dir() {
@@ -440,23 +434,20 @@ impl ImportOptions {
             }
 
             state.total_files += 1;
-            scan_count += 1;
 
             let meta = std::fs::metadata(path);
-            scan_reporter.discovered(
-                path,
-                meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                meta.ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
-            );
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime_ms = meta
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
 
             let entry = match build_crc_entry(path) {
                 Ok(e) => e,
                 Err(e) => {
-                    scan_reporter.error(&format!("CRC computation failed: {}", e), Some(path));
+                    scan_reporter.item(path, size, mtime_ms, ItemStatus::Failed, Some(&format!("CRC computation failed: {}", e)));
                     state.failed_files += 1;
                     continue;
                 }
@@ -466,10 +457,8 @@ impl ImportOptions {
                 Some(db) => check_duplicate(&entry, db, vault_root, None),
                 None => pipeline::CheckResult::New,
             };
-            classify_and_emit(entry, check_result, show_dup, scan_reporter, &mut state);
+            classify_and_emit(entry, check_result, scan_reporter, &mut state);
         }
-
-        scan_reporter.progress(scan_count);
 
         Ok(state)
     }
@@ -654,8 +643,6 @@ impl ImportOptions {
         }
 
         let total = prepared.len() as u64;
-        let copy_errors: Arc<Mutex<HashMap<PathBuf, String>>> =
-            Arc::new(Mutex::new(HashMap::new()));
         let transfer_strategies = strategy.to_transfer_strategies();
 
         let copied = {
@@ -664,23 +651,23 @@ impl ImportOptions {
             let result: Vec<pipeline::types::CrcEntry> = prepared
                 .into_par_iter()
                 .filter_map(|(src, dest, size, mtime, crc, raw_id)| {
-                    if let Some(parent) = dest.parent()
-                        && let Err(e) = fs::create_dir_all(parent)
-                    {
-                        let msg = e.to_string();
-                        reporter.error(&msg, Some(parent));
-                        copy_errors.lock().unwrap().insert(src.clone(), msg);
-                        return None;
+                    // Create parent directory
+                    if let Some(parent) = dest.parent() {
+                        if let Err(e) = fs::create_dir_all(parent) {
+                            let msg = e.to_string();
+                            reporter.item_started(&src, &dest, size);
+                            reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Failed { message: msg });
+                            return None;
+                        }
                     }
 
-                    // reporter 内部会计算相对路径，这里传入绝对路径
                     reporter.item_started(&src, &dest, size);
 
                     let src_rel = src.strip_prefix(source_canon).unwrap_or(&src);
                     match transfer_file(source_canon, src_rel, vault_root, &dest, &transfer_strategies)
                     {
                         Ok(_) => {
-                            reporter.item_finished(&src, &dest, size);
+                            reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Ok);
                             Some(pipeline::types::CrcEntry {
                                 file: pipeline::types::FileEntry {
                                     path: dest,
@@ -694,8 +681,7 @@ impl ImportOptions {
                             })
                         }
                         Err(e) => {
-                            reporter.item_finished(&src, &dest, size);
-                            copy_errors.lock().unwrap().insert(src, e.to_string());
+                            reporter.item_finished(&src, &dest, &crate::reporting::CopyItemResult::Failed { message: e.to_string() });
                             None
                         }
                     }
@@ -704,9 +690,9 @@ impl ImportOptions {
 
             reporter.finish();
             result
-        }; // reporter dropped → bar cleared
+        };
 
-        let error_count = copy_errors.lock().unwrap().len();
+        let error_count = total as usize - copied.len();
         (copied, error_count)
     }
 
@@ -826,7 +812,6 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct ScanLog {
-        discovered: Vec<PathBuf>,
         classified: Vec<(PathBuf, ItemStatus)>,
         finished: bool,
     }
@@ -835,19 +820,13 @@ mod tests {
     struct TestScanReporter(Arc<Mutex<ScanLog>>);
 
     impl ScanReporter for TestScanReporter {
-        fn discovered(&self, path: &Path, _size: u64, _mtime_ms: i64) {
-            self.0.lock().unwrap().discovered.push(path.to_path_buf());
-        }
-        fn classified(&self, path: &Path, _size: u64, status: ItemStatus, _detail: Option<&str>) {
+        fn item(&self, path: &Path, _size: u64, _mtime_ms: i64, status: ItemStatus, _error: Option<&str>) {
             self.0
                 .lock()
                 .unwrap()
                 .classified
                 .push((path.to_path_buf(), status));
         }
-        fn progress(&self, _completed: u64) {}
-        fn warning(&self, _message: &str, _path: Option<&Path>) {}
-        fn error(&self, _message: &str, _path: Option<&Path>) {}
         fn preflight(
             &self,
             _total_scanned: usize,
@@ -915,18 +894,16 @@ mod tests {
     // ── Tests ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_scan_reporter_records_discovered() {
+    fn test_scan_reporter_records_items() {
         let log = Arc::new(Mutex::new(ScanLog::default()));
         let rb = TestReporterBuilder {
             log: Arc::clone(&log),
         };
         let reporter = rb.scan_reporter(Path::new("/source"));
-        reporter.discovered(Path::new("/source/photo.jpg"), 1024, 0);
-        reporter.classified(Path::new("/source/photo.jpg"), 1024, ItemStatus::New, None);
+        reporter.item(Path::new("/source/photo.jpg"), 1024, 0, ItemStatus::New, None);
         reporter.finish();
 
         let log = log.lock().unwrap();
-        assert_eq!(log.discovered.len(), 1);
         assert_eq!(log.classified.len(), 1);
         assert_eq!(log.classified[0].1, ItemStatus::New);
         assert!(log.finished);
@@ -937,7 +914,7 @@ mod tests {
         use crate::reporting::NoopReporterBuilder;
         let rb = NoopReporterBuilder;
         let sr = rb.scan_reporter(Path::new("/"));
-        sr.discovered(Path::new("/test.jpg"), 1024, 0);
+        sr.item(Path::new("/test.jpg"), 1024, 0, ItemStatus::New, None);
         ScanReporter::finish(&sr);
         // No assertions needed — just verify it compiles and runs without panic.
     }
