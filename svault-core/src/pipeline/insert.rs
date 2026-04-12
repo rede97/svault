@@ -6,6 +6,28 @@ use crate::db::Db;
 use crate::pipeline::types::{FileHash, HashResult, PipelineSummary};
 use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager, ItemStatus, SessionType, ManifestSummary};
 
+/// Convert a path to Unix-style string (forward slashes) for cross-platform storage.
+/// 
+/// On Windows, paths use backslash separators which are incompatible with Linux.
+/// We store all paths with forward slashes to ensure the database is portable
+/// between Windows and Linux.
+fn path_to_unix_string(path: &Path) -> String {
+    let mut result = String::new();
+    for (i, component) in path.components().enumerate() {
+        if i > 0 {
+            result.push('/');
+        }
+        // Convert each component to string
+        if let Some(s) = component.as_os_str().to_str() {
+            result.push_str(s);
+        } else {
+            // Fallback for non-UTF8 paths (use lossy conversion)
+            result.push_str(&component.as_os_str().to_string_lossy());
+        }
+    }
+    result
+}
+
 /// Options for batch insertion.
 pub struct InsertOptions<'a> {
     pub vault_root: &'a Path,
@@ -67,7 +89,8 @@ pub fn batch_insert(
         }
 
         let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
-        let rel_str = rel_path.to_string_lossy().into_owned();
+        // Use Unix-style paths for cross-platform database compatibility
+        let rel_str = path_to_unix_string(rel_path);
         let src_path = r.src_path.clone().unwrap_or_else(|| r.path.clone());
 
         // Get hashes early for manifest recording
@@ -201,7 +224,8 @@ pub fn batch_insert(
 
             for r in &files_to_insert {
                 let rel_path = r.path.strip_prefix(opts.vault_root).unwrap_or(&r.path);
-                let rel_str = rel_path.to_string_lossy();
+                // Use Unix-style paths for cross-platform database compatibility
+                let rel_str = path_to_unix_string(rel_path);
 
                 let (identity_hash, hash_col) = match &r.hash {
                     FileHash::Fast(xxh3) => (xxh3.as_slice(), "xxh3_128"),
@@ -252,7 +276,7 @@ pub fn batch_insert(
     let payload = serde_json::json!({
         "session_id": opts.session_id,
         "session_type": opts.session_type.to_string(),
-        "source": opts.source_root.map(|p| p.to_string_lossy()).unwrap_or_default(),
+        "source": opts.source_root.map(|p| path_to_unix_string(p)).unwrap_or_default(),
         "total_files": summary.total,
         "added": summary.added,
         "duplicate": summary.duplicate,

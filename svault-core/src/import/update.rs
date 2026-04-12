@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::path::Path;
 
 use jwalk::WalkDir;
 use rayon::prelude::*;
@@ -16,6 +17,22 @@ use crate::hash::{sha256_file, xxh3_128_file};
 use crate::reporting::{
     HashReporter, Interactor, MatchConfidence, ReporterBuilder, UpdateApplyReporter,
 };
+
+/// Convert a path to Unix-style string (forward slashes) for cross-platform storage.
+fn path_to_unix_string(path: &Path) -> String {
+    let mut result = String::new();
+    for (i, component) in path.components().enumerate() {
+        if i > 0 {
+            result.push('/');
+        }
+        if let Some(s) = component.as_os_str().to_str() {
+            result.push_str(s);
+        } else {
+            result.push_str(&component.as_os_str().to_string_lossy());
+        }
+    }
+    result
+}
 
 /// Summary of an `update` operation.
 #[derive(Debug, Default)]
@@ -167,7 +184,7 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
                             return Some((
                                 UpdateMatch {
                                     old_path: candidate.path.clone(),
-                                    new_path: rel_new.to_string_lossy().into_owned(),
+                                    new_path: path_to_unix_string(rel_new),
                                     file_id: candidate.id,
                                 },
                                 confidence,
