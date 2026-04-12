@@ -14,6 +14,8 @@
 //! | `TerminalUpdateApplyReporter` | `UpdateApplyReporter`| update (apply phase)|
 //! | `TerminalVerifyReporter`      | `VerifyReporter`     | verify command      |
 //! | `TerminalHashReporter` | `HashReporter` | background-hash |
+//! | `TerminalHistorySessionsReporter` | `HistorySessionsReporter` | history sessions |
+//! | `TerminalHistoryItemsReporter` | `HistoryItemsReporter` | history items |
 //!
 //! Each reporter owns exactly one `ProgressBar` added to the shared
 //! `MultiProgress`.  `Drop` calls `finish_and_clear()` as a safety net
@@ -36,7 +38,9 @@ use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use svault_core::import::RecheckStatus;
 use svault_core::reporting::{
-    AddSummaryReporter, CopyItemResult, CopyReporter, HashReporter, InsertReporter, Interactor,
+    AddSummaryReporter, CopyItemResult, CopyReporter, HashReporter, HistoryItemsQuery,
+    HistoryItemsReporter, HistoryItemsSummary, HistoryItemRow, HistorySessionsQuery,
+    HistorySessionsReporter, HistorySessionsSummary, HistorySessionRow, InsertReporter, Interactor,
     ItemStatus, MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter,
     UpdateApplyReporter, VerifyReporter,
 };
@@ -451,13 +455,13 @@ impl HashReporter for TerminalHashReporter {
             output.push('\n');
             output.push_str(&format!("{}\n", style("Matches found:").bold()));
             for (old, new, conf) in matches.iter() {
-                let icon = match conf {
-                    MatchConfidence::Definitive => style("✓").green(),
-                    MatchConfidence::Fast => style("~").yellow(),
+                let label = match conf {
+                    MatchConfidence::Definitive => style("[Definitive]").green(),
+                    MatchConfidence::Fast => style("[Fast match]").yellow(),
                 };
                 output.push_str(&format!(
                     "  {} {} -> {}\n",
-                    icon,
+                    label,
                     style(old),
                     style(new).green()
                 ));
@@ -469,16 +473,14 @@ impl HashReporter for TerminalHashReporter {
             let fast = matches.len() - definitive;
             if definitive > 0 {
                 output.push_str(&format!(
-                    "    {} {} definitive (SHA-256)\n",
-                    style("✓").green(),
-                    definitive
+                    "    {} match(es) with SHA-256 (definitive)\n",
+                    style(definitive).green().bold()
                 ));
             }
             if fast > 0 {
                 output.push_str(&format!(
-                    "    {} {} fast (XXH3-128 only)\n",
-                    style("~").yellow(),
-                    fast
+                    "    {} match(es) with XXH3-128 only (fast)\n",
+                    style(fast).yellow().bold()
                 ));
             }
         }
@@ -683,6 +685,137 @@ impl VerifyReporter for TerminalVerifyReporter {
 }
 
 impl Drop for TerminalVerifyReporter {
+    fn drop(&mut self) {
+        self.pb.finish_and_clear();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History sessions reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Terminal reporter for the `history sessions` command.
+pub struct TerminalHistorySessionsReporter {
+    pb: ProgressBar,
+}
+
+impl TerminalHistorySessionsReporter {
+    /// Print a line through the progress bar for synchronized output.
+    fn println<S: AsRef<str>>(&self, s: S) {
+        self.pb.println(s);
+    }
+}
+
+impl HistorySessionsReporter for TerminalHistorySessionsReporter {
+    fn started(&self, _query: &HistorySessionsQuery) {
+        // No progress bar for history - we print as we go
+    }
+
+    fn item(&self, session: &HistorySessionRow) {
+        let status = if session.failed > 0 {
+            format!("{} added, {} dup, {} failed", 
+                style(session.added).green(),
+                session.duplicate,
+                style(session.failed).red())
+        } else {
+            format!("{} added, {} dup", 
+                style(session.added).green(),
+                session.duplicate)
+        };
+        
+        // Format timestamp
+        let datetime = chrono::DateTime::from_timestamp_millis(session.started_at_ms)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        // Session type label
+        let type_label = match session.session_type.as_str() {
+            "import" => style("import").cyan(),
+            "add" => style("add").green(),
+            "update" => style("update").yellow(),
+            "recheck" => style("recheck").blue(),
+            _ => style("unknown").dim(),
+        };
+        
+        self.println(format!(
+            "  [{:9}] {} {} {} {} [{}]",
+            type_label,
+            style(datetime).dim(),
+            style(&session.session_id[..session.session_id.len().min(8)]).cyan(),
+            style(&session.source).yellow(),
+            status,
+            session.total_files
+        ));
+    }
+
+    fn finish(&self, summary: &HistorySessionsSummary) {
+        if summary.has_more {
+            self.println(format!(
+                "\n  {} (showing {} of {})",
+                style("... more sessions available").dim(),
+                summary.returned,
+                summary.total
+            ));
+        }
+    }
+}
+
+impl Drop for TerminalHistorySessionsReporter {
+    fn drop(&mut self) {
+        self.pb.finish_and_clear();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History items reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Terminal reporter for the `history items` command.
+pub struct TerminalHistoryItemsReporter {
+    pb: ProgressBar,
+}
+
+impl TerminalHistoryItemsReporter {
+    /// Print a line through the progress bar for synchronized output.
+    fn println<S: AsRef<str>>(&self, s: S) {
+        self.pb.println(s);
+    }
+}
+
+impl HistoryItemsReporter for TerminalHistoryItemsReporter {
+    fn started(&self, session_id: &str, _query: &HistoryItemsQuery) {
+        self.println(format!("  Session: {}", style(session_id).cyan().bold()));
+    }
+
+    fn item(&self, item: &HistoryItemRow) {
+        let status_style = match item.status.as_str() {
+            "added" => style("added").green(),
+            "duplicate" => style("duplicate").dim(),
+            "failed" => style("failed").red(),
+            _ => style(item.status.as_str()),
+        };
+        
+        self.println(format!(
+            "  {} {} -> {}",
+            status_style,
+            style(&item.source_path).yellow(),
+            style(&item.vault_path).dim()
+        ));
+    }
+
+    fn finish(&self, summary: &HistoryItemsSummary) {
+        if summary.has_more {
+            self.println(format!(
+                "\n  {} (showing {} of {} items)",
+                style("... more items available").dim(),
+                summary.returned,
+                summary.total
+            ));
+        }
+    }
+}
+
+impl Drop for TerminalHistoryItemsReporter {
     fn drop(&mut self) {
         self.pb.finish_and_clear();
     }
@@ -1194,6 +1327,8 @@ impl ReporterBuilder for TerminalReporterBuilder {
     type Recheck = TerminalRecheckReporter;
     type UpdateApply = TerminalUpdateApplyReporter;
     type Verify = TerminalVerifyReporter;
+    type HistorySessions = TerminalHistorySessionsReporter;
+    type HistoryItems = TerminalHistoryItemsReporter;
 
     fn scan_reporter(&self, source: &Path) -> TerminalScanReporter {
         let pb = self.add_managed_spinner(|pb| {
@@ -1340,6 +1475,22 @@ impl ReporterBuilder for TerminalReporterBuilder {
             pb.set_prefix("Verifying");
         });
         TerminalVerifyReporter { pb }
+    }
+
+    fn history_sessions_reporter(&self, _query: &HistorySessionsQuery) -> TerminalHistorySessionsReporter {
+        // Hidden bar acts as a synchronized text output carrier
+        let pb = self.add_managed_hidden(|pb| {
+            pb.set_style(ProgressStyle::default_bar().template("").unwrap());
+        });
+        TerminalHistorySessionsReporter { pb }
+    }
+
+    fn history_items_reporter(&self, _session_id: &str, _query: &HistoryItemsQuery) -> TerminalHistoryItemsReporter {
+        // Hidden bar acts as a synchronized text output carrier
+        let pb = self.add_managed_hidden(|pb| {
+            pb.set_style(ProgressStyle::default_bar().template("").unwrap());
+        });
+        TerminalHistoryItemsReporter { pb }
     }
 }
 

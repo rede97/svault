@@ -178,9 +178,10 @@ pub fn run_add<RB: ReporterBuilder>(
     let insert_opts = pipeline::insert::InsertOptions {
         vault_root: &opts.vault_root,
         session_id: &session_id,
-        write_manifest: false,
-        source_root: None,
+        write_manifest: true,  // Enable manifest for history tracking
+        source_root: Some(&opts.path),
         force: false,
+        session_type: crate::verify::manifest::SessionType::Add,
     };
 
     let pipeline_summary = pipeline::insert::batch_insert(hash_results, db, insert_opts, None)?;

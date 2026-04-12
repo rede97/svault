@@ -4,9 +4,9 @@ mod json;
 mod pipe;
 mod terminal;
 
-pub use json::JsonReporterBuilder;
+pub use json::{JsonHistoryItemsReporter, JsonHistorySessionsReporter, JsonReporterBuilder};
 pub use pipe::PipeReporterBuilder;
-pub use terminal::{SuspendingInteractor, TerminalReporterBuilder};
+pub use terminal::{SuspendingInteractor, TerminalHistoryItemsReporter, TerminalHistorySessionsReporter, TerminalReporterBuilder};
 
 // This module provides reporter builders and interactors for CLI output.
 //

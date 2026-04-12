@@ -80,7 +80,10 @@ pub fn run_recheck<RB: ReporterBuilder>(
         .clone()
         .into_par_iter()
         .map(|record| {
-            let vault_abs = opts.vault_root.join(&record.dest_path);
+            let vault_abs = record.dest_path
+                .as_ref()
+                .map(|p| opts.vault_root.join(p))
+                .unwrap_or_else(|| opts.vault_root.join("unknown"));
 
             // Signal start of rechecking this file pair
             reporter.item_started(&record.src_path, &vault_abs);

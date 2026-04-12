@@ -128,6 +128,8 @@ impl ReporterBuilder for PipeReporterBuilder {
     type Recheck = Noop;
     type UpdateApply = Noop;
     type Verify = Noop;
+    type HistorySessions = Noop;
+    type HistoryItems = Noop;
 
     fn scan_reporter(&self, src: &Path) -> PipeScanReporter {
         // Canonicalise so strip_prefix works correctly against absolute paths
@@ -172,6 +174,14 @@ impl ReporterBuilder for PipeReporterBuilder {
     }
 
     fn verify_reporter(&self, _total: u64) -> Noop {
+        Noop
+    }
+
+    fn history_sessions_reporter(&self, _query: &svault_core::reporting::HistorySessionsQuery) -> Noop {
+        Noop
+    }
+
+    fn history_items_reporter(&self, _session_id: &str, _query: &svault_core::reporting::HistoryItemsQuery) -> Noop {
         Noop
     }
 }

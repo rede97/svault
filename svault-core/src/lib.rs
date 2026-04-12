@@ -3,6 +3,7 @@ pub mod context;
 pub mod db;
 pub mod fs;
 pub mod hash;
+pub mod history;
 pub mod import;
 pub mod lock;
 pub mod media;

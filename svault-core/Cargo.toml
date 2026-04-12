@@ -27,12 +27,10 @@ dashmap = "6"
 rayon = "1"
 rich_rust = "0.2"
 kamadak-exif = "0.5"
-log = "0.4"
 regex = "1"
 chrono = "0.4"
 fs2 = "0.4"
 thiserror = "1"
-env_logger = "0.11"
 clap = { version = "4", features = ["derive"], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]

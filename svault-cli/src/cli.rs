@@ -40,6 +40,50 @@ pub enum OutputFormat {
 }
 
 #[derive(Subcommand)]
+pub enum HistorySubcommand {
+    /// List import sessions (batches)
+    Sessions {
+        /// Filter by source path
+        #[arg(long, value_name = "PATH")]
+        source: Option<String>,
+
+        /// Show sessions from this time (RFC 3339 or YYYY-MM-DD)
+        #[arg(long, value_name = "DATETIME")]
+        from: Option<String>,
+
+        /// Show sessions up to this time (RFC 3339 or YYYY-MM-DD)
+        #[arg(long, value_name = "DATETIME")]
+        to: Option<String>,
+
+        /// Maximum number of sessions to show
+        #[arg(long, default_value = "50", value_name = "N")]
+        limit: usize,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0", value_name = "N")]
+        offset: usize,
+    },
+    /// List items in a specific import session
+    Items {
+        /// Session ID (required)
+        #[arg(long, value_name = "ID", required = true)]
+        session: String,
+
+        /// Filter by status
+        #[arg(long, value_name = "STATUS")]
+        status: Option<String>,
+
+        /// Maximum number of items to show
+        #[arg(long, default_value = "50", value_name = "N")]
+        limit: usize,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0", value_name = "N")]
+        offset: usize,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum Command {
     /// Initialize a new vault
     Init,
@@ -192,33 +236,12 @@ pub enum Command {
     Status,
 
     /// Query the event log
+    /// Query import history (sessions or items)
     ///
-    /// Default shows import/add/update sessions. Use --verbose to show files.
-    /// Use --events for low-level event stream (import, add, update, file.imported, etc.)
+    /// Default shows import sessions (batches). Use subcommands for detailed queries.
     History {
-        /// Filter to events for this file
-        #[arg(long, value_name = "PATH")]
-        file: Option<std::path::PathBuf>,
-
-        /// Show events from this time (RFC 3339 or YYYY-MM-DD)
-        #[arg(long, value_name = "DATETIME")]
-        from: Option<String>,
-
-        /// Show events up to this time (RFC 3339 or YYYY-MM-DD)
-        #[arg(long, value_name = "DATETIME")]
-        to: Option<String>,
-
-        /// Show low-level event stream instead of session view
-        #[arg(long, group = "display_mode")]
-        events: bool,
-
-        /// Maximum number of sessions/events to show
-        #[arg(long, default_value = "50", value_name = "N")]
-        limit: usize,
-
-        /// Show detailed file list for each session
-        #[arg(short, long)]
-        verbose: bool,
+        #[command(subcommand)]
+        subcommand: Option<HistorySubcommand>,
     },
 
     /// Clone a subset to a working directory

@@ -281,6 +281,93 @@ pub trait UpdateApplyReporter: Send + Sync {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// History reporters
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Query parameters for history sessions query.
+#[derive(Debug, Clone, Default)]
+pub struct HistorySessionsQuery {
+    pub limit: usize,
+    pub offset: usize,
+    pub source: Option<String>,
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+}
+
+/// Query parameters for history items query.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryItemsQuery {
+    pub limit: usize,
+    pub offset: usize,
+    pub status: Option<String>,
+}
+
+/// Row data for a history session.
+#[derive(Debug, Clone)]
+pub struct HistorySessionRow {
+    pub session_id: String,
+    pub session_type: String,
+    pub source: String,
+    pub started_at_ms: i64,
+    pub total_files: usize,
+    pub added: usize,
+    pub duplicate: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+/// Row data for a history item.
+#[derive(Debug, Clone)]
+pub struct HistoryItemRow {
+    /// Source file path
+    pub source_path: String,
+    /// Destination path in vault
+    pub vault_path: String,
+    /// Item status (added, duplicate, failed, etc.)
+    pub status: String,
+    /// File size in bytes
+    pub size: u64,
+    /// Modification time (Unix timestamp ms)
+    pub mtime_ms: i64,
+}
+
+/// Summary for history sessions query.
+#[derive(Debug, Clone)]
+pub struct HistorySessionsSummary {
+    pub total: usize,
+    pub returned: usize,
+    pub has_more: bool,
+}
+
+/// Summary for history items query.
+#[derive(Debug, Clone)]
+pub struct HistoryItemsSummary {
+    pub total: usize,
+    pub returned: usize,
+    pub has_more: bool,
+}
+
+/// Reporter for history sessions query.
+pub trait HistorySessionsReporter: Send + Sync {
+    /// Query has started.
+    fn started(&self, query: &HistorySessionsQuery);
+    /// A session row is reported.
+    fn item(&self, row: &HistorySessionRow);
+    /// Query is complete.
+    fn finish(&self, summary: &HistorySessionsSummary);
+}
+
+/// Reporter for history items query.
+pub trait HistoryItemsReporter: Send + Sync {
+    /// Query has started.
+    fn started(&self, session_id: &str, query: &HistoryItemsQuery);
+    /// An item row is reported.
+    fn item(&self, row: &HistoryItemRow);
+    /// Query is complete.
+    fn finish(&self, summary: &HistoryItemsSummary);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -321,6 +408,13 @@ pub trait ReporterBuilder: Send + Sync {
     type Verify: VerifyReporter;
 
     fn verify_reporter(&self, total: u64) -> Self::Verify;
+
+    // ── history command ───────────────────────────────────────────────────
+    type HistorySessions: HistorySessionsReporter;
+    type HistoryItems: HistoryItemsReporter;
+
+    fn history_sessions_reporter(&self, query: &HistorySessionsQuery) -> Self::HistorySessions;
+    fn history_items_reporter(&self, session_id: &str, query: &HistoryItemsQuery) -> Self::HistoryItems;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -404,6 +498,18 @@ impl VerifyReporter for Noop {
     fn summary(&self, _: &crate::verify::VerifySummary) {}
 }
 
+impl HistorySessionsReporter for Noop {
+    fn started(&self, _: &HistorySessionsQuery) {}
+    fn item(&self, _: &HistorySessionRow) {}
+    fn finish(&self, _: &HistorySessionsSummary) {}
+}
+
+impl HistoryItemsReporter for Noop {
+    fn started(&self, _: &str, _: &HistoryItemsQuery) {}
+    fn item(&self, _: &HistoryItemRow) {}
+    fn finish(&self, _: &HistoryItemsSummary) {}
+}
+
 /// No-op builder — all phases use [`Noop`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopReporterBuilder;
@@ -417,6 +523,8 @@ impl ReporterBuilder for NoopReporterBuilder {
     type Recheck = Noop;
     type UpdateApply = Noop;
     type Verify = Noop;
+    type HistorySessions = Noop;
+    type HistoryItems = Noop;
 
     fn scan_reporter(&self, _: &Path) -> Noop {
         Noop
@@ -443,6 +551,12 @@ impl ReporterBuilder for NoopReporterBuilder {
         Noop
     }
     fn verify_reporter(&self, _: u64) -> Noop {
+        Noop
+    }
+    fn history_sessions_reporter(&self, _: &HistorySessionsQuery) -> Noop {
+        Noop
+    }
+    fn history_items_reporter(&self, _: &str, _: &HistoryItemsQuery) -> Noop {
         Noop
     }
 }

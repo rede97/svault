@@ -761,6 +761,7 @@ impl ImportOptions {
                 write_manifest: true,
                 source_root: Some(source_root),
                 force,
+                session_type: crate::verify::manifest::SessionType::Import,
             };
 
             let result =
@@ -803,7 +804,7 @@ impl ImportOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reporting::{ItemStatus, Noop, ReporterBuilder, ScanReporter};
+    use crate::reporting::{HistoryItemsQuery, HistorySessionsQuery, ItemStatus, Noop, ReporterBuilder, ScanReporter};
     use std::sync::{Arc, Mutex};
 
     // ── Test scan reporter ────────────────────────────────────────────────────
@@ -859,6 +860,8 @@ mod tests {
         type Recheck = Noop;
         type UpdateApply = Noop;
         type Verify = Noop;
+        type HistorySessions = Noop;
+        type HistoryItems = Noop;
 
         fn scan_reporter(&self, _source: &Path) -> TestScanReporter {
             TestScanReporter(Arc::clone(&self.log))
@@ -885,6 +888,12 @@ mod tests {
             Noop
         }
         fn verify_reporter(&self, _total: u64) -> Noop {
+            Noop
+        }
+        fn history_sessions_reporter(&self, _query: &HistorySessionsQuery) -> Noop {
+            Noop
+        }
+        fn history_items_reporter(&self, _session_id: &str, _query: &HistoryItemsQuery) -> Noop {
             Noop
         }
     }

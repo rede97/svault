@@ -10,13 +10,53 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Item status in manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemStatus {
+    #[default]
+    /// Successfully imported/added
+    Added,
+    /// Duplicate (already exists)
+    Duplicate,
+    /// Failed (hash error or other issue)
+    Failed,
+    /// Skipped (force not set, already tracked)
+    Skipped,
+    /// Missing (detected during update)
+    Missing,
+    /// Moved (detected during update)
+    Moved,
+    /// Relinked (hardlink converted to copy)
+    Relinked,
+    /// Unchanged (update check passed)
+    Unchanged,
+}
+
+impl std::fmt::Display for ItemStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ItemStatus::Added => "added",
+            ItemStatus::Duplicate => "duplicate",
+            ItemStatus::Failed => "failed",
+            ItemStatus::Skipped => "skipped",
+            ItemStatus::Missing => "missing",
+            ItemStatus::Moved => "moved",
+            ItemStatus::Relinked => "relinked",
+            ItemStatus::Unchanged => "unchanged",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// Detailed import record for a single file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRecord {
     /// Source file path (absolute)
     pub src_path: PathBuf,
-    /// Destination path in vault (relative)
-    pub dest_path: PathBuf,
+    /// Destination path in vault (relative), may be empty for failed/duplicate
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dest_path: Option<PathBuf>,
     /// File size in bytes
     pub size: u64,
     /// Modification time (Unix timestamp ms)
@@ -31,6 +71,34 @@ pub struct ImportRecord {
     pub sha256: Option<String>,
     /// Import timestamp
     pub imported_at: i64,
+    /// Item status
+    #[serde(default)]
+    pub status: ItemStatus,
+    /// Error message for failed items
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Session type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionType {
+    Import,
+    Add,
+    Update,
+    Recheck,
+}
+
+impl std::fmt::Display for SessionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SessionType::Import => "import",
+            SessionType::Add => "add",
+            SessionType::Update => "update",
+            SessionType::Recheck => "recheck",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /// Import session manifest.
@@ -38,14 +106,30 @@ pub struct ImportRecord {
 pub struct ImportManifest {
     /// Session ID
     pub session_id: String,
+    /// Session type
+    #[serde(default)]
+    pub session_type: SessionType,
     /// Source directory
     pub source_root: PathBuf,
     /// Import timestamp
     pub imported_at: i64,
     /// Hash algorithm used
     pub hash_algorithm: String,
-    /// Imported files
+    /// All files in this session (including duplicate/failed)
     pub files: Vec<ImportRecord>,
+    /// Summary counts
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<ManifestSummary>,
+}
+
+/// Summary counts for manifest.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ManifestSummary {
+    pub total: usize,
+    pub added: usize,
+    pub duplicate: usize,
+    pub failed: usize,
+    pub skipped: usize,
 }
 
 impl ImportManifest {
@@ -70,7 +154,36 @@ impl ImportManifest {
 
     /// Find record by destination path.
     pub fn find_by_dest(&self, dest_path: &Path) -> Option<&ImportRecord> {
-        self.files.iter().find(|f| f.dest_path == dest_path)
+        self.files.iter().find(|f| f.dest_path.as_ref().map(|p| p.as_path()) == Some(dest_path))
+    }
+
+    /// Get files filtered by status.
+    pub fn files_by_status(&self, status: ItemStatus) -> Vec<&ImportRecord> {
+        self.files.iter().filter(|f| f.status == status).collect()
+    }
+
+    /// Calculate summary from files if not already set.
+    pub fn calculate_summary(&self) -> ManifestSummary {
+        if let Some(s) = self.summary {
+            return s;
+        }
+        let mut summary = ManifestSummary {
+            total: self.files.len(),
+            added: 0,
+            duplicate: 0,
+            failed: 0,
+            skipped: 0,
+        };
+        for f in &self.files {
+            match f.status {
+                ItemStatus::Added => summary.added += 1,
+                ItemStatus::Duplicate => summary.duplicate += 1,
+                ItemStatus::Failed => summary.failed += 1,
+                ItemStatus::Skipped => summary.skipped += 1,
+                _ => {}
+            }
+        }
+        summary
     }
 
     /// Get all source paths.

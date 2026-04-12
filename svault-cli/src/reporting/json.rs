@@ -4,9 +4,13 @@ use std::path::Path;
 
 use serde_json::json;
 use svault_core::reporting::{
-    AddSummaryReporter, CopyReporter, HashReporter, InsertReporter,
+    AddSummaryReporter, CopyReporter, CopyItemResult, HashReporter, InsertReporter,
     ItemStatus, RecheckReporter, ReporterBuilder, ScanReporter,
     UpdateApplyReporter, VerifyReporter,
+    HistorySessionsReporter, HistoryItemsReporter,
+    HistorySessionsQuery, HistoryItemsQuery,
+    HistorySessionRow, HistoryItemRow,
+    HistorySessionsSummary, HistoryItemsSummary,
 };
 use svault_core::verify::{VerifyResult, VerifySummary};
 
@@ -29,6 +33,8 @@ impl ReporterBuilder for JsonReporterBuilder {
     type Recheck = JsonRecheckReporter;
     type UpdateApply = JsonUpdateApplyReporter;
     type Verify = JsonVerifyReporter;
+    type HistorySessions = JsonHistorySessionsReporter;
+    type HistoryItems = JsonHistoryItemsReporter;
 
     fn scan_reporter(&self, _source: &Path) -> JsonScanReporter {
         JsonScanReporter::new()
@@ -50,8 +56,8 @@ impl ReporterBuilder for JsonReporterBuilder {
         JsonAddSummaryReporter::new()
     }
 
-    fn recheck_reporter(&self, total: u64) -> JsonRecheckReporter {
-        JsonRecheckReporter::new(total)
+    fn recheck_reporter(&self, _total: u64) -> JsonRecheckReporter {
+        JsonRecheckReporter
     }
 
     fn update_hash_reporter(&self, _source: &Path, _total: u64) -> JsonHashReporter {
@@ -62,8 +68,16 @@ impl ReporterBuilder for JsonReporterBuilder {
         JsonUpdateApplyReporter::new(total)
     }
 
-    fn verify_reporter(&self, total: u64) -> JsonVerifyReporter {
-        JsonVerifyReporter::new(total)
+    fn verify_reporter(&self, _total: u64) -> JsonVerifyReporter {
+        JsonVerifyReporter
+    }
+
+    fn history_sessions_reporter(&self, _query: &HistorySessionsQuery) -> JsonHistorySessionsReporter {
+        JsonHistorySessionsReporter::new()
+    }
+
+    fn history_items_reporter(&self, _session_id: &str, _query: &HistoryItemsQuery) -> JsonHistoryItemsReporter {
+        JsonHistoryItemsReporter::new()
     }
 }
 
@@ -71,6 +85,105 @@ macro_rules! emit_json {
     ($obj:expr) => {
         println!("{}", serde_json::to_string(&$obj).unwrap());
     };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History sessions reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct JsonHistorySessionsReporter;
+
+impl JsonHistorySessionsReporter {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl HistorySessionsReporter for JsonHistorySessionsReporter {
+    fn started(&self, query: &HistorySessionsQuery) {
+        emit_json!(json!({
+            "event": "history_sessions_started",
+            "query": {
+                "limit": query.limit,
+                "offset": query.offset,
+                "source": query.source,
+                "from_ms": query.from_ms,
+                "to_ms": query.to_ms
+            }
+        }));
+    }
+
+    fn item(&self, row: &HistorySessionRow) {
+        emit_json!(json!({
+            "event": "history_sessions_item",
+            "session_id": row.session_id,
+            "session_type": row.session_type,
+            "source": row.source,
+            "started_at_ms": row.started_at_ms,
+            "total_files": row.total_files,
+            "added": row.added,
+            "duplicate": row.duplicate,
+            "failed": row.failed,
+            "skipped": row.skipped
+        }));
+    }
+
+    fn finish(&self, summary: &HistorySessionsSummary) {
+        emit_json!(json!({
+            "event": "history_sessions_finished",
+            "summary": {
+                "total": summary.total,
+                "returned": summary.returned
+            }
+        }));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History items reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct JsonHistoryItemsReporter;
+
+impl JsonHistoryItemsReporter {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl HistoryItemsReporter for JsonHistoryItemsReporter {
+    fn started(&self, session_id: &str, query: &HistoryItemsQuery) {
+        emit_json!(json!({
+            "event": "history_items_started",
+            "session_id": session_id,
+            "query": {
+                "limit": query.limit,
+                "offset": query.offset,
+                "status": query.status
+            }
+        }));
+    }
+
+    fn item(&self, row: &HistoryItemRow) {
+        emit_json!(json!({
+            "event": "history_items_item",
+            "source_path": row.source_path,
+            "vault_path": row.vault_path,
+            "status": row.status,
+            "size": row.size,
+            "mtime_ms": row.mtime_ms
+        }));
+    }
+
+    fn finish(&self, summary: &HistoryItemsSummary) {
+        emit_json!(json!({
+            "event": "history_items_finished",
+            "summary": {
+                "total": summary.total,
+                "returned": summary.returned
+            }
+        }));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,10 +285,10 @@ impl CopyReporter for JsonCopyReporter {
         }));
     }
 
-    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, result: &svault_core::reporting::CopyItemResult) {
+    fn item_finished(&self, src_abs: &Path, dest_abs: &Path, result: &CopyItemResult) {
         let (status, error) = match result {
-            svault_core::reporting::CopyItemResult::Ok => ("ok", None),
-            svault_core::reporting::CopyItemResult::Failed { message } => ("failed", Some(message.as_str())),
+            CopyItemResult::Ok => ("ok", None),
+            CopyItemResult::Failed { message } => ("failed", Some(message.as_str())),
         };
         
         let mut event = json!({
@@ -356,13 +469,6 @@ impl AddSummaryReporter for JsonAddSummaryReporter {
 
 pub struct JsonRecheckReporter;
 
-impl JsonRecheckReporter {
-    fn new(total: u64) -> Self {
-        emit_json!(json!({"event": "recheck_started", "total": total}));
-        Self
-    }
-}
-
 impl RecheckReporter for JsonRecheckReporter {
     fn started(&self, total: usize, session_id: &str, source: &Path) {
         emit_json!(json!({
@@ -430,7 +536,6 @@ impl RecheckReporter for JsonRecheckReporter {
     }
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Update apply reporter
 // ─────────────────────────────────────────────────────────────────────────────
@@ -467,16 +572,9 @@ impl UpdateApplyReporter for JsonUpdateApplyReporter {
         emit_json!(json!({"event": "update_apply_finished"}));
     }
 
-    fn summary(
-        &self,
-        scanned: usize,
-        missing: usize,
-        matched: usize,
-        unmatched: usize,
-        updated: usize,
-    ) {
+    fn summary(&self, scanned: usize, missing: usize, matched: usize, unmatched: usize, updated: usize) {
         emit_json!(json!({
-            "event": "update_summary",
+            "event": "update_apply_summary",
             "scanned": scanned,
             "missing": missing,
             "matched": matched,
@@ -485,13 +583,11 @@ impl UpdateApplyReporter for JsonUpdateApplyReporter {
         }));
     }
 
-    fn nothing_to_update(&self) {
-        emit_json!(json!({"event": "nothing_to_update"}));
-    }
+    fn nothing_to_update(&self) {}
 
     fn dry_run_missing(&self, count: usize) {
         emit_json!(json!({
-            "event": "dry_run_missing",
+            "event": "update_dry_run_missing",
             "count": count
         }));
     }
@@ -502,13 +598,6 @@ impl UpdateApplyReporter for JsonUpdateApplyReporter {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct JsonVerifyReporter;
-
-impl JsonVerifyReporter {
-    fn new(total: u64) -> Self {
-        emit_json!(json!({"event": "verify_started", "total": total}));
-        Self
-    }
-}
 
 impl VerifyReporter for JsonVerifyReporter {
     fn started(&self, _total: u64) {}
@@ -571,5 +660,3 @@ impl VerifyReporter for JsonVerifyReporter {
         }));
     }
 }
-
-
