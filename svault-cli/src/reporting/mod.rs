@@ -1,6 +1,7 @@
 //! CLI reporting wiring.
 
 mod json;
+mod path;
 mod pipe;
 mod terminal;
 

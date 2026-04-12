@@ -505,8 +505,9 @@ impl ImportOptions {
     ) -> anyhow::Result<()> {
         let source_canon =
             dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
+        let source_canon = normalize_path(&source_canon);
 
-        let scan_reporter = reporter_builder.scan_reporter(&self.source);
+        let scan_reporter = reporter_builder.scan_reporter(&source_canon);
 
         let state = ImportOptions::collect_from_scan(
             &source_canon,
