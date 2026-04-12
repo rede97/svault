@@ -197,7 +197,9 @@ pub fn batch_insert(
     // Record single batch event (optimization #3)
     // Instead of N per-file events, record 1 summary event
     let payload = serde_json::json!({
-        "total": summary.total,
+        "session_id": opts.session_id,
+        "source": opts.source_root.map(|p| p.to_string_lossy()).unwrap_or_default(),
+        "total_files": summary.total,
         "added": summary.added,
         "duplicate": summary.duplicate,
         "failed": summary.failed,

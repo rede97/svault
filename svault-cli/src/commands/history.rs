@@ -108,7 +108,7 @@ fn show_session_history(
                     "completed_at": completed_at,
                     "source": parsed["source"].as_str(),
                     "total_files": parsed["total_files"].as_i64(),
-                    "imported": parsed.get("imported").and_then(|v| v.as_i64()),
+                    "added": parsed.get("added").and_then(|v| v.as_i64()),
                 })
             })
             .collect();
@@ -136,7 +136,7 @@ fn show_session_history(
             let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
             let source = parsed["source"].as_str().unwrap_or("unknown");
             let total_files = parsed["total_files"].as_i64().unwrap_or(0);
-            let imported = parsed.get("imported").and_then(|v| v.as_i64()).unwrap_or(0);
+            let added = parsed.get("added").and_then(|v| v.as_i64()).unwrap_or(0);
 
             let status_icon = if completed_at.is_some() {
                 style("✓").green()
@@ -155,9 +155,9 @@ fn show_session_history(
             println!("  Source: {}", style(source).blue());
             if completed_at.is_some() {
                 println!(
-                    "  Status: {} ({} of {} files)",
+                    "  Status: {} ({} of {} files added)",
                     style("completed").green(),
-                    style(imported).yellow(),
+                    style(added).yellow(),
                     style(total_files).yellow()
                 );
             } else {
