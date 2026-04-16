@@ -257,10 +257,6 @@ pub enum Command {
         /// Filter by camera model
         #[arg(long, value_name = "MODEL")]
         filter_camera: Option<String>,
-
-        /// Filter by media group type (live_photo, raw_jpeg, single)
-        #[arg(long, value_name = "TYPE")]
-        filter_group: Option<String>,
     },
 
     /// Database maintenance

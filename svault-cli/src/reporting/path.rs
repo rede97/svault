@@ -1,6 +1,9 @@
 //! Shared path helpers for CLI reporting.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+
+#[cfg(target_os = "windows")]
+use std::path::{Component, PathBuf};
 
 /// Compute a display-friendly path relative to `base`.
 ///

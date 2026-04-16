@@ -83,8 +83,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             filter_date,
             filter_camera,
-            filter_group,
-        } => commands::clone::run(output, target, filter_date, filter_camera, filter_group),
+        } => commands::clone::run(output, target, filter_date, filter_camera),
         Command::Db { command } => match command {
             DbCommand::VerifyChain => commands::db::run_verify_chain(),
             DbCommand::Dump {

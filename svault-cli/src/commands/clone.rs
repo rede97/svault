@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::OutputFormat;
 use anyhow::bail;
+use chrono::NaiveDate;
 use svault_core::context::VaultContext;
 use svault_core::db::files::FileRow;
 use svault_core::hash::xxh3_128_file;
@@ -23,27 +24,36 @@ pub struct CloneSummary {
 }
 
 /// Run clone command
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     output: OutputFormat,
     target: PathBuf,
     filter_date: Option<String>,
     filter_camera: Option<String>,
-    filter_group: Option<String>,
 ) -> anyhow::Result<()> {
     // Open vault context
     let ctx = VaultContext::open_cwd()?;
-    let vault_root = ctx.vault_root().to_path_buf();
+    let vault_root = ctx.vault_root().canonicalize()?;
     let db = ctx.db();
 
-    // Validate target is not inside vault
-    if is_subdir(&target, &vault_root) {
+    // Security check: Ensure target is not inside vault
+    // For existing paths: use canonicalize to resolve symlinks
+    // For non-existing paths: use lexical normalization (.. and .)
+    let target_for_check = if target.exists() {
+        target.canonicalize()?
+    } else {
+        normalize_path(&target)
+    };
+
+    if is_subdir(&target_for_check, &vault_root) {
         bail!(
             "Target directory cannot be inside the vault: {} is within {}",
-            target.display(),
+            target_for_check.display(),
             vault_root.display()
         );
     }
+
+    // Normalize target for use (use the checked path if it exists)
+    let target = if target.exists() { target_for_check.clone() } else { target_for_check };
 
     // Ensure target exists
     fs::create_dir_all(&target)?;
@@ -56,7 +66,6 @@ pub fn run(
         candidates,
         &filter_date,
         &filter_camera,
-        &filter_group,
     )?;
 
     let summary = if filtered.is_empty() {
@@ -92,6 +101,50 @@ fn is_subdir(child: &Path, parent: &Path) -> bool {
     }
 }
 
+/// Normalize a path to absolute form, resolving .. and . components
+/// Works even if the path doesn't exist (unlike canonicalize)
+fn normalize_path(path: &Path) -> PathBuf {
+    // First, make it absolute
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(path)
+    };
+    
+    // Manually resolve . and .. components
+    let mut components = Vec::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                components.push(component);
+            }
+            std::path::Component::CurDir => {
+                // Skip . components
+            }
+            std::path::Component::ParentDir => {
+                // Pop the last normal component if possible
+                if let Some(last) = components.last() {
+                    match last {
+                        std::path::Component::Normal(_) => {
+                            components.pop();
+                        }
+                        _ => {
+                            components.push(component);
+                        }
+                    }
+                } else {
+                    components.push(component);
+                }
+            }
+            std::path::Component::Normal(_) => {
+                components.push(component);
+            }
+        }
+    }
+    
+    components.iter().collect()
+}
+
 /// Query all imported files from DB
 fn query_imported_files(db: &svault_core::db::Db) -> anyhow::Result<Vec<FileRow>> {
     let all_files = db.get_all_files()?;
@@ -105,7 +158,6 @@ fn apply_filters(
     candidates: Vec<FileRow>,
     filter_date: &Option<String>,
     filter_camera: &Option<String>,
-    filter_group: &Option<String>,
 ) -> anyhow::Result<Vec<FileRow>> {
     let mut result = candidates;
 
@@ -128,33 +180,36 @@ fn apply_filters(
         result.retain(|f| f.path.to_lowercase().contains(&camera_lower));
     }
 
-    // Filter by group type - currently not supported
-    if filter_group.is_some() {
-        bail!("--filter-group is not supported in this version");
-    }
-
     Ok(result)
 }
 
 /// Parse date range string "2024-03-01..2024-03-31"
-fn parse_date_range(range: &str) -> anyhow::Result<(String, String)> {
+fn parse_date_range(range: &str) -> anyhow::Result<(NaiveDate, NaiveDate)> {
     let parts: Vec<&str> = range.split("..").collect();
     if parts.len() != 2 {
         bail!("Invalid date range format. Expected: YYYY-MM-DD..YYYY-MM-DD");
     }
-    Ok((parts[0].to_string(), parts[1].to_string()))
+    
+    let start = NaiveDate::parse_from_str(parts[0], "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("Invalid start date format: {}", parts[0]))?;
+    let end = NaiveDate::parse_from_str(parts[1], "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("Invalid end date format: {}", parts[1]))?;
+    
+    Ok((start, end))
 }
 
 /// Extract date from vault path (assumes YYYY/MM-DD/ structure)
-fn extract_date_from_path(path: &str) -> Option<String> {
+/// Returns NaiveDate for the first day of that month-day
+fn extract_date_from_path(path: &str) -> Option<NaiveDate> {
     // Path format: 2024/03-15/Camera/file.jpg
     let components: Vec<&str> = path.split('/').collect();
     if components.len() >= 2 {
         let year = components[0];
         let month_day = components[1];
-        // Validate format
+        // Parse as YYYY-MM-DD format
         if year.len() == 4 && month_day.len() == 5 && month_day.contains('-') {
-            return Some(format!("{}-{}-01", year, month_day));
+            let date_str = format!("{}-{} 00:00:00", year, month_day);
+            return NaiveDate::parse_from_str(&date_str, "%Y-%m-%d %H:%M:%S").ok();
         }
     }
     None

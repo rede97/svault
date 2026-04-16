@@ -116,6 +116,30 @@ class TestCloneFilters:
         # Should show selected=0
         assert "Selected:" in result.stdout and "0" in result.stdout
 
+    def test_clone_filter_date_inclusive_single_day(self, vault: VaultEnv) -> None:
+        """Clone with single-day date filter should include that day (P0 bug fix)."""
+        copy_fixture(vault, "apple_with_exif.jpg")  # Has 2024-05-01 date
+        vault.import_dir(vault.source_dir)
+        
+        target_dir = vault.root / "clone_target_single_day"
+        # Filter for exactly the file's date (start == end)
+        result = vault.run(
+            "clone", f"--target={target_dir}",
+            "--filter-date=2024-05-01..2024-05-01",  # Single day
+            capture=True
+        )
+        assert result.returncode == 0
+        
+        # Should select the file (date is inclusive)
+        lines = result.stdout.split('\n')
+        selected_line = [l for l in lines if 'Selected:' in l]
+        assert len(selected_line) > 0
+        # Extract number after Selected:
+        selected_count = int(selected_line[0].split(':')[1].strip().split()[0])
+        assert selected_count >= 1, (
+            f"Single-day filter should select at least 1 file, got {selected_count}"
+        )
+
     def test_clone_filter_camera(self, vault: VaultEnv) -> None:
         """Clone with --filter-camera should only copy matching files."""
         copy_fixture(vault, "apple_with_exif.jpg")  # iPhone 15
@@ -148,20 +172,6 @@ class TestCloneFilters:
         # Should show selected=0
         assert "Selected:" in result.stdout and "0" in result.stdout
 
-    def test_clone_filter_group_not_supported(self, vault: VaultEnv) -> None:
-        """Clone with --filter-group should report not supported."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        
-        target_dir = vault.root / "clone_target_group"
-        result = vault.run(
-            "clone", f"--target={target_dir}",
-            "--filter-group=live_photo",
-            capture=True, check=False
-        )
-        # Should fail with error message
-        assert result.returncode != 0 or "not supported" in result.stderr.lower()
-
 
 class TestCloneSafety:
     """Clone safety and edge case tests."""
@@ -178,6 +188,85 @@ class TestCloneSafety:
             capture=True, check=False
         )
         assert result.returncode != 0
+
+    def test_clone_target_inside_vault_fails_with_relative_target(self, vault: VaultEnv) -> None:
+        """Clone with relative target inside vault should fail (P0 bug fix)."""
+        copy_fixture(vault, "apple_with_exif.jpg")
+        vault.import_dir(vault.source_dir)
+        
+        # Try to clone with relative path that resolves inside vault
+        # From vault root, try to clone to "photos" subdirectory
+        result = vault.run(
+            "clone", "--target=photos",
+            capture=True, check=False
+        )
+        assert result.returncode != 0, (
+            "Relative target inside vault should be rejected"
+        )
+
+    def test_clone_target_parent_relative_outside_vault_allowed(self, vault: VaultEnv) -> None:
+        """--target=../outside should be allowed (outside vault)."""
+        copy_fixture(vault, "apple_with_exif.jpg")
+        vault.import_dir(vault.source_dir)
+        
+        # Create sibling directory in the same parent as vault_dir (i.e., vault.root)
+        sibling_dir = vault.root / "outside_clone"
+        sibling_dir.mkdir(exist_ok=True)
+        
+        # Change to vault directory and clone to ../outside_clone
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(vault.vault_dir)
+            result = vault.run(
+                "clone", "--target=../outside_clone",
+                capture=True
+            )
+            # This should succeed - ../outside_clone is outside vault
+            assert result.returncode == 0, (
+                f"Clone to ../outside should succeed, got: {result.stderr}"
+            )
+            
+            # Verify file was copied (in vault.root, not vault.root.parent)
+            cloned_file = sibling_dir / "2024" / "05-01" / "Apple iPhone 15" / "apple_with_exif.jpg"
+            assert cloned_file.exists(), "Cloned file should exist in ../outside_clone"
+        finally:
+            os.chdir(original_cwd)
+
+    def test_clone_target_symlink_to_inside_vault_should_fail(self, vault: VaultEnv) -> None:
+        """Symlink pointing inside vault should be rejected (P1 security fix)."""
+        import shutil
+        import uuid
+        
+        copy_fixture(vault, "apple_with_exif.jpg")
+        vault.import_dir(vault.source_dir)
+        
+        # Create a unique directory outside vault
+        unique_id = str(uuid.uuid4())[:8]
+        outside_dir = vault.root / f"symlink_test_{unique_id}"
+        if outside_dir.exists():
+            shutil.rmtree(outside_dir)
+        outside_dir.mkdir()
+        
+        # Create a symlink inside that directory pointing to vault subdirectory
+        symlink_target = outside_dir / "link_to_inside"
+        real_target_inside = vault.vault_dir / "2024"  # Point to existing vault content
+        symlink_target.symlink_to(real_target_inside, target_is_directory=True)
+        
+        assert symlink_target.exists(), "Symlink should be created"
+        
+        # Try to clone to the symlink - should fail because it resolves inside vault
+        result = vault.run(
+            "clone", f"--target={symlink_target}",
+            capture=True, check=False
+        )
+        assert result.returncode != 0, (
+            f"Clone to symlink pointing inside vault should fail, got: {result.stdout}"
+        )
+        assert "inside the vault" in result.stderr.lower() or "inside the vault" in result.stdout.lower()
+        
+        # Cleanup
+        shutil.rmtree(outside_dir)
 
     def test_clone_target_exists_with_same_file(self, vault: VaultEnv) -> None:
         """Clone when target has same file should skip."""

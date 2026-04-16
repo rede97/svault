@@ -281,7 +281,6 @@ svault clone --target <path> [options]
 | `--target <path>` | 克隆目标目录（必填） |
 | `--filter-date <range>` | 按日期过滤，如 `2024-03-01..2024-03-31` |
 | `--filter-camera <model>` | 按相机型号过滤 |
-| `--filter-group <type>` | 按 MediaGroup 类型过滤 |
 
 ---
 
