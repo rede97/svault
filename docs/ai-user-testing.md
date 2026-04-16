@@ -30,12 +30,12 @@
 - `svault recheck`
 - `svault update`
 - `svault history`
+- `svault clone`
 - `svault db verify-chain`
 
 不作为当前阶段主目标的内容：
 
 - `sync`
-- `clone`
 - GUI 自动化测试
 
 ---
@@ -508,9 +508,10 @@ AI 驱动用户行为测试不替代 `tests/e2e/`，两者分工如下：
 - `verify`
 - `recheck`
 - `update`
+- `clone`
 - `db verify-chain`
 
-`clone` 和 `sync` 不应进入第一批 AI 行为测试范围。
+`sync` 不应进入第一批 AI 行为测试范围。
 
 ---
 

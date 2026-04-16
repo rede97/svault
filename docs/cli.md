@@ -10,7 +10,7 @@
 - **机器可读**：`--output json` 输出结构化数据，供脚本和 AI Agent 消费
 - **安全优先**：无任何删除命令，危险操作需 `--yes` 显式确认
 - **标准退出码**：所有命令遵循统一退出码约定
-- **进度可观测**：`--progress` 输出逐行 JSON 事件流到 stderr
+- **进度可观测**：Human 模式提供阶段进度，JSON 模式输出结构化事件
 
 ---
 
@@ -24,9 +24,7 @@
 | `--dry-run` | 预览操作，不执行任何写入 |
 | `--yes` | 跳过交互确认 |
 | `--quiet` | 抑制非错误输出 |
-| `--progress` | 输出逐行 JSON 进度事件到 stderr |
-| `--config <path>` | 指定配置文件路径（默认 `~/.config/svault/svault.toml`） |
-| `--vault <path>` | 指定归档根目录（覆盖配置文件） |
+| `--threads <n>` | 指定 Rayon 线程数（`0` = 默认） |
 
 ---
 
@@ -100,13 +98,14 @@ Manifest: ./manifests/import-20240315T143000.txt
 }
 ```
 
-**进度事件流（--progress，stderr）：**
+**JSON 事件流（stdout）：**
 ```jsonl
-{"event": "file.discovered", "path": "/mnt/card/DCIM/IMG_001.CR3", "size": 52428800}
-{"event": "file.imported", "src": "/mnt/card/DCIM/IMG_001.CR3", "dest": "/archive/2024/03-15/Canon_EOS_R5/IMG_001.cr3"}
-{"event": "file.duplicate", "src": "/mnt/card/DCIM/IMG_002.CR3", "duplicate_of": "/archive/2023/12/01/IMG_002.cr3"}
-{"event": "progress", "done": 42, "total": 245}
-{"event": "finished", "imported": 142, "duplicate": 23, "skipped": 80}
+{"event":"scan_started"}
+{"event":"scan_item","path":"/mnt/card/DCIM/IMG_001.CR3","status":"new"}
+{"event":"preflight","total_scanned":245,"new":142,"duplicate":23,"failed":0}
+{"event":"copy_item_started","src":"/mnt/card/DCIM/IMG_001.CR3","size":52428800}
+{"event":"copy_item_finished","src":"/mnt/card/DCIM/IMG_001.CR3","status":"ok"}
+{"event":"import_summary","imported":142,"duplicate":23,"failed":0}
 ```
 
 ---
@@ -216,29 +215,42 @@ Vault: /archive
 
 ### `svault history`
 
-查看文件或全局操作历史（事件日志）。
+查询导入历史（按会话或会话条目）。
 
 ```
-svault history [options]
+svault history [sessions|items] [options]
 ```
+
+**子命令：**
+
+| 子命令 | 说明 |
+|--------|------|
+| `history sessions` | 列出导入/添加会话 |
+| `history items --session <id>` | 查看指定会话的文件条目 |
+
+**`history sessions` 选项：**
 
 | 选项 | 说明 |
 |------|------|
-| `--file <path>` | 查看指定文件的事件历史 |
-| `--from <datetime>` | 起始时间过滤 |
-| `--to <datetime>` | 结束时间过滤 |
-| `--event-type <type>` | 按事件类型过滤 |
+| `--from <datetime>` | 起始时间过滤（RFC 3339 或 YYYY-MM-DD） |
+| `--to <datetime>` | 结束时间过滤（RFC 3339 或 YYYY-MM-DD） |
+| `--source <path>` | 按来源路径过滤 |
 | `--limit <n>` | 限制输出条数（默认 50） |
+| `--offset <n>` | 分页偏移（默认 0） |
+
+**`history items` 选项：**
+
+| 选项 | 说明 |
+|------|------|
+| `--session <id>` | 会话 ID（必填） |
+| `--status <status>` | 按条目状态过滤 |
+| `--limit <n>` | 限制输出条数（默认 50） |
+| `--offset <n>` | 分页偏移（默认 0） |
 
 **输出示例：**
 ```
-seq  time                  event                  entity
----  --------------------  ---------------------  ---------------------------
- 1   2024-03-15 14:30:01   file.imported          /archive/2024/03-15/IMG_001.cr3
- 2   2024-03-15 14:30:01   file.imported          /archive/2024/03-15/IMG_001.jpg
- 3   2024-03-15 14:30:02   media_group.created    live_photo (IMG_001)
-12   2024-03-16 09:12:44   file.path_updated      IMG_001.cr3 → 2024/canon/IMG_001.cr3
-15   2024-03-16 09:15:00   file.sha256_resolved   IMG_001.cr3
+svault history sessions --output json
+svault history items --session <session_id> --output json
 ```
 
 ---
@@ -282,6 +294,11 @@ svault clone --target <path> [options]
 | `--filter-date <range>` | 按日期过滤，如 `2024-03-01..2024-03-31` |
 | `--filter-camera <model>` | 按相机型号过滤 |
 
+**当前行为：**
+- 只读操作，不会创建新的 `history sessions`
+- 目标目录禁止位于 vault 内（含符号链接指向 vault 内）
+- 输出汇总字段：`selected` / `copied` / `skipped` / `failed` / `verify_failed`
+
 ---
 
 ### `svault db verify-chain`
@@ -306,16 +323,16 @@ Verifying event chain (312 events)...
 
 ```bash
 # 1. 预览导入，获取结构化输出
-svault import --source /mnt/card --dry-run --output json
+svault import /mnt/card --dry-run --output json
 
 # 2. Agent 解析输出，决策后执行
-svault import --source /mnt/card --yes --output json --progress
+svault import /mnt/card --yes --output json
 
 # 3. 校验归档完整性
-svault verify --fast --output json
+svault verify --output json
 
 # 4. 查询最近导入历史
-svault history --from 2024-03-15 --output json
+svault history sessions --from 2024-03-15 --output json
 ```
 
 ---

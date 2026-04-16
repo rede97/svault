@@ -90,11 +90,11 @@ svault recheck     # Compare source against vault
 ### 🔧 **Unix Philosophy**
 Composable pipeline architecture for scripting and automation:
 ```bash
-# Scan → Filter → Import workflow (planned)
-svault scan /photos --new-only | grep "\.CR3$" | svault import --stdin
+# Scan → Filter → Import workflow
+svault scan /photos --show-dup | rg 'new:.*\.CR3$' | svault import /photos --files-from -
 
 # Chain with external tools
-svault history --json | jq '.sessions[] | select(.files > 100)'
+svault history sessions --output json | jq 'select(.event=="history_sessions_item")'
 ```
 
 ---
@@ -149,7 +149,7 @@ svault import /mnt/card/DCIM/100CANON/ --target shoots/$(date +%Y-%m-%d)
 svault verify --recent 86400  # Files imported in last 24 hours
 
 # Check import history
-svault history --limit 5
+svault history sessions --limit 5
 ```
 
 ---
@@ -165,12 +165,12 @@ svault history --limit 5
 | `update` | ✅ Ready | Update paths for moved files | `svault update --target ./vault` |
 | `verify` | ✅ Ready | Check file integrity | `svault verify --file photo.jpg` |
 | `status` | ✅ Ready | Show vault overview | `svault status` |
-| `history` | ✅ Ready | Browse import history | `svault history --events` |
+| `history` | ✅ Ready | Browse import history | `svault history sessions --limit 20` |
 | `scan` | ✅ Ready | Scan directory for import pipeline | `svault scan ./photos` |
 | `db dump` | ✅ Ready | Dump database contents | `svault db dump --format json` |
 | `db verify-chain` | 🧪 Experimental | Verify event-log hash chain integrity | `svault db verify-chain` |
 | `sync` | ⛔ Stub | Sync files from another vault | — |
-| `clone` | ⛔ Stub | Clone a subset to working directory | — |
+| `clone` | ✅ Ready | Clone a subset to working directory | `svault clone --target /tmp/work --filter-date 2024-05-01..2024-05-31` |
 
 **Status legend:**
 - ✅ Ready — Fully implemented and tested
@@ -288,7 +288,7 @@ bash run.sh --test-dir /mnt/btrfs
 | ✅ Phase 2 | Complete | `import`, 5-stage pipeline, manifest output |
 | ✅ Phase 3 | Partial | `reconcile`, multi-target replication (sync stubbed) |
 | ✅ Phase 4 | Complete | `verify`, `history`, `recheck`, background-hash |
-| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG), `clone` |
+| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG) |
 | 📋 Later | Planned | Perceptual dedup, TUI, device auto-detection |
 
 ---
