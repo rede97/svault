@@ -337,6 +337,36 @@ Three-tier, mirroring Lightroom's approach:
 
 Thumbnails are stored in `.svault/thumbnails/` as webp files, indexed by `cache.db` (separate from the event-sourced `vault.db`). They are pure caches — deletable and rebuildable without affecting archive integrity.
 
+#### RAW decoding pipeline
+
+RAW preview requires native code. Svault embeds **LibRaw** (C) and exposes it through svault-core as a Rust function. Flutter never touches a RAW file — it only receives the rendered result.
+
+```
+RAW → LibRaw (native, C) → 16-bit linear RGB → color space + gamma → webp
+                                                         ↑
+                                                  all in svault-core (Rust)
+          │
+          └── Flutter: Image.file(thumbnails/small/abc.webp)
+```
+
+Key properties:
+
+- **RAW decoding is done in svault-core**, not in Dart. The full C/Rust toolchain handles demosaicing, white balance, and color profiles.
+- **Zero-copy FFI**: `flutter_rust_bridge` passes structs and `Vec<u8>` without serialization overhead. Thumbnail bytes, when passed, cross the boundary as raw pointers.
+- **Native libraries as dependencies**: Flutter on desktop can link against system-installed or bundled native libraries (libraw, libheif, ffmpeg/libavcodec) via the Rust crate's build script. This is a supported and common pattern — Dart FFI calls Rust, Rust calls C.
+
+Supported RAW formats:
+
+| Format | Cameras |
+|--------|---------|
+| DNG | Universal (Pentax, Leica, DJI, Apple ProRAW) |
+| CR2 / CR3 | Canon |
+| NEF | Nikon |
+| ARW | Sony |
+| RAF | Fujifilm |
+| RW2 | Panasonic |
+| ORF | Olympus / OM System |
+
 #### Why not Tauri (WebView)
 
 - Photo grids require virtual scrolling at 60 fps; WebView compositing adds 10-15ms per frame.
