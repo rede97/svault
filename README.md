@@ -286,10 +286,62 @@ bash run.sh --test-dir /mnt/btrfs
 |-------|--------|--------------|
 | ✅ Phase 1 | Complete | CLI skeleton, event-sourced DB, local FS module, `init` |
 | ✅ Phase 2 | Complete | `import`, 5-stage pipeline, manifest output |
-| ✅ Phase 3 | Partial | `reconcile`, multi-target replication (sync stubbed) |
+| ✅ Phase 3 | Partial | `sync` / `clone` / `recover` (designed, awaiting implementation) |
 | ✅ Phase 4 | Complete | `verify`, `history`, `recheck`, background-hash |
-| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG) |
-| 📋 Later | Planned | Perceptual dedup, TUI, device auto-detection |
+| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG), MTP device import |
+| 📋 Phase 6 | Planned | Flutter GUI (photo grid, album management, Lightroom-style import) |
+| 📋 Later | Planned | Perceptual dedup, device auto-detection, remote sync transport |
+
+### Phase 6: Flutter Desktop GUI
+
+Svault's GUI will be built with **Flutter** and maintained as a **separate repository** (`svault-gui`). This keeps the Rust workspace and the Flutter project independent: svault-core is published as a library crate; the GUI consumes it via `flutter_rust_bridge`.
+
+#### Why Flutter
+
+The GUI is an **image-intensive desktop application** — virtual-scrolled photo grids, thumbnail previews, album drag-and-drop, RAW-to-preview transitions. Three properties matter most for this workload:
+
+- **AOT-compiled rendering**: Flutter's Impeller rasterises via Metal (macOS) / Vulkan (Linux) / D3D (Windows) directly; no DOM, no JS bridge, no browser compositor in the way.
+- **Zero-copy image display**: `Image.file(path)` loads from disk without crossing an FFI boundary. svault's thumbnails sit in `.svault/thumbnails/` — Flutter reads them natively.
+- **Hot reload**: Frontend iteration is sub-second. Unlike Tauri, which re-links the Rust binary on every frontend change, Flutter only recompiles the changed Dart code.
+
+#### Architecture
+
+```
+┌────── svault (Rust workspace) ──────────────────┐
+│  svault-core  ─── crate.io  ───  svault-gui/rust │
+│  svault-cli                          flutter_rust_bridge │
+│  svault-mtp                          ┌──────────────────┤
+└───────────────────────────────────────┤  Flutter (Dart)  │
+                                        │  · PhotoGrid     │
+                                        │  · AlbumManager  │
+                                        │  · ImportWizard  │
+                                        │  · VerifyPanel   │
+                                        └──────────────────┘
+```
+
+**Data path** (critical for performance):
+
+- **Metadata** crosses the FFI: file lists, hashes, sizes, dates — lightweight structs via `flutter_rust_bridge`.
+- **Images never cross the FFI**: Flutter loads photos and thumbnails directly from disk with `Image.file()`.
+- **Progress events** flow through the existing `Reporter` trait: svault-core emits typed reporter calls, the bridge translates them to Dart streams for the UI.
+
+#### Thumbnail cache
+
+Three-tier, mirroring Lightroom's approach:
+
+| Tier | Size | Purpose | Generated | TTL |
+|------|------|---------|-----------|-----|
+| Small | 256 px | Photo grid browsing | At import | Permanent |
+| Medium | 2048 px | Single-photo view | On-demand | 30 days |
+| Large | Full resolution | 100% zoom | On-demand | 30 days |
+
+Thumbnails are stored in `.svault/thumbnails/` as webp files, indexed by `cache.db` (separate from the event-sourced `vault.db`). They are pure caches — deletable and rebuildable without affecting archive integrity.
+
+#### Why not Tauri (WebView)
+
+- Photo grids require virtual scrolling at 60 fps; WebView compositing adds 10-15ms per frame.
+- `Image.file()` vs `<img>` + browser decode: native image decoding in Impeller is measurably faster for large RAW-to-preview transitions.
+- Every Tauri frontend edit re-embeds assets into the Rust binary; Flutter hot reload is sub-second.
 
 ---
 
