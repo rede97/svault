@@ -1,5 +1,13 @@
 # Sync 设计文档
 
+> 本文档覆盖三个命令的设计，它们共用同一套 diff + journal + transfer 引擎：
+>
+> | 命令 | 源 → 目标 | 用途 |
+> |------|----------|------|
+> | `svault sync` | vault → vault | 增量同步，把源端有而目标端没有的文件复制过去 |
+> | `svault clone` | vault → 普通目录 | 导出文件子集（sync --export 的别名） |
+> | `svault recover` | vault → vault | 从健康备份 vault 拉取完好副本替换本地损坏文件 |
+
 ## 目标
 
 实现单向同步（pull/push），两个 vault 之间按 sha256 差集传输文件。不是分布式共识，不是 CRDT，不是 git merge。
@@ -83,6 +91,191 @@
 - 传输完成后删除
 - 中断续传：读 journal → pending 的继续，done 的跳过
 - checkpoint：每传完一个文件写一次（简单但可靠；大文件传输不频繁）
+
+## Reporting 接口设计
+
+sync 模块遵循和 import pipeline 相同的 reporting 架构：**core 定义 trait，CLI/GUI 实现渲染，sync 代码不直接输出**。
+
+### 架构原则
+
+```
+svault-core/src/reporting/mod.rs   ← 新增 sync/recover 相关的 reporter trait
+svault-core/src/sync/              ← 通过泛型接收 reporter，只调用 trait 方法
+svault-cli/src/reporting/          ← 实现终端/JSON 渲染
+```
+
+sync 内部永远不调用 `println!`、`eprintln!`、`ProgressBar`。所有输出都走 reporter trait，所有用户确认都走 `Interactor` trait。
+
+### 新增 ReporterBuilder 关联类型
+
+在已有的 `ReporterBuilder` trait 中追加三组 sync 相关类型：
+
+```rust
+pub trait ReporterBuilder: Send + Sync {
+    // ... 已有的 import/add/recheck/update/verify/history ...
+
+    // ── sync / clone ─────────────────────────────────────────────────────────
+    type SyncDiff: SyncDiffReporter;
+    type SyncHealth: HealthReporter;
+
+    fn sync_diff_reporter(&self) -> Self::SyncDiff;
+    fn sync_health_reporter(&self, vault_root: &Path) -> Self::SyncHealth;
+    // sync_transfer 复用已有的 CopyReporter（语义一致）
+
+    // ── recover ──────────────────────────────────────────────────────────────
+    type SyncRecover: RecoverReporter;
+
+    fn sync_recover_reporter(&self) -> Self::SyncRecover;
+}
+```
+
+### 三个新增 trait
+
+**SyncDiffReporter** — 差集计算阶段：
+
+```rust
+pub trait SyncDiffReporter: Send + Sync {
+    /// 开始比对，source_count / target_count 为两端 sha256 集合大小。
+    fn started(&self, source_count: usize, target_count: usize);
+    /// 差集结果：new_count 个文件待传输，total_bytes 待复制。
+    fn diff_computed(&self, new_count: usize, total_bytes: u64);
+    /// 目标端已经是最新，无需同步。
+    fn nothing_to_sync(&self);
+    fn finish(&self);
+}
+```
+
+**HealthReporter** — 源端 pre-flight 检查阶段：
+
+```rust
+pub struct HealthIssue {
+    pub issue_type: HealthIssueType,
+    pub path: String,
+    pub sha256: String,
+}
+
+pub enum HealthIssueType {
+    FileMissing,
+    SizeMismatch { expected: u64, actual: u64 },
+    EventChainTampered,
+}
+
+pub trait HealthReporter: Send + Sync {
+    fn started(&self, total: u64);
+    /// 单个文件通过检查。
+    fn item_ok(&self, path: &Path);
+    /// 全量通过，无问题。
+    fn all_clear(&self);
+    /// 发现问题，sync 被阻止。CLI 据此渲染错误列表。
+    fn blocked(&self, issues: &[HealthIssue]);
+    fn finish(&self);
+}
+```
+
+**RecoverReporter** — 损坏恢复阶段（专用于 recover 命令）：
+
+```rust
+pub struct DamagedFile {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub issue: String,
+}
+
+pub trait RecoverReporter: Send + Sync {
+    /// 扫描发现 count 个损坏文件。
+    fn damaged_found(&self, damaged: &[DamagedFile]);
+    /// 在源 vault 找到了匹配的完好副本。
+    fn match_found(&self, path: &str, source_vault: &Path);
+    /// 所有源 vault 都没有此文件的副本。
+    fn match_not_found(&self, path: &str);
+    /// 开始替换流程。
+    fn replace_started(&self, total: u64);
+    /// 正在替换某个文件（损坏原件已移走）。
+    fn item_replacing(&self, path: &str);
+    /// 替换完成，corrupted_path 是损坏原件的新位置。
+    fn item_replaced(&self, path: &str, corrupted_path: &Path);
+    /// 用户选择跳过此文件。
+    fn item_skipped(&self, path: &str);
+    /// 最终摘要。
+    fn summary(&self, replaced: usize, skipped: usize, unmatched: usize);
+    fn finish(&self);
+}
+```
+
+### 复用 vs 新增
+
+| 已有，直接复用 | 理由 |
+|----------------|------|
+| `CopyReporter` | sync 文件复制 = import 的 Stage C，item_started → item_progress → item_finished 完全一致 |
+| `Interactor::confirm()` | recover 的逐文件确认通过已有的 Interactor trait，GUI 模式不需要改 |
+
+| 新增 | 理由 |
+|------|------|
+| `SyncDiffReporter` | import 没有"差集计算"这个独立阶段 |
+| `HealthReporter` | import 没有对已有 vault 做 pre-flight 检查的概念 |
+| `RecoverReporter` | 损坏恢复是新交互模型：损坏清单展示、匹配结果、替换进度 |
+
+### JSON 输出示例
+
+```
+{"event":"sync_diff_started","source_total":1500,"target_total":1450}
+{"event":"sync_diff_result","new_files":50,"total_bytes":1073741824}
+{"event":"sync_diff_finished"}
+
+{"event":"sync_health_started","total":1500}
+{"event":"sync_health_item_ok","path":"2024/03-15/DSC_1234.dng"}
+{"event":"sync_health_all_clear"}
+
+{"event":"sync_health_blocked","issues":[
+  {"type":"file_missing","path":"2024/03-15/DSC_9999.cr3","sha256":"..."}
+]}
+
+{"event":"recover_damaged_found","damaged":[
+  {"path":"2024/03-15/DSC_1234.dng","sha256":"abc123","size":45678901,"issue":"hash_mismatch"}
+]}
+{"event":"recover_match_found","path":"2024/03-15/DSC_1234.dng","source":"/mnt/healthy-vault"}
+{"event":"recover_item_replaced","path":"2024/03-15/DSC_1234.dng","corrupted_path":".svault/corrupted/DSC_1234.dng.1700000000"}
+{"event":"recover_summary","replaced":2,"skipped":0,"unmatched":1}
+```
+
+### sync 代码调用方式
+
+```rust
+// sync 代码只调用 reporter trait 方法，不打印任何输出
+fn run_sync<R: ReporterBuilder, I: Interactor>(
+    opts: &SyncOptions,
+    reporter_builder: &R,
+    interactor: &I,
+) -> anyhow::Result<SyncSummary> {
+    // Phase 1: health check
+    let health = reporter_builder.sync_health_reporter(&opts.source_root);
+    health.started(total);
+    // ... 检查每个文件 ...
+    if issues.is_empty() { health.all_clear(); } else { health.blocked(&issues); return Err(...); }
+    health.finish();
+    drop(health);
+
+    // Phase 2: diff
+    let diff = reporter_builder.sync_diff_reporter();
+    diff.started(src_count, dst_count);
+    let manifest = compute_diff(...);
+    diff.diff_completed(manifest.len(), manifest.total_bytes());
+    diff.finish();
+    drop(diff);
+
+    // Phase 3: transfer — 复用 CopyReporter
+    let transfer = reporter_builder.sync_transfer_reporter(&src, &dst, total);
+    for file in &manifest {
+        transfer.item_started(&file.src, &file.dest, file.size);
+        // copy ...
+        transfer.item_finished(&file.src, &file.dest, &result);
+    }
+    transfer.finish();
+
+    Ok(summary)
+}
+```
 
 ## 模块边界
 
