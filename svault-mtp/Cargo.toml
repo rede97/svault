@@ -1,0 +1,26 @@
+[package]
+name = "svault-mtp"
+version = "0.1.0"
+edition = "2024"
+description = "Svault MTP daemon — exposes MTP devices as read-only WebDAV"
+license = "MIT"
+repository = "https://github.com/rede97/svault"
+
+[[bin]]
+name = "svault-mtp"
+path = "src/main.rs"
+
+[dependencies]
+svault-core = { version = "0.1.0", path = "../svault-core" }
+anyhow = "1"
+thiserror = "1"
+log = "0.4"
+env_logger = "0.11"
+tokio = { version = "1", features = ["full"] }
+dav-server = { version = "0.11", default-features = false, features = ["localfs", "hyper"] }
+mtp-rs = "0.13"
+futures = "0.3"
+bytes = "1"
+# interprocess = "2"  # reserved for cross-platform IPC migration
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
