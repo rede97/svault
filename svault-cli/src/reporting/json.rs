@@ -11,6 +11,7 @@ use svault_core::reporting::{
     HistorySessionsQuery, HistoryItemsQuery,
     HistorySessionRow, HistoryItemRow,
     HistorySessionsSummary, HistoryItemsSummary,
+    Noop,
 };
 use svault_core::verify::{VerifyResult, VerifySummary};
 
@@ -35,6 +36,9 @@ impl ReporterBuilder for JsonReporterBuilder {
     type Verify = JsonVerifyReporter;
     type HistorySessions = JsonHistorySessionsReporter;
     type HistoryItems = JsonHistoryItemsReporter;
+    type Clone = Noop;
+    type SyncDiff = Noop;
+    type SyncTransfer = Noop;
 
     fn scan_reporter(&self, _source: &Path) -> JsonScanReporter {
         JsonScanReporter::new()
@@ -79,6 +83,9 @@ impl ReporterBuilder for JsonReporterBuilder {
     fn history_items_reporter(&self, _session_id: &str, _query: &HistoryItemsQuery) -> JsonHistoryItemsReporter {
         JsonHistoryItemsReporter::new()
     }
+    fn clone_reporter(&self) -> Noop { Noop }
+    fn sync_diff_reporter(&self) -> Noop { Noop }
+    fn sync_transfer_reporter(&self, _: &Path, _: &Path, _: u64) -> Noop { Noop }
 }
 
 macro_rules! emit_json {

@@ -41,7 +41,7 @@ use svault_core::reporting::{
     AddSummaryReporter, CopyItemResult, CopyReporter, HashReporter, HistoryItemsQuery,
     HistoryItemsReporter, HistoryItemsSummary, HistoryItemRow, HistorySessionsQuery,
     HistorySessionsReporter, HistorySessionsSummary, HistorySessionRow, InsertReporter, Interactor,
-    ItemStatus, MatchConfidence, RecheckReporter, ReporterBuilder, ScanReporter,
+    ItemStatus, MatchConfidence, Noop, RecheckReporter, ReporterBuilder, ScanReporter,
     UpdateApplyReporter, VerifyReporter,
 };
 
@@ -1341,6 +1341,9 @@ impl ReporterBuilder for TerminalReporterBuilder {
     type Verify = TerminalVerifyReporter;
     type HistorySessions = TerminalHistorySessionsReporter;
     type HistoryItems = TerminalHistoryItemsReporter;
+    type Clone = Noop;
+    type SyncDiff = Noop;
+    type SyncTransfer = Noop;
 
     fn scan_reporter(&self, source: &Path) -> TerminalScanReporter {
         let pb = self.add_managed_spinner(|pb| {
@@ -1506,6 +1509,9 @@ impl ReporterBuilder for TerminalReporterBuilder {
         });
         TerminalHistoryItemsReporter { pb }
     }
+    fn clone_reporter(&self) -> Noop { Noop }
+    fn sync_diff_reporter(&self) -> Noop { Noop }
+    fn sync_transfer_reporter(&self, _: &Path, _: &Path, _: u64) -> Noop { Noop }
 }
 
 impl Default for TerminalReporterBuilder {

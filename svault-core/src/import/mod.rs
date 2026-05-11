@@ -887,6 +887,9 @@ mod tests {
         type Verify = Noop;
         type HistorySessions = Noop;
         type HistoryItems = Noop;
+        type Clone = Noop;
+        type SyncDiff = Noop;
+        type SyncTransfer = Noop;
 
         fn scan_reporter(&self, _source: &Path) -> TestScanReporter {
             TestScanReporter(Arc::clone(&self.log))
@@ -919,6 +922,13 @@ mod tests {
             Noop
         }
         fn history_items_reporter(&self, _session_id: &str, _query: &HistoryItemsQuery) -> Noop {
+            Noop
+        }
+        fn clone_reporter(&self) -> Noop { Noop }
+        fn sync_diff_reporter(&self) -> Noop {
+            Noop
+        }
+        fn sync_transfer_reporter(&self, _source: &Path, _target: &Path, _total: u64) -> Noop {
             Noop
         }
     }
