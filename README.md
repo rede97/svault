@@ -286,11 +286,12 @@ bash run.sh --test-dir /mnt/btrfs
 |-------|--------|--------------|
 | ✅ Phase 1 | Complete | CLI skeleton, event-sourced DB, local FS module, `init` |
 | ✅ Phase 2 | Complete | `import`, 5-stage pipeline, manifest output |
-| ✅ Phase 3 | Partial | `sync` / `clone` / `recover` (designed, awaiting implementation) |
+| 🚧 Phase 3 | In Progress | `sync` / `clone` / `recover` (designed, implementing) |
 | ✅ Phase 4 | Complete | `verify`, `history`, `recheck`, background-hash |
-| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG), MTP device import |
-| 📋 Phase 6 | Planned | Flutter GUI (photo grid, album management, Lightroom-style import) |
-| 📋 Later | Planned | Perceptual dedup, device auto-detection, remote sync transport |
+| 🚧 Phase 5 | In Progress | Composite media (Live Photo, RAW+JPEG) |
+| 📋 Phase 6 | Planned | Flutter GUI (photo grid, album management, Lightroom-style import), thumbnail cache |
+| 📋 Phase 7 | Planned | MTP device import (`svault-mtp`), only needed for GUI import wizard |
+| 📋 Later | Planned | Perceptual dedup, device auto-detection, remote sync transport, HDR preview |
 
 ### Phase 6: Flutter Desktop GUI
 
