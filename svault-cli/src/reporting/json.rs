@@ -4,14 +4,13 @@ use std::path::Path;
 
 use serde_json::json;
 use svault_core::reporting::{
-    AddSummaryReporter, CopyReporter, CopyItemResult, HashReporter, InsertReporter,
-    ItemStatus, RecheckReporter, ReporterBuilder, ScanReporter,
-    UpdateApplyReporter, VerifyReporter,
+    AddSummaryReporter, CloneReporter, CopyReporter, CopyItemResult, HashReporter,
+    InsertReporter, ItemStatus, RecheckReporter, ReporterBuilder, ScanReporter,
+    SyncDiffReporter, SyncTransferReporter, UpdateApplyReporter, VerifyReporter,
     HistorySessionsReporter, HistoryItemsReporter,
     HistorySessionsQuery, HistoryItemsQuery,
     HistorySessionRow, HistoryItemRow,
     HistorySessionsSummary, HistoryItemsSummary,
-    Noop,
 };
 use svault_core::verify::{VerifyResult, VerifySummary};
 
@@ -36,9 +35,9 @@ impl ReporterBuilder for JsonReporterBuilder {
     type Verify = JsonVerifyReporter;
     type HistorySessions = JsonHistorySessionsReporter;
     type HistoryItems = JsonHistoryItemsReporter;
-    type Clone = Noop;
-    type SyncDiff = Noop;
-    type SyncTransfer = Noop;
+    type Clone = JsonCloneReporter;
+    type SyncDiff = JsonSyncDiffReporter;
+    type SyncTransfer = JsonSyncTransferReporter;
 
     fn scan_reporter(&self, _source: &Path) -> JsonScanReporter {
         JsonScanReporter::new()
@@ -83,9 +82,11 @@ impl ReporterBuilder for JsonReporterBuilder {
     fn history_items_reporter(&self, _session_id: &str, _query: &HistoryItemsQuery) -> JsonHistoryItemsReporter {
         JsonHistoryItemsReporter::new()
     }
-    fn clone_reporter(&self) -> Noop { Noop }
-    fn sync_diff_reporter(&self) -> Noop { Noop }
-    fn sync_transfer_reporter(&self, _: &Path, _: &Path, _: u64) -> Noop { Noop }
+    fn clone_reporter(&self) -> JsonCloneReporter { JsonCloneReporter::new() }
+    fn sync_diff_reporter(&self) -> JsonSyncDiffReporter { JsonSyncDiffReporter::new() }
+    fn sync_transfer_reporter(&self, _source: &Path, _target: &Path, total: u64) -> JsonSyncTransferReporter {
+        JsonSyncTransferReporter::new(total)
+    }
 }
 
 macro_rules! emit_json {
@@ -675,5 +676,159 @@ impl VerifyReporter for JsonVerifyReporter {
             "io_error": summary.io_error,
             "hash_not_available": summary.hash_not_available
         }));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sync diff reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct JsonSyncDiffReporter;
+
+impl JsonSyncDiffReporter {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl SyncDiffReporter for JsonSyncDiffReporter {
+    fn started(&self, source_count: usize, target_count: usize) {
+        emit_json!(json!({
+            "event": "sync_diff_started",
+            "source_count": source_count,
+            "target_count": target_count
+        }));
+    }
+
+    fn diff_computed(&self, new_count: usize, skip_count: usize, total_bytes: u64) {
+        emit_json!(json!({
+            "event": "sync_diff_computed",
+            "new_count": new_count,
+            "skip_count": skip_count,
+            "total_bytes": total_bytes
+        }));
+    }
+
+    fn nothing_to_sync(&self) {
+        emit_json!(json!({
+            "event": "sync_diff_nothing_to_sync"
+        }));
+    }
+
+    fn finish(&self) {
+        emit_json!(json!({"event": "sync_diff_finished"}));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sync transfer reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct JsonSyncTransferReporter {
+    _total: u64,
+}
+
+impl JsonSyncTransferReporter {
+    fn new(total: u64) -> Self {
+        Self { _total: total }
+    }
+}
+
+impl SyncTransferReporter for JsonSyncTransferReporter {
+    fn started(&self, total_files: u64, total_bytes: u64) {
+        emit_json!(json!({
+            "event": "sync_transfer_started",
+            "total_files": total_files,
+            "total_bytes": total_bytes
+        }));
+    }
+
+    fn item_started(&self, path: &Path, bytes: u64) {
+        emit_json!(json!({
+            "event": "sync_transfer_item_started",
+            "path": path.display().to_string(),
+            "bytes": bytes
+        }));
+    }
+
+    fn item_progress(&self, path: &Path, bytes_copied: u64, bytes_total: u64) {
+        emit_json!(json!({
+            "event": "sync_transfer_item_progress",
+            "path": path.display().to_string(),
+            "bytes_copied": bytes_copied,
+            "bytes_total": bytes_total
+        }));
+    }
+
+    fn item_finished(&self, path: &Path, result: &CopyItemResult) {
+        let (status, error) = match result {
+            CopyItemResult::Ok => ("ok", None),
+            CopyItemResult::Failed { message } => ("failed", Some(message.as_str())),
+        };
+        let mut event = json!({
+            "event": "sync_transfer_item_finished",
+            "path": path.display().to_string(),
+            "status": status
+        });
+        if let Some(err) = error
+            && let Some(obj) = event.as_object_mut()
+        {
+            obj.insert("error".to_string(), json!(err));
+        }
+        emit_json!(event);
+    }
+
+    fn finish(&self) {
+        emit_json!(json!({"event": "sync_transfer_finished"}));
+    }
+
+    fn summary(&self, transferred: usize, skipped: usize, failed: usize, total_bytes: u64) {
+        emit_json!(json!({
+            "event": "sync_transfer_summary",
+            "transferred": transferred,
+            "skipped": skipped,
+            "failed": failed,
+            "total_bytes": total_bytes
+        }));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Clone reporter
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct JsonCloneReporter;
+
+impl JsonCloneReporter {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl CloneReporter for JsonCloneReporter {
+    fn started(&self, available: usize) {
+        emit_json!(json!({
+            "event": "clone_started",
+            "available": available
+        }));
+    }
+
+    fn diff_computed(&self, to_clone: usize, already_present: usize, total_bytes: u64) {
+        emit_json!(json!({
+            "event": "clone_diff_computed",
+            "to_clone": to_clone,
+            "already_present": already_present,
+            "total_bytes": total_bytes
+        }));
+    }
+
+    fn nothing_to_clone(&self) {
+        emit_json!(json!({
+            "event": "clone_nothing_to_clone"
+        }));
+    }
+
+    fn finish(&self) {
+        emit_json!(json!({"event": "clone_finished"}));
     }
 }

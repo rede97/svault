@@ -61,7 +61,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             session,
         } => commands::recheck::run(source, target, session),
         Command::Add { path } => commands::add::run(path),
-        Command::Sync { .. } => commands::sync::run(),
+        Command::Sync { source, strategy, verify: _ } => {
+            commands::sync::run(output, source, strategy)
+        }
         Command::Update { target, delete } => commands::update::run(dry_run, yes, target, delete),
         Command::Verify {
             file,

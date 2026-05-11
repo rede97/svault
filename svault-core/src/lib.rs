@@ -10,4 +10,5 @@ pub mod media;
 pub mod pipeline;
 pub mod reporting;
 pub mod status;
+pub mod sync;
 pub mod verify;
