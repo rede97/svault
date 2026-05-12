@@ -50,6 +50,7 @@ Always use RAMDisk or a dedicated test directory. The E2E framework handles this
 ```
 svault-core/    # library crate — all core logic, no CLI dependency (clap is optional via "cli" feature)
 svault-cli/     # binary crate — CLI parsing (clap), terminal output, progress bars (indicatif)
+svault-mtp/     # MTP daemon crate — MTP device WebDAV serving (experimental)
 ```
 
 `svault-cli` depends on `svault-core` with `features = ["cli"]`. Core must never import from CLI.
@@ -69,8 +70,9 @@ svault-cli/     # binary crate — CLI parsing (clap), terminal output, progress
 | `config` | TOML-based per-vault configuration (`svault.toml`). |
 | `context` | Vault discovery: walks up from CWD looking for `.svault/vault.db`. |
 | `lock` | Advisory file locking via `.svault/lock` (fs2) to prevent concurrent modifications. |
-| `reporting` | Trait definitions `Reporter` and `Interactor` — core defines the interface, CLI provides the implementations. |
+| `reporting` | Typed phase reporter traits organized by command (`scan.rs`, `hash.rs`, `sync.rs`, `clone.rs`, etc.) — core defines traits, CLI provides implementations via `ReporterBuilder`. |
 | `status` | Vault statistics aggregation. |
+| `sync` | Two-phase sync engine: SHA-256 diff (`diff.rs`) → file transfer (`transfer.rs`). Powers both `svault sync` (vault→vault) and `svault clone` (vault→directory), sharing transfer infrastructure with import. |
 
 ### CLI command dispatch
 
@@ -87,11 +89,11 @@ svault-cli/     # binary crate — CLI parsing (clap), terminal output, progress
 
 ### Reporting architecture (3-layer)
 
-1. **Traits** (`svault-core/src/reporting/mod.rs`) — `Reporter` and `Interactor` trait definitions
-2. **Builders** (`svault-cli/src/reporting/`) — concrete reporter construction
-3. **Implementations** (`svault-cli/src/reporting/terminal.rs`, `json.rs`, `pipe.rs`, `path.rs`) — Terminal/JSON/Pipe output
+1. **Traits** (`svault-core/src/reporting/`) — 14+ typed phase reporter traits in per-command files (e.g. `scan.rs`, `sync.rs`, `clone.rs`). `mod.rs` is a thin re-export layer.
+2. **Builder** (`svault-core/src/reporting/builder.rs`) — `ReporterBuilder` trait with associated types for each phase reporter. CLI/GUI implement this to construct their concrete reporters.
+3. **Implementations** (`svault-cli/src/reporting/terminal.rs`, `json.rs`, `pipe.rs`, `path.rs`) — `TerminalReporterBuilder`, `JsonReporterBuilder`, etc. with terminal progress bars, JSON streams, pipeable text.
 
-Typed phase reporters (ScanReporter, CopyReporter, HashReporter, etc.) replace a generic system. `Interactor` uses `<I: Interactor>` generics (zero-cost) rather than `&dyn Interactor`. Always build a full `String` before calling `pb.println()` to avoid multi-threaded output interleaving.
+Each reporter is obtained from the builder, used for exactly one phase, then dropped. `Drop` implementations guarantee progress indicators are cleared even on panic. `Interactor` uses `<I: Interactor>` generics (zero-cost) rather than `&dyn Interactor`. Always build a full `String` before calling `pb.println()` to avoid multi-threaded output interleaving.
 
 ### Rust edition and conventions
 
