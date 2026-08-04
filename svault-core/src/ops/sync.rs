@@ -169,12 +169,8 @@ pub fn run_sync(
         let src_abs = source_canon.join(rel);
         let dest_abs = dest_canon.join(rel);
 
-        // Ensure the destination parent exists (transfer_file creates it for
-        // copy strategies, but reflink/hardlink helpers also need it).
-        if let Some(parent) = dest_abs.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
+        // transfer_file creates parent directories internally for every
+        // strategy and emits CopyStarted/CopyFinished (with error) itself.
         match transfer_file(
             &source_canon,
             rel,
@@ -191,10 +187,21 @@ pub fn run_sync(
                     (Some(x), Some(s)) => FileHash::Full(x.clone(), s.clone()),
                     (Some(x), None) => FileHash::Fast(x.clone()),
                     (None, Some(s)) => {
-                        // Should not happen (identity prefers sha), but stay safe.
-                        summary.failed += 1;
-                        let _ = s;
-                        continue;
+                        // Rare: source record has SHA-256 but no XXH3-128.
+                        // Compute XXH3 from the freshly copied file so the
+                        // dest record gets a complete identity (otherwise the
+                        // copied file would sit on disk with no DB record).
+                        match crate::hash::xxh3_128_file(&dest_abs) {
+                            Ok(h) => FileHash::Full(h.to_bytes().to_vec(), s.clone()),
+                            Err(e) => {
+                                sink.emit(&Event::ApplyError {
+                                    path: record.path.clone(),
+                                    message: format!("hash failed after copy: {e}"),
+                                });
+                                summary.failed += 1;
+                                continue;
+                            }
+                        }
                     }
                     (None, None) => {
                         // Filtered out by diff (skipped_hashless).

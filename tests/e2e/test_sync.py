@@ -59,9 +59,14 @@ class TestSyncCommand:
         _import_into(peer_vault, "apple_with_exif.jpg")
 
         # Sync peer (which only has apple) FROM vault (which only has no_exif)
-        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        result = peer_vault.run("--output=json", "sync", str(vault.vault_dir), "--yes")
         assert result.returncode == 0
-        assert "To copy" in result.stderr or "To copy" in result.stdout
+
+        # Assert via the JSON event stream (not UI wording)
+        events = [json.loads(line) for line in result.stdout.strip().split("\n") if line]
+        plan = next(e for e in events if e.get("event") == "sync_plan")
+        assert plan["to_copy"] == 1
+        assert plan["identical"] == 0
 
         # no_exif.jpg now exists in peer vault and is registered
         rows = peer_vault.find_file_in_db("no_exif.jpg")
@@ -76,11 +81,11 @@ class TestSyncCommand:
         _import_into(vault, "no_exif.jpg")
 
         peer_vault.run("sync", str(vault.vault_dir), "--yes")
-        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
-
-        combined = result.stdout + result.stderr
-        assert "Identical:" in combined
-        assert "To copy" not in combined
+        result = peer_vault.run("--output=json", "sync", str(vault.vault_dir), "--yes")
+        events = [json.loads(line) for line in result.stdout.strip().split("\n") if line]
+        plan = next(e for e in events if e.get("event") == "sync_plan")
+        assert plan["identical"] == 1
+        assert plan["to_copy"] == 0
         rows = peer_vault.find_file_in_db("no_exif.jpg")
         assert len(rows) == 1  # still exactly one record
 
@@ -89,9 +94,10 @@ class TestSyncCommand:
         _import_into(vault, "no_exif.jpg")
         _import_into(peer_vault, "apple_with_exif.jpg")
 
-        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
-        combined = result.stdout + result.stderr
-        assert "Only local:" in combined or "Only dest:" in combined
+        result = peer_vault.run("--output=json", "sync", str(vault.vault_dir), "--yes")
+        events = [json.loads(line) for line in result.stdout.strip().split("\n") if line]
+        plan = next(e for e in events if e.get("event") == "sync_plan")
+        assert plan["only_dest"] == 1
 
         # apple_with_exif.jpg still exists in peer vault
         assert len(list(peer_vault.vault_dir.rglob("apple_with_exif.jpg"))) == 1
@@ -111,9 +117,10 @@ class TestSyncCommand:
         src2.write_bytes(b"content-BBB-different")
         peer_vault.import_dir(peer_vault.source_dir)
 
-        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
-        combined = result.stdout + result.stderr
-        assert "Conflict" in combined
+        result = peer_vault.run("--output=json", "sync", str(vault.vault_dir), "--yes")
+        events = [json.loads(line) for line in result.stdout.strip().split("\n") if line]
+        plan = next(e for e in events if e.get("event") == "sync_plan")
+        assert plan["conflicts"] == 1
 
         # Local content preserved
         local_file = list(peer_vault.vault_dir.rglob(shared_name))
@@ -132,9 +139,11 @@ class TestSyncCommand:
         shutil.move(str(original), moved_dir / "no_exif.jpg")
         peer_vault.run("update", "--yes")
 
-        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
-        combined = result.stdout + result.stderr
-        assert "Moved:" in combined
+        result = peer_vault.run("--output=json", "sync", str(vault.vault_dir), "--yes")
+        events = [json.loads(line) for line in result.stdout.strip().split("\n") if line]
+        plan = next(e for e in events if e.get("event") == "sync_plan")
+        assert plan["moved"] == 1
+        assert plan["to_copy"] == 0
         # Nothing copied again
         assert len(peer_vault.find_file_in_db("no_exif.jpg")) == 1
 

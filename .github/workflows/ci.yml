@@ -39,3 +39,24 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Clippy (zero warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      # ── Architecture guards (docs/ARCHITECTURE.md R1/R2) ──────────────────
+      # R1: svault-core must not depend on terminal / CLI-parser crates
+      - name: Guard R1 — no terminal deps in svault-core
+        shell: bash
+        run: |
+          ! grep -E 'indicatif|console|rich_rust|clap' svault-core/Cargo.toml
+
+      # R2: svault-core must not touch stdin/stdout/stderr directly
+      # (doc-comment examples starting with /// are allowed)
+      - name: Guard R2 — no direct terminal IO in svault-core
+        shell: bash
+        run: |
+          ! grep -rn 'println!\|eprintln!\|read_line' svault-core/src --include='*.rs' | grep -v '///' | grep .
+

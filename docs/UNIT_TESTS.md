@@ -196,7 +196,6 @@
 | 磁盘空间 | 4 | ENOSPC 处理、事务一致性 |
 | 配置/策略 | 13 | 传输策略 fallback 链验证 |
 | 跨文件系统 | 4 | ext4/btrfs 不同组合 |
-| History | 6 | 事件查询、过滤、JSON 输出 |
 | 并发/锁 | 4 | 进程锁、并发导入 |
 | Scan + Filter + Import | 10 | 扫描过滤导入流水线 |
 
@@ -225,10 +224,10 @@
 - [ ] `pipeline::insert` - 测试批量 DB 插入
 - [ ] E2E: `Reporter / output` 语义测试
   说明：锁定 `--output human/json` 的 `stdout/stderr` 边界，避免 reporter 重构污染最终 JSON 输出
-  方案文档：[docs/E2E_EXPANSION_PLAN.md](/home/mxq/Codes/svault/docs/E2E_EXPANSION_PLAN.md)
+  方案文档：[docs/E2E_EXPANSION_PLAN.md](./E2E_EXPANSION_PLAN.md)
 - [ ] E2E: `marker / 测试分组` 自检
   说明：锁定 `dedup/conflict` 等 marker 的收集语义，防止测试合并后分组漂移
-  方案文档：[docs/E2E_EXPANSION_PLAN.md](/home/mxq/Codes/svault/docs/E2E_EXPANSION_PLAN.md)
+  方案文档：[docs/E2E_EXPANSION_PLAN.md](./E2E_EXPANSION_PLAN.md)
 
 ### 中优先级
 
@@ -237,10 +236,10 @@
 - [ ] 并发导入测试 - 多线程安全验证
 - [ ] E2E: `scan -> filter -> import` 流水线补强
   说明：补空输入、全 duplicate、部分失效输入、空格/中文路径等真实用户工作流边界
-  方案文档：[docs/E2E_EXPANSION_PLAN.md](/home/mxq/Codes/svault/docs/E2E_EXPANSION_PLAN.md)
+  方案文档：[docs/E2E_EXPANSION_PLAN.md](./E2E_EXPANSION_PLAN.md)
 - [ ] E2E: `conftest.py` 复用重构
   说明：提取高频场景 helper，减少重复 setup 与重复断言，优先迁移 `test_import_dedup.py`
-  方案文档：[docs/E2E_CONFTEST_REFACTOR_PLAN.md](/home/mxq/Codes/svault/docs/E2E_CONFTEST_REFACTOR_PLAN.md)
+  方案文档：[docs/E2E_CONFTEST_REFACTOR_PLAN.md](./E2E_CONFTEST_REFACTOR_PLAN.md)
 
 ### 低优先级 (集成测试)
 

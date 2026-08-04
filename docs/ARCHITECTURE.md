@@ -50,8 +50,11 @@ pub enum Event {
     PhaseFinished { phase },                     // 阶段结束（清理进度条）
     ScanItem { path, size, mtime_ms, status, error },
     Preflight { source, total, new, duplicate, moved, failed },
-    CopyStarted / CopyProgress / CopyFinished,
-    HashStarted / HashFinished { path, bytes, error },
+    CopyStarted { src, dst, bytes },
+    CopyProgress { src, copied, total },
+    CopyFinished { src, dst, error },
+    HashStarted { path, bytes },
+    HashFinished { path, bytes, error },
     RelocateMatched { old_path, new_path, confidence },  // update 命令
     Progress { phase, done, total },             // insert/apply 计数
     ApplyError { path, message },
@@ -60,9 +63,7 @@ pub enum Event {
     RecheckItem { src, vault, status },
     SyncPlan { source_vault, identical, to_copy, .. },   // sync 比对结果
     Summary(Summary),  // import/add/verify/recheck/update/clone/sync
-    Hint(Hint),        // OnlyMoved / MovedHint / NothingToUpdate / ..
-    Summary(Summary),                            // 结构化总结（import/add/verify/…）
-    Hint(Hint),                                  // OnlyMoved/MovedHint/DryRunMissing/…
+    Hint(Hint),        // OnlyMoved / MovedHint / NothingToUpdate / DryRunMissing
 }
 
 pub trait EventSink: Send + Sync {

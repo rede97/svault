@@ -75,7 +75,8 @@ svault-cli   薄入口（clap 解析 + 组装 + 调用）
 
 所有移除均记录在 `docs/PARKED.md`（原因 + 恢复路径），防止后续 AI 会话"顺手复活"。
 
-**结果**：release 构建从 12 个命令（含 2 个 stub）收敛为 8 个真实骨干命令。
+**结果**：release 构建从 12 个命令（含 2 个 stub）收敛为 8 个真实骨干命令
+（Q4 实现 clone/sync 后为 10 个；debug 构建另有 scan/debug 两个调试命令）。
 
 ---
 
@@ -162,7 +163,7 @@ CLI 两个命令、E2E 两个文件（17 个测试）。
 | Python E2E（Windows 全量） | ✅ 206 通过 / 39 跳过；1 failed + 4 errors 均为 Linux 专属（ext4/btrfs/strace），**与重构前基线逐项比对完全相同——零回归** |
 | E2E 新增（clone 8 + sync 9） | ✅ 全部通过 |
 | 真机冒烟 | ✅ import 全流程 / 去重 / update 移动修正 / sync 冲突与幂等 / clone 过滤 / JSON 流合法性 / `--quiet` |
-| Release 命令集 | ✅ 10 个真实命令，无 stub |
+| Release 命令集 | ✅ 10 个真实命令（8 骨干 + clone/sync），无 stub |
 
 ### 量化结果
 

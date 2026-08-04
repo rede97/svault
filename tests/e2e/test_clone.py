@@ -78,8 +78,12 @@ class TestCloneCommand:
         os.utime(src, (now, now))
         vault.import_dir(vault.source_dir)
 
+        # Use a wide range around now — the filter is UTC-date-based while
+        # mtime is local, so "today" alone is flaky near midnight.
         today = datetime.date.today()
-        rng = f"{today.isoformat()}..{today.isoformat()}"
+        yesterday = today - datetime.timedelta(days=1)
+        tomorrow = today + datetime.timedelta(days=1)
+        rng = f"{yesterday.isoformat()}..{tomorrow.isoformat()}"
         target = vault.output_dir / "export_today"
         vault.run("clone", "--target", str(target), "--filter-date", rng)
         exported = [p for p in target.rglob("*.jpg") if p.is_file()]
