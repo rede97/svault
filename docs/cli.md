@@ -1,22 +1,22 @@
-# CLI Interface Design
+# CLI 参考文档
 
-> 命令行接口设计文档
+> 本文档描述 **当前实现** 的命令行接口（与代码同步维护）。
+> 架构与功能分级见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
 ---
 
 ## 设计原则
 
-- **幂等性**：所有写操作支持 `--dry-run`，预览变更不执行
-- **机器可读**：`--output json` 输出结构化数据，供脚本和 AI Agent 消费
-- **安全优先**：无任何删除命令，危险操作需 `--yes` 显式确认
-- **标准退出码**：所有命令遵循统一退出码约定
-- **进度可观测**：Human 模式提供阶段进度，JSON 模式输出结构化事件
+- **幂等性**：重复执行同一命令不会产生重复数据（三层哈希去重）
+- **机器可读**：`--output json` 输出逐行 JSON 事件流（schema 见 `svault-core/src/event.rs`）
+- **安全优先**：无任何删除文件的命令；写操作默认需要交互确认或 `--yes`
+- **进度可观测**：所有长耗时操作通过统一事件流报告进度
 
 ---
 
 ## 全局选项
 
-所有命令均支持以下全局选项：
+所有命令均支持：
 
 | 选项 | 说明 |
 |------|------|
@@ -24,7 +24,9 @@
 | `--dry-run` | 预览操作，不执行任何写入 |
 | `--yes` | 跳过交互确认 |
 | `--quiet` | 抑制非错误输出 |
-| `--threads <n>` | 指定 Rayon 线程数（`0` = 默认） |
+| `--threads <n>` | Rayon 工作线程数（0 = 默认） |
+
+> `--output json` 需要 `--yes`（JSON 模式不交互，避免人类提示污染事件流）。
 
 ---
 
@@ -33,16 +35,39 @@
 | 退出码 | 含义 |
 |--------|------|
 | `0` | 成功 |
-| `1` | 通用错误 |
-| `2` | 参数错误 |
-| `3` | 源不可达（路径不存在） |
-| `4` | 目标空间不足 |
-| `5` | 冲突需人工介入 |
-| `6` | 数据库一致性错误 |
+| `1` | 失败（错误信息输出到 stderr） |
+
+---
+
+## JSON 事件流
+
+`--output json` 时 stdout 为逐行 JSON 事件（每行一个完整对象）：
+
+```jsonl
+{"event":"phase_started","phase":"scan","total":null,"context":{"source":"/mnt/card"}}
+{"event":"scan_item","path":"/mnt/card/IMG_001.CR3","size":52428800,"mtime_ms":1710518400000,"status":"new","error":null}
+{"event":"preflight","source":"/mnt/card","total":245,"new":142,"duplicate":103,"moved":0,"failed":0}
+{"event":"phase_finished","phase":"scan"}
+{"event":"copy_started","src":"/mnt/card/IMG_001.CR3","dst":"/vault/2024/03-15/Canon/IMG_001.CR3","bytes":52428800}
+{"event":"summary","kind":"import","total":245,"imported":142,"duplicate":103,"failed":0,"manifest_path":"/vault/.svault/manifests/import-1710518400.json","all_cache_hit":false}
+```
+
+**约定**：每个操作一定以 `{"event":"summary","kind":...}` 事件收尾，
+消费者可以把它当作流结束标记。
 
 ---
 
 ## 命令列表
+
+### `svault init`
+
+在当前目录初始化一个新 vault（创建 `.svault/vault.db` 与 `svault.toml`）。
+
+```
+svault init
+```
+
+---
 
 ### `svault import`
 
@@ -52,61 +77,20 @@
 svault import <source> [options]
 ```
 
-| 选项 | 简写 | 说明 |
-|------|------|------|
-| `<source>` | | 源目录或挂载点（必填，位置参数） |
-| `--target <path>` | | 目标归档目录（默认使用配置文件中的 vault 路径） |
-| `--hash <algo>` | `-H` | 哈希算法：`fast`（XXH3-128，高吞吐，默认）/ `secure`（SHA-256，加密强度）。优先级：CLI > `svault.toml [global].hash` > 内置默认值（`fast`）|
-| `--files-from <path>` | | （规划中）从文件读取要导入的相对路径列表，跳过完整扫描 |
+| 选项 | 说明 |
+|------|------|
+| `<source>` | 源目录（必填；不得位于 vault 内，vault 内文件用 `add`）。`-` 表示从 stdin 读文件列表（配合 `--files-from`） |
+| `--files-from <path>` | 从文件读取要导入的路径列表（一行一个），跳过完整扫描 |
+| `--target <path>` | vault 子目录；从此路径向上发现 vault root（默认当前目录） |
+| `--strategy <list>` | 传输策略：`reflink` / `hardlink` / `copy`，可逗号组合（默认 `reflink`；`copy` 始终兜底） |
+| `--force` | 即使确认重复也强制导入（同时计算 SHA-256 做确定身份） |
+| `--full-id` | 计算 SHA-256 作为确定身份（更强去重保证，更慢） |
+| `--show-dup` | 在扫描输出中显示被跳过的重复文件 |
 
-**清单文件：**
+**清单文件：** 每次导入写入 `.svault/manifests/import-<session>.json`，
+记录源路径、归档路径与哈希，供 `recheck` 使用。
 
-每次导入自动生成清单到 `<vault_root>/manifests/import-<timestamp>.txt`，记录所有文件的源路径、归档路径和处理结果。
-
-**全部命中缓存时的行为：**
-
-Stage B 完成后若 `likely_new = 0`，默认输出提示并退出：
-```
-All 245 files matched cache (no new files detected).
-To verify duplicates, run:
-  svault recheck   # 基于 manifest 校验源文件与 vault 副本
-```
-
-**输出（human）：**
-```
-Scanning /mnt/card... 245 files found
-Importing: [====================] 142/142
-
-Summary:
-  Imported:   142
-  Duplicate:   23
-  Skipped:     80 (cache hit)
-  Failed:       0
-
-Manifest: ./manifests/import-20240315T143000.txt
-```
-
-**输出（json）：**
-```json
-{
-  "files_found": 245,
-  "imported": 142,
-  "duplicate": 23,
-  "skipped": 80,
-  "failed": 0,
-  "manifest": "./manifests/import-20240315T143000.txt"
-}
-```
-
-**JSON 事件流（stdout）：**
-```jsonl
-{"event":"scan_started"}
-{"event":"scan_item","path":"/mnt/card/DCIM/IMG_001.CR3","status":"new"}
-{"event":"preflight","total_scanned":245,"new":142,"duplicate":23,"failed":0}
-{"event":"copy_item_started","src":"/mnt/card/DCIM/IMG_001.CR3","size":52428800}
-{"event":"copy_item_finished","src":"/mnt/card/DCIM/IMG_001.CR3","status":"ok"}
-{"event":"import_summary","imported":142,"duplicate":23,"failed":0}
-```
+**全部命中缓存时：** 输出提示并以 `all_cache_hit: true` 的 summary 退出。
 
 ---
 
@@ -115,49 +99,36 @@ Manifest: ./manifests/import-20240315T143000.txt
 注册已经物理存在于 vault 目录内的文件，不移动数据。
 
 ```
-svault add <path> [options]
+svault add <path>
 ```
 
 | 选项 | 说明 |
 |------|------|
 | `<path>` | vault 内的目录路径（必填） |
-| `-H <algo>` | 哈希算法：`fast` / `secure` |
+
+若发现文件疑似 vault 内部移动（内容已在库但路径失效），
+会提示改用 `svault update`。
 
 ---
 
-### `svault sync`
-
-从另一个 vault 同步文件和数据库记录到本地（增量，基于事件日志）。
-
-```
-svault sync --source <source_vault> [options]
-```
-
-| 选项 | 说明 |
-|------|------|
-| `--source <path>` | 源 vault 根目录（必须包含 `.svault/vault.db`，必填） |
-| `--strategy <strategies>` | 传输策略：`reflink` / `hardlink` / `copy`，可逗号组合（默认 `reflink`）。`copy` 一旦出现在列表中即直接执行二进制拷贝并终止后续 fallback；若未显式写 `copy`，则所有策略失败后会自动以二进制拷贝兜底。 |
-| `--verify` | 同步后校验目标文件完整性 |
-
----
-
-### `svault reconcile`
+### `svault update`
 
 扫描归档目录，找回被用户在 Svault 外部移动或重命名的文件，更新数据库路径。
+找不到的文件标记为 `missing`（Svault 永不删除文件）。
 
 ```
-svault reconcile --root <path> [options]
+svault update [--target <path>] [--dry-run] [--yes]
 ```
 
 | 选项 | 说明 |
 |------|------|
-| `--root <path>` | 扫描根目录（必填） |
+| `--target <path>` | 扫描根目录（默认为当前目录，按 vault 发现规则） |
 
 **流程：**
-1. 扫描 `--root` 下所有文件，计算 CRC32C 指纹
-2. 与数据库中 `status=imported` 但路径失效的记录匹配
-3. 输出路径变更清单（dry-run 默认开启，需 `--yes` 执行写入）
-4. 写入 `file.path_updated` 事件，更新 `files.path`
+1. 扫描目标目录下所有文件，计算哈希（XXH3-128，必要时 SHA-256 确认）
+2. 与数据库中路径失效的记录匹配
+3. 确认后写入 `file.path_updated` 事件，更新 `files.path`
+4. 未匹配的记录标记为 `missing`
 
 ---
 
@@ -171,150 +142,128 @@ svault verify [options]
 
 | 选项 | 说明 |
 |------|------|
-| `-H <algo>` | 哈希算法：`fast`（XXH3-128）/ `secure`（SHA-256，默认） |
 | `--file <path>` | 仅校验指定文件 |
 | `--recent <seconds>` | 仅校验最近 N 秒内导入的文件 |
 | `--upgrade-links` | 将 hardlink 文件原地升级为独立二进制拷贝 |
 | `--background-hash` | 在验证前补齐缺失的 SHA-256 |
 | `--background-hash-limit <N>` | `--background-hash` 时最多处理的文件数 |
-| `--background-hash-nice` | `--background-hash` 时以低 IO 优先级运行 |
 
-**输出示例：**
-```
-Verifying 142 files...
-  OK:       140
-  Corrupt:    1  → /archive/2024/03-15/IMG_005.cr3
-  Missing:    1  → /archive/2024/03-15/IMG_010.cr3
-
-Run `svault reconcile` to locate moved files.
-```
+校验策略：DB 中有 SHA-256 用 SHA-256（确定），否则用 XXH3-128（快速）。
+发现 missing / size mismatch / hash mismatch / IO error 时以退出码 1 结束。
 
 ---
 
-### `svault status`
+### `svault recheck`
 
-显示归档库的当前状态概览。
-
-```
-svault status [options]
-```
-
-**输出示例：**
-```
-Vault: /archive
-  Files:        142  (imported)
-  Duplicates:    23
-  Pending SHA:   18  (sha256 not yet computed)
-  Groups:        12  (live_photo: 8, raw_jpeg: 4)
-  Derivatives:    0
-  Events:       312
-  DB size:      1.2 MB
-```
-
----
-
-### `svault history`
-
-查询导入历史（按会话或会话条目）。
+基于 manifest 同时校验**源文件**和 vault 副本与导入时记录的一致性。
+报告写入 `.svault/staging/recheck_<session>.json`。
 
 ```
-svault history [sessions|items] [options]
-```
-
-**子命令：**
-
-| 子命令 | 说明 |
-|--------|------|
-| `history sessions` | 列出导入/添加会话 |
-| `history items --session <id>` | 查看指定会话的文件条目 |
-
-**`history sessions` 选项：**
-
-| 选项 | 说明 |
-|------|------|
-| `--from <datetime>` | 起始时间过滤（RFC 3339 或 YYYY-MM-DD） |
-| `--to <datetime>` | 结束时间过滤（RFC 3339 或 YYYY-MM-DD） |
-| `--source <path>` | 按来源路径过滤 |
-| `--limit <n>` | 限制输出条数（默认 50） |
-| `--offset <n>` | 分页偏移（默认 0） |
-
-**`history items` 选项：**
-
-| 选项 | 说明 |
-|------|------|
-| `--session <id>` | 会话 ID（必填） |
-| `--status <status>` | 按条目状态过滤 |
-| `--limit <n>` | 限制输出条数（默认 50） |
-| `--offset <n>` | 分页偏移（默认 0） |
-
-**输出示例：**
-```
-svault history sessions --output json
-svault history items --session <session_id> --output json
-```
-
----
-
-
-
-### `svault scan`（规划中）
-
-仅执行扫描阶段（Stage A/B），输出可能新增的文件列表，供外部工具过滤后再定向导入。
-
-```
-svault scan <source> [options]
+svault recheck [source] [--session <id>] [--target <path>]
 ```
 
 | 选项 | 说明 |
 |------|------|
-| `<source>` | 源目录（必填） |
-| `--show-dup` | 显示被判定为重复的文件 |
-| `--force` | 将被缓存判定为重复的文件也标记为 likely-new |
+| `[source]` | 可选源目录，必须与 manifest 记录的 source_root 一致 |
+| `--session <id>` | 指定会话（默认最近一次导入） |
+| `--target <path>` | vault 子目录（同 import 的发现规则） |
 
-**典型管道工作流：**
-```bash
-svault scan /mnt/card > candidates.txt
-exiftool -p '$Directory/$FileName' -if '$Model eq "iPhone 15"' /mnt/card > iphone.txt
-svault import /mnt/card --files-from iphone.txt
-```
+状态分类：`ok` / `source_modified` / `vault_corrupted` / `both_diverged` /
+`source_deleted` / `vault_deleted` / `error`。
 
 ---
 
 ### `svault clone`
 
-从归档克隆文件子集到本地工作目录（用于移动办公场景）。
+把 vault 的文件子集单向导出到普通目录（非 vault），保留 vault 相对路径，
+并写出 `svault-clone-manifest.json`。
 
 ```
-svault clone --target <path> [options]
+svault clone --target <dir> [options]
 ```
 
 | 选项 | 说明 |
 |------|------|
-| `--target <path>` | 克隆目标目录（必填） |
-| `--filter-date <range>` | 按日期过滤，如 `2024-03-01..2024-03-31` |
-| `--filter-camera <model>` | 按相机型号过滤 |
+| `--target <dir>` | 导出目标目录（必填；不得位于 vault 内） |
+| `--filter-date <range>` | 按 mtime 过滤，如 `2024-03-01..2024-03-31` |
+| `--strategy <list>` | 传输策略（同 import） |
 
-**当前行为：**
-- 只读操作，不会创建新的 `history sessions`
-- 目标目录禁止位于 vault 内（含符号链接指向 vault 内）
-- 输出汇总字段：`selected` / `copied` / `skipped` / `failed` / `verify_failed`
+导出完成后在源 vault 的事件日志记一条 `vault.cloned` 审计事件。
+
+---
+
+### `svault sync`
+
+从另一个 vault 复制本 vault 缺失的文件（Beyond Compare 风格）。
+比对基于两侧数据库记录的哈希（SHA-256 优先，XXH3-128 兜底），不做全量重新哈希。
+源 vault 以只读方式打开，永不被修改；仅存在于本 vault 的文件只会被报告，永不被删除。
+
+```
+svault sync <source_vault> [options]
+```
+
+| 选项 | 说明 |
+|------|------|
+| `<source_vault>` | 源 vault 根目录（必须包含 `.svault/vault.db`，必填） |
+| `--strategy <list>` | 传输策略（同 import） |
+| `--verify <scope>` | 同步后校验范围：`none` / `norm`（仅本次新增，默认）/ `full`（全库） |
+
+**比对分类：**
+
+| 分类 | 含义 | 行为 |
+|------|------|------|
+| Identical | 两侧 hash 与路径均相同 | 跳过 |
+| To copy | 仅源 vault 有 | 复制并入库（SessionType=sync，写 `sync-<id>.json` manifest） |
+| Only local | 仅本 vault 有 | 仅报告（永不删除） |
+| Moved | hash 相同但路径不同 | 仅报告（不改路径） |
+| Conflict | 路径相同但 hash 不同 | 跳过复制，保留本地，报告 |
+
+---
+
+### `svault status`
+
+显示归档库的当前状态概览（文件统计、哈希覆盖、近期导入、事件日志、主要文件类型）。
+
+```
+svault status [--output json]
+```
+
+---
+
+### `svault db dump`
+
+导出数据库表内容（用于审计、调试和外部工具集成）。
+
+```
+svault db dump [tables...] [--format csv|json|sql] [--limit N]
+```
+
+默认导出全部表。JSON 格式为 `[{name, columns, row_count, rows}]`。
 
 ---
 
 ### `svault db verify-chain`
 
-验证事件日志的哈希链完整性。
+验证事件日志的哈希链完整性（逐条验证 `self_hash` 与 `prev_hash`）。
 
 ```
-svault db verify-chain [options]
+svault db verify-chain
 ```
 
-遍历 `events` 表，逐条验证 `self_hash` 和 `prev_hash` 的一致性。任何链断裂都会报告具体的 `seq` 位置。
+---
 
-**输出示例：**
+### `svault scan`（仅 debug 构建）
+
+仅执行扫描阶段（Stage A/B），以 pipe 协议输出分类结果，供外部工具过滤后再定向导入。
+
 ```
-Verifying event chain (312 events)...
-  Chain OK: seq 1 → 312
+svault scan <source> [--show-dup]
+```
+
+**典型管道工作流：**
+```bash
+svault scan /mnt/card | svault import /mnt/card --files-from -
+svault scan /mnt/card --show-dup > report.txt
 ```
 
 ---
@@ -322,19 +271,20 @@ Verifying event chain (312 events)...
 ## AI Agent 集成示例
 
 ```bash
-# 1. 预览导入，获取结构化输出
-svault import /mnt/card --dry-run --output json
+# 1. 预览导入（JSON 事件流，不写入）
+svault --output json --dry-run --yes import /mnt/card
 
-# 2. Agent 解析输出，决策后执行
-svault import /mnt/card --yes --output json
+# 2. Agent 解析事件流，决策后执行
+svault --output json --yes import /mnt/card
 
 # 3. 校验归档完整性
-svault verify --output json
+svault --output json verify
 
-# 4. 查询最近导入历史
-svault history sessions --from 2024-03-15 --output json
+# 4. 查询数据库（替代已移除的 history 命令）
+svault db dump files --format json | jq '.[0].rows | length'
+svault db dump events --format json | jq '.[0].rows[-5:]'
 ```
 
 ---
 
-*此文档为 Svault 核心设计文档，随实现演进持续更新。*
+*此文档与实现同步维护；发现不一致请以代码为准并修正本文档。*

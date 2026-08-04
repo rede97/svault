@@ -472,20 +472,20 @@ class TestImportInteractiveBehavior:
         assert result.returncode == 0, f"JSON import with --yes should succeed: {result.stderr}"
         
         # Stdout contains JSON Lines (one JSON object per line)
-        # Parse all lines and find the import_summary event
+        # Parse all lines and find the import summary event
         lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
         summary = None
         for line in lines:
             try:
                 obj = json.loads(line)
-                if obj.get("event") == "import_summary":
+                if obj.get("event") == "summary" and obj.get("kind") == "import":
                     summary = obj
                     break
             except json.JSONDecodeError:
                 continue
         
         if summary is None:
-            pytest.fail(f"No import_summary event found in stdout:\n{result.stdout}")
+            pytest.fail(f"No import summary event found in stdout:\n{result.stdout}")
         
         # JSON should have expected structure
         assert "imported" in summary, "JSON should contain 'imported' field"

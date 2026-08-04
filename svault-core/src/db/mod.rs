@@ -73,6 +73,19 @@ impl Db {
         Ok(db)
     }
 
+    /// Open an existing database read-only.
+    ///
+    /// Used by `svault sync` to inspect a peer vault without holding a write
+    /// lock or running migrations against it. Fails if the file does not exist.
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        Ok(Self { conn })
+    }
+
     /// Apply schema migrations idempotently.
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA)

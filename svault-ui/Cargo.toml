@@ -1,0 +1,17 @@
+[package]
+name = "svault-ui"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal presentation layer for Svault (progress bars, JSON stream, prompts)"
+license = "MIT"
+repository = "https://github.com/rede97/svault"
+keywords = ["archive", "terminal", "progress", "cli"]
+categories = ["command-line-interface"]
+
+[dependencies]
+svault-core = { version = "0.1.0", path = "../svault-core" }
+indicatif = "0.17"
+console = "0.15"
+rich_rust = "0.2"
+serde_json = "1"
+anyhow = "1"

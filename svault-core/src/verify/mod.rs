@@ -7,17 +7,19 @@ pub mod background_hash;
 pub mod hardlink_upgrade;
 pub mod manifest;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::config::HashAlgorithm;
 use crate::db::{Db, FileRow};
+use crate::event::{Event, EventSink, Phase, PhaseContext, Summary};
 use crate::hash::{sha256_file, xxh3_128_file};
-use crate::reporting::{ReporterBuilder, VerifyReporter};
 
 /// Result of a single file verification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
 pub enum VerifyResult {
     /// File verified successfully, hash matches.
     Ok,
@@ -28,7 +30,7 @@ pub enum VerifyResult {
     /// Hash mismatch (indicates corruption or tampering).
     HashMismatch { algo: HashAlgorithm },
     /// Error reading file.
-    IoError(String),
+    IoError { message: String },
     /// Hash not computed yet (lazy hashing).
     HashNotAvailable,
 }
@@ -46,7 +48,7 @@ impl VerifyResult {
 }
 
 /// Summary of a verify run.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct VerifySummary {
     pub total: usize,
     pub ok: usize,
@@ -71,7 +73,11 @@ pub fn verify_file(vault_root: &Path, file: &FileRow) -> VerifyResult {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return VerifyResult::Missing;
         }
-        Err(e) => return VerifyResult::IoError(e.to_string()),
+        Err(e) => {
+            return VerifyResult::IoError {
+                message: e.to_string(),
+            };
+        }
     };
 
     // Check size matches (fast check)
@@ -88,7 +94,11 @@ pub fn verify_file(vault_root: &Path, file: &FileRow) -> VerifyResult {
         // Definitive verification with SHA-256
         let computed = match sha256_file(&full_path) {
             Ok(h) => h,
-            Err(e) => return VerifyResult::IoError(e.to_string()),
+            Err(e) => {
+                return VerifyResult::IoError {
+                    message: e.to_string(),
+                };
+            }
         };
 
         if computed.to_bytes() != stored_sha256.as_slice() {
@@ -103,7 +113,11 @@ pub fn verify_file(vault_root: &Path, file: &FileRow) -> VerifyResult {
     if let Some(stored_xxh3) = &file.xxh3_128 {
         let computed = match xxh3_128_file(&full_path) {
             Ok(h) => h,
-            Err(e) => return VerifyResult::IoError(e.to_string()),
+            Err(e) => {
+                return VerifyResult::IoError {
+                    message: e.to_string(),
+                };
+            }
         };
 
         if computed.to_bytes() != stored_xxh3.as_slice() {
@@ -119,52 +133,13 @@ pub fn verify_file(vault_root: &Path, file: &FileRow) -> VerifyResult {
 }
 
 /// Verify all files in the vault.
-pub fn verify_all<RB: ReporterBuilder>(
+pub fn verify_all(
     vault_root: &Path,
     db: &Db,
-    reporter_builder: &RB,
+    sink: &dyn EventSink,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_all_files()?;
-    let total = files.len();
-
-    if total == 0 {
-        return Ok((Vec::new(), VerifySummary::default()));
-    }
-
-    let reporter = reporter_builder.verify_reporter(total as u64);
-    reporter.started(total as u64);
-
-    let vault_root = vault_root.to_path_buf();
-
-    let results: Vec<(String, VerifyResult)> = files
-        .into_par_iter()
-        .map(|file| {
-            let path = Path::new(&file.path);
-            reporter.item_started(path);
-            let result = verify_file(&vault_root, &file);
-            reporter.item_finished(path, &result);
-            (file.path, result)
-        })
-        .collect();
-
-    reporter.finish();
-
-    let mut summary = VerifySummary::default();
-    for (_, result) in &results {
-        match result {
-            VerifyResult::Ok => summary.ok += 1,
-            VerifyResult::Missing => summary.missing += 1,
-            VerifyResult::SizeMismatch { .. } => summary.size_mismatch += 1,
-            VerifyResult::HashMismatch { .. } => summary.hash_mismatch += 1,
-            VerifyResult::IoError(_) => summary.io_error += 1,
-            VerifyResult::HashNotAvailable => summary.hash_not_available += 1,
-        }
-    }
-    summary.total = results.len();
-
-    reporter.summary(&summary);
-
-    Ok((results, summary))
+    verify_files(vault_root, files, sink)
 }
 
 /// Verify a specific file by path.
@@ -180,36 +155,52 @@ pub fn verify_single(
 }
 
 /// Verify files imported in the last N seconds.
-pub fn verify_recent<RB: ReporterBuilder>(
+pub fn verify_recent(
     vault_root: &Path,
     db: &Db,
     seconds: u64,
-    reporter_builder: &RB,
+    sink: &dyn EventSink,
 ) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let files = db.get_recent_files(seconds)?;
+    verify_files(vault_root, files, sink)
+}
+
+/// Shared verification driver: hashes the given DB rows in parallel, emits
+/// [`Event::VerifyItem`] per file, and finishes with [`Summary::Verify`].
+fn verify_files(
+    vault_root: &Path,
+    files: Vec<FileRow>,
+    sink: &dyn EventSink,
+) -> anyhow::Result<(Vec<(String, VerifyResult)>, VerifySummary)> {
     let total = files.len();
 
     if total == 0 {
         return Ok((Vec::new(), VerifySummary::default()));
     }
 
-    let reporter = reporter_builder.verify_reporter(total as u64);
-    reporter.started(total as u64);
+    sink.emit(&Event::PhaseStarted {
+        phase: Phase::Verify,
+        total: Some(total as u64),
+        context: PhaseContext::vault(vault_root.to_path_buf()),
+    });
 
     let vault_root = vault_root.to_path_buf();
 
     let results: Vec<(String, VerifyResult)> = files
         .into_par_iter()
         .map(|file| {
-            let path = Path::new(&file.path);
-            reporter.item_started(path);
             let result = verify_file(&vault_root, &file);
-            reporter.item_finished(path, &result);
+            sink.emit(&Event::VerifyItem {
+                path: PathBuf::from(&file.path),
+                result: result.clone(),
+            });
             (file.path, result)
         })
         .collect();
 
-    reporter.finish();
+    sink.emit(&Event::PhaseFinished {
+        phase: Phase::Verify,
+    });
 
     let mut summary = VerifySummary::default();
     for (_, result) in &results {
@@ -218,13 +209,13 @@ pub fn verify_recent<RB: ReporterBuilder>(
             VerifyResult::Missing => summary.missing += 1,
             VerifyResult::SizeMismatch { .. } => summary.size_mismatch += 1,
             VerifyResult::HashMismatch { .. } => summary.hash_mismatch += 1,
-            VerifyResult::IoError(_) => summary.io_error += 1,
+            VerifyResult::IoError { .. } => summary.io_error += 1,
             VerifyResult::HashNotAvailable => summary.hash_not_available += 1,
         }
     }
     summary.total = results.len();
 
-    reporter.summary(&summary);
+    sink.emit(&Event::Summary(Summary::Verify(Box::new(summary.clone()))));
 
     Ok((results, summary))
 }

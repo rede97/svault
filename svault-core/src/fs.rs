@@ -1,6 +1,6 @@
 //! Local filesystem primitives used by import/update pipelines.
 
-use crate::reporting::CopyReporter;
+use crate::event::{Event, EventSink};
 
 use std::{
     fs,
@@ -187,73 +187,58 @@ fn walk_stream_recursive(
 }
 
 /// Transfer one file from `src_root/src_path` to `dst_root/dst_path`.
+///
+/// When `sink` is provided, emits [`Event::CopyStarted`] /
+/// [`Event::CopyProgress`] (Windows only) / [`Event::CopyFinished`].
 pub fn transfer_file(
     src_root: &Path,
     src_path: &Path,
     dst_root: &Path,
     dst_path: &Path,
     strategies: &[TransferStrategy],
-) -> FsResult<()> {
-    transfer_file_with_reporter(src_root, src_path, dst_root, dst_path, strategies, None::<&NoopCopyReporter>)
-}
-
-/// No-op copy reporter for use when progress is not needed.
-pub struct NoopCopyReporter;
-
-impl CopyReporter for NoopCopyReporter {
-    fn item_started(&self, _: &Path, _: &Path, _: u64) {}
-    fn item_progress(&self, _: &Path, _: u64, _: u64) {}
-    fn item_finished(&self, _: &Path, _: &Path, _: &crate::reporting::CopyItemResult) {}
-    fn finish(&self) {}
-}
-
-/// Transfer one file with progress reporting.
-pub fn transfer_file_with_reporter<R: CopyReporter>(
-    src_root: &Path,
-    src_path: &Path,
-    dst_root: &Path,
-    dst_path: &Path,
-    strategies: &[TransferStrategy],
-    reporter: Option<&R>,
+    sink: Option<&dyn EventSink>,
 ) -> FsResult<()> {
     let src_full = resolve_path(src_root, src_path);
     let dst_full = resolve_path(dst_root, dst_path);
     let file_size = fs::metadata(&src_full).map_err(FsError::Io)?.len();
-    
-    // Report start
-    if let Some(r) = reporter {
-        r.item_started(&src_full, &dst_full, file_size);
+
+    if let Some(s) = sink {
+        s.emit(&Event::CopyStarted {
+            src: src_full.clone(),
+            dst: dst_full.clone(),
+            bytes: file_size,
+        });
     }
-    
-    let result = try_transfer_with_reporter(
-        src_root, src_path, dst_root, dst_path, 
-        strategies, reporter
-    );
-    
-    // Report finish
-    if let Some(r) = reporter {
-        let copy_result = match &result {
-            Ok(_) => crate::reporting::CopyItemResult::Ok,
-            Err(e) => crate::reporting::CopyItemResult::Failed { message: e.to_string() },
+
+    let result = try_transfer(src_root, src_path, dst_root, dst_path, strategies, sink);
+
+    if let Some(s) = sink {
+        let error = match &result {
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
         };
-        r.item_finished(&src_full, &dst_full, &copy_result);
+        s.emit(&Event::CopyFinished {
+            src: src_full,
+            dst: dst_full,
+            error,
+        });
     }
-    
+
     result
 }
 
-fn try_transfer_with_reporter<R: CopyReporter>(
+fn try_transfer(
     src_root: &Path,
     src_path: &Path,
     dst_root: &Path,
     dst_path: &Path,
     strategies: &[TransferStrategy],
-    reporter: Option<&R>,
+    sink: Option<&dyn EventSink>,
 ) -> FsResult<()> {
     // Get file info for progress reporting
     let src_full = resolve_path(src_root, src_path);
     let file_size = fs::metadata(&src_full).map_err(FsError::Io)?.len();
-    
+
     for strategy in strategies {
         match strategy {
             TransferStrategy::Reflink => {
@@ -268,17 +253,15 @@ fn try_transfer_with_reporter<R: CopyReporter>(
             }
             TransferStrategy::StreamCopy => {
                 return stream_copy_with_progress(
-                    src_root, src_path, dst_root, dst_path,
-                    reporter, &src_full, file_size
+                    src_root, src_path, dst_root, dst_path, sink, &src_full, file_size,
                 );
             }
         }
     }
-    
+
     // Fallback to stream copy
     stream_copy_with_progress(
-        src_root, src_path, dst_root, dst_path,
-        reporter, &src_full, file_size
+        src_root, src_path, dst_root, dst_path, sink, &src_full, file_size,
     )
 }
 
@@ -317,25 +300,27 @@ fn hard_link_to(src_root: &Path, src: &Path, dst_root: &Path, dst: &Path) -> FsR
 }
 
 /// Copy a file with optional progress reporting.
-/// 
+///
 /// - Windows: Uses CopyFileExW for native progress callbacks
 /// - Linux/macOS: Uses std::io::copy (no per-file progress)
-fn stream_copy_with_progress<R: CopyReporter>(
+fn stream_copy_with_progress(
     src_root: &Path,
     src_path: &Path,
     dst_root: &Path,
     dst_path: &Path,
-    reporter: Option<&R>,
+    sink: Option<&dyn EventSink>,
     src_abs: &Path,
     total_size: u64,
 ) -> FsResult<()> {
     #[cfg(target_os = "windows")]
     {
-        stream_copy_windows_with_progress(src_root, src_path, dst_root, dst_path, reporter, src_abs, total_size)
+        stream_copy_windows_with_progress(
+            src_root, src_path, dst_root, dst_path, sink, src_abs, total_size,
+        )
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (reporter, src_abs, total_size); // Unused on non-Windows
+        let _ = (sink, src_abs, total_size); // Unused on non-Windows
         stream_copy_unix(src_root, src_path, dst_root, dst_path)
     }
 }
@@ -356,39 +341,33 @@ fn stream_copy_unix(
 
 /// Windows: CopyFileExW with progress callback.
 #[cfg(target_os = "windows")]
-fn stream_copy_windows_with_progress<R: CopyReporter>(
+fn stream_copy_windows_with_progress(
     src_root: &Path,
     src_path: &Path,
     dst_root: &Path,
     dst_path: &Path,
-    reporter: Option<&R>,
+    sink: Option<&dyn EventSink>,
     src_abs: &Path,
     total_size: u64,
 ) -> FsResult<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::CopyFileExW;
-    
+
     let src_full = resolve_path(src_root, src_path);
     let dst_full = resolve_path(dst_root, dst_path);
-    
+
     // Create parent directory if needed
     if let Some(parent) = dst_full.parent() {
         fs::create_dir_all(parent).map_err(FsError::Io)?;
     }
-    
+
     // Convert paths to wide strings
-    let src_wide: Vec<u16> = OsStr::new(&src_full)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let dst_wide: Vec<u16> = OsStr::new(&dst_full)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    
-    // If no reporter, use simple copy
-    if reporter.is_none() {
+    let src_wide: Vec<u16> = OsStr::new(&src_full).encode_wide().chain(Some(0)).collect();
+    let dst_wide: Vec<u16> = OsStr::new(&dst_full).encode_wide().chain(Some(0)).collect();
+
+    // If no sink, use simple copy
+    if sink.is_none() {
         let success = unsafe {
             CopyFileExW(
                 src_wide.as_ptr(),
@@ -404,15 +383,15 @@ fn stream_copy_windows_with_progress<R: CopyReporter>(
         }
         return Ok(());
     }
-    
+
     // Copy with progress callback
-    struct ProgressContext<'a, R: CopyReporter> {
-        reporter: &'a R,
+    struct ProgressContext<'a> {
+        sink: &'a dyn EventSink,
         src_abs: &'a Path,
         last_reported: std::sync::atomic::AtomicU64,
     }
-    
-    unsafe extern "system" fn progress_callback<R: CopyReporter>(
+
+    unsafe extern "system" fn progress_callback(
         total_file_size: i64,
         total_bytes_transferred: i64,
         _stream_size: i64,
@@ -423,48 +402,57 @@ fn stream_copy_windows_with_progress<R: CopyReporter>(
         _h_destination_file: isize,
         lp_data: *const std::ffi::c_void,
     ) -> u32 {
-        let ctx = unsafe { &*(lp_data as *const ProgressContext<R>) };
+        let ctx = unsafe { &*(lp_data as *const ProgressContext) };
         let copied = total_bytes_transferred as u64;
         let total = total_file_size as u64;
-        
+
         // Throttle progress reports to every 1% or 1MB
         let last = ctx.last_reported.load(std::sync::atomic::Ordering::Relaxed);
         let threshold = (total / 100).max(1024 * 1024);
-        
+
         if copied >= last + threshold || copied == total {
-            ctx.last_reported.store(copied, std::sync::atomic::Ordering::Relaxed);
-            ctx.reporter.item_progress(ctx.src_abs, copied, total);
+            ctx.last_reported
+                .store(copied, std::sync::atomic::Ordering::Relaxed);
+            ctx.sink.emit(&Event::CopyProgress {
+                src: ctx.src_abs.to_path_buf(),
+                copied,
+                total,
+            });
         }
-        
+
         0 // PROGRESS_CONTINUE
     }
-    
+
     let ctx = ProgressContext {
-        reporter: reporter.unwrap(),
+        sink: sink.unwrap(),
         src_abs,
         last_reported: std::sync::atomic::AtomicU64::new(0),
     };
-    
+
     let success = unsafe {
         CopyFileExW(
             src_wide.as_ptr(),
             dst_wide.as_ptr(),
-            Some(progress_callback::<R>),
+            Some(progress_callback),
             &ctx as *const _ as *const _,
             std::ptr::null_mut(),
             0,
         )
     };
-    
+
     if success == 0 {
         return Err(FsError::Io(std::io::Error::last_os_error()));
     }
-    
+
     // Report final progress
-    if let Some(r) = reporter {
-        r.item_progress(src_abs, total_size, total_size);
+    if let Some(s) = sink {
+        s.emit(&Event::CopyProgress {
+            src: src_abs.to_path_buf(),
+            copied: total_size,
+            total: total_size,
+        });
     }
-    
+
     Ok(())
 }
 
@@ -600,6 +588,7 @@ mod tests {
             temp_dir.path(),
             Path::new("dst.txt"),
             &strategies,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -619,6 +608,7 @@ mod tests {
             temp_dir.path(),
             dst_path,
             &strategies,
+            None,
         );
         assert!(result.is_ok());
 
@@ -644,6 +634,7 @@ mod tests {
             temp_dir.path(),
             Path::new("dst.bin"),
             &strategies,
+            None,
         );
         assert!(result.is_ok());
 
@@ -664,6 +655,7 @@ mod tests {
             temp_dir.path(),
             Path::new("empty_copy.txt"),
             &strategies,
+            None,
         );
         assert!(result.is_ok());
 
@@ -686,6 +678,7 @@ mod tests {
             temp_dir.path(),
             Path::new("large_copy.bin"),
             &strategies,
+            None,
         );
         assert!(result.is_ok());
 

@@ -6,9 +6,9 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use rayon::prelude::*;
 
 use crate::db::Db;
+use crate::event::{Event, EventSink};
 use crate::hash::{sha256_file, xxh3_128_file};
 use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
-use crate::reporting::HashReporter;
 
 /// Compute strong hashes for all entries in parallel.
 ///
@@ -18,14 +18,14 @@ use crate::reporting::HashReporter;
 /// # Arguments
 /// * `entries` - CRC entries (from lookup stage)
 /// * `compute_sha256` - If true, also compute SHA-256 for definitive identity
-/// * `reporter` - Optional reporter for progress tracking
+/// * `sink` - Optional event sink for progress tracking
 ///
 /// # Returns
 /// List of hash results (errors preserved in result with dup_reason)
-pub fn compute_hashes<R: HashReporter>(
+pub fn compute_hashes(
     entries: Vec<CrcEntry>,
     compute_sha256: bool,
-    reporter: Option<&R>,
+    sink: Option<&dyn EventSink>,
 ) -> Vec<HashResult> {
     entries
         .into_par_iter()
@@ -33,9 +33,11 @@ pub fn compute_hashes<R: HashReporter>(
             let abs_path = &entry.file.path;
             let size = entry.file.size;
 
-            // Signal start of hashing this file
-            if let Some(r) = reporter {
-                r.item_started(abs_path, size);
+            if let Some(s) = sink {
+                s.emit(&Event::HashStarted {
+                    path: abs_path.clone(),
+                    bytes: size,
+                });
             }
 
             // Always compute XXH3-128 for deduplication
@@ -43,8 +45,12 @@ pub fn compute_hashes<R: HashReporter>(
                 Ok(h) => h.to_bytes().to_vec(),
                 Err(e) => {
                     let err_msg = format!("xxh3_128 error: {e}");
-                    if let Some(r) = reporter {
-                        r.item_finished(abs_path, Some(&err_msg), size);
+                    if let Some(s) = sink {
+                        s.emit(&Event::HashFinished {
+                            path: abs_path.clone(),
+                            bytes: size,
+                            error: Some(err_msg.clone()),
+                        });
                     }
                     return HashResult {
                         path: abs_path.clone(),
@@ -74,10 +80,14 @@ pub fn compute_hashes<R: HashReporter>(
             };
 
             // Signal end of hashing this file
-            if let Some(r) = reporter {
-                r.item_finished(abs_path, err.as_deref(), size);
+            if let Some(s) = sink {
+                s.emit(&Event::HashFinished {
+                    path: abs_path.clone(),
+                    bytes: size,
+                    error: err.clone(),
+                });
             }
-            
+
             if let Some(err_msg) = err {
                 return HashResult {
                     path: abs_path.clone(),

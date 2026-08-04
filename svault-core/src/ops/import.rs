@@ -1,0 +1,853 @@
+//! `svault import` — import media files from a source directory.
+//!
+//! Pipeline overview:
+//! ```text
+//! run_import()
+//!  ├─ collect_from_scan()   │  Stage A: walk + CRC  (via pipeline::scan / crc)
+//!  │   or                   │  Stage B: DB lookup   (check_duplicate)
+//!  └─ collect_from_list()   │
+//!          │
+//!     finalize()            │  Preflight event, user confirmation
+//!          │
+//!     stage_copy()          │  Stage C: file transfer
+//!     stage_hash()          │  Stage D: strong hash (XXH3 / SHA-256)
+//!     stage_insert()        │  Stage E: DB insert + manifest
+//! ```
+//!
+//! All user-facing output is emitted as [`Event`]s; see [`crate::event`].
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
+
+use crate::config::{ImportConfig, SyncStrategy};
+use crate::db::Db;
+use crate::event::{Event, EventSink, Interactor, ItemStatus, Phase, PhaseContext, Summary};
+use crate::fs::transfer_file;
+use crate::ops::check_duplicate;
+use crate::ops::exif::read_exif_date_device;
+use crate::ops::path::resolve_dest_path;
+use crate::ops::types::{ImportOptions, ImportSummary};
+use crate::ops::utils::session_id_now;
+use crate::pipeline;
+
+/// Normalize a path by removing trailing backslashes and quotes.
+///
+/// On Windows, PowerShell may add trailing backslashes when auto-completing
+/// paths, which can cause issues when the backslash escapes the closing quote.
+///
+/// SAFETY: Preserves root paths (e.g. `/`, `C:\`) — never returns an empty
+/// string or a bare drive letter.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let path_str = path.as_os_str().to_string_lossy();
+
+    let mut cleaned = path_str.as_ref();
+    loop {
+        let new_cleaned = cleaned
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .trim_end_matches('"')
+            .trim_end_matches('\'');
+        if new_cleaned == cleaned {
+            break;
+        }
+        cleaned = new_cleaned;
+    }
+
+    // Restore Unix root `/` (was stripped to empty string).
+    if cleaned.is_empty() {
+        return PathBuf::from("/");
+    }
+
+    // Restore Windows drive root `C:\` (was stripped to `C:`).
+    #[cfg(windows)]
+    {
+        let bytes = cleaned.as_bytes();
+        if cleaned.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return PathBuf::from(format!("{}\\", cleaned));
+        }
+    }
+
+    PathBuf::from(cleaned)
+}
+
+/// Accumulated state while streaming through the scan / lookup phase.
+struct ImportState {
+    lookup_results: Vec<pipeline::types::LookupResult>,
+    moved_files: Vec<(PathBuf, String)>,
+    total_files: usize,
+    failed_files: usize,
+}
+
+impl ImportState {
+    fn new() -> Self {
+        Self {
+            lookup_results: Vec::new(),
+            moved_files: Vec::new(),
+            total_files: 0,
+            failed_files: 0,
+        }
+    }
+}
+
+fn process_lookup_result(
+    entry: pipeline::types::CrcEntry,
+    check_result: pipeline::CheckResult,
+    state: &mut ImportState,
+) {
+    match check_result {
+        pipeline::CheckResult::Moved { old_path } => {
+            state.moved_files.push((entry.file.path.clone(), old_path));
+            state.lookup_results.push(pipeline::types::LookupResult {
+                entry,
+                status: pipeline::types::FileStatus::LikelyCacheDuplicate,
+            });
+        }
+        pipeline::CheckResult::Recover { .. } | pipeline::CheckResult::New => {
+            state.lookup_results.push(pipeline::types::LookupResult {
+                entry,
+                status: pipeline::types::FileStatus::LikelyNew,
+            });
+        }
+        pipeline::CheckResult::Duplicate => {
+            state.lookup_results.push(pipeline::types::LookupResult {
+                entry,
+                status: pipeline::types::FileStatus::LikelyCacheDuplicate,
+            });
+        }
+    }
+}
+
+/// Build a `CrcEntry` from a file path (reads metadata + computes CRC32C).
+fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
+    let metadata = fs::metadata(path)?;
+    let size = metadata.len();
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let format = crate::media::MediaFormat::from_path(path)
+        .unwrap_or(crate::media::MediaFormat::Unknown(""));
+    let crc = crate::media::crc::compute_checksum(path, &format)?;
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let raw_unique_id = if crate::media::raw_id::is_raw_file(ext) {
+        crate::media::raw_id::extract_raw_id_if_raw(path)
+            .and_then(|raw_id| crate::media::raw_id::get_fingerprint_string(&raw_id))
+    } else {
+        None
+    };
+
+    Ok(pipeline::types::CrcEntry {
+        file: pipeline::types::FileEntry {
+            path: path.to_path_buf(),
+            size,
+            mtime_ms,
+        },
+        src_path: None,
+        crc32c: crc,
+        raw_unique_id,
+        precomputed_hash: None,
+    })
+}
+
+/// Classify a file, emit a [`Event::ScanItem`], and update state.
+fn classify_and_emit(
+    entry: pipeline::types::CrcEntry,
+    check_result: pipeline::CheckResult,
+    sink: &dyn EventSink,
+    state: &mut ImportState,
+) {
+    let item_status = match &check_result {
+        pipeline::CheckResult::New => ItemStatus::New,
+        pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,
+        pipeline::CheckResult::Moved { .. } => ItemStatus::MovedInVault,
+        pipeline::CheckResult::Recover { .. } => ItemStatus::Recover,
+    };
+
+    sink.emit(&Event::ScanItem {
+        path: entry.file.path.clone(),
+        size: entry.file.size,
+        mtime_ms: entry.file.mtime_ms,
+        status: item_status,
+        error: None,
+    });
+
+    process_lookup_result(entry, check_result, state);
+}
+
+/// Resolve a unique destination path that does not conflict with already-
+/// assigned destinations or existing files on disk.
+fn resolve_unique_dest(
+    dest: &Path,
+    rename_template: &str,
+    assigned: &std::collections::HashSet<PathBuf>,
+) -> PathBuf {
+    if !dest.exists() && !assigned.contains(dest) {
+        return dest.to_path_buf();
+    }
+
+    let parent = dest.parent().unwrap_or(Path::new(""));
+    let filename = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let (stem, ext) = if let Some(pos) = filename.rfind('.') {
+        (&filename[..pos], &filename[pos..])
+    } else {
+        (&filename[..], "")
+    };
+
+    for n in 1..=9999 {
+        let new_name = rename_template
+            .replace("$filename", stem)
+            .replace("$ext", ext.trim_start_matches('.'))
+            .replace("$n", &n.to_string());
+        let new_dest = parent.join(&new_name);
+        if !new_dest.exists() && !assigned.contains(&new_dest) {
+            return new_dest;
+        }
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    parent.join(format!("{}.{}{}", stem, ts, ext))
+}
+
+impl ImportOptions {
+    /// Run the full import pipeline.
+    ///
+    /// Branches on `self.files_from`:
+    /// - `None`       → scan `self.source` recursively (Stage A + B)
+    /// - `Some(list)` → use the pre-parsed path list (Stage B only)
+    pub fn run_import(
+        self,
+        db: &Db,
+        sink: &dyn EventSink,
+        interactor: &dyn Interactor,
+    ) -> anyhow::Result<ImportSummary> {
+        let source_canon =
+            dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
+        let source_canon = normalize_path(&source_canon);
+
+        sink.emit(&Event::PhaseStarted {
+            phase: Phase::Scan,
+            total: None,
+            context: PhaseContext::source(source_canon.clone()),
+        });
+
+        let state = match self.files_from {
+            Some(ref paths) => Self::collect_from_list(paths, &self.vault_root, Some(db), sink)?,
+            None => Self::collect_from_scan(
+                &source_canon,
+                &self.vault_root,
+                &self.import_config.allowed_extensions,
+                Some(db),
+                sink,
+            )?,
+        };
+
+        self.finalize(state, source_canon, db, sink, interactor)
+    }
+
+    // ── Scan-phase collectors ─────────────────────────────────────────────────
+
+    /// Stage A + B: walk source directory, compute CRC32C, look up DB.
+    ///
+    /// `db` may be `None` when no vault is open (e.g. bare scan); in that
+    /// case every file is classified as `New` without a duplicate check.
+    fn collect_from_scan(
+        source_canon: &Path,
+        vault_root: &Path,
+        allowed_extensions: &[String],
+        db: Option<&Db>,
+        sink: &dyn EventSink,
+    ) -> anyhow::Result<ImportState> {
+        let vault_canon =
+            dunce::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+        let exts: Vec<&str> = allowed_extensions.iter().map(|s| s.as_str()).collect();
+
+        let scan_rx = pipeline::scan::scan_stream(source_canon, &exts)?;
+        let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
+
+        let mut state = ImportState::new();
+
+        for result in crc_rx {
+            // Skip vault sub-tree
+            if result.file.path.ancestors().any(|p| p == vault_canon) {
+                continue;
+            }
+
+            state.total_files += 1;
+
+            let crc = match result.crc {
+                Ok(c) => c,
+                Err(e) => {
+                    sink.emit(&Event::ScanItem {
+                        path: result.file.path.clone(),
+                        size: result.file.size,
+                        mtime_ms: result.file.mtime_ms,
+                        status: ItemStatus::Failed,
+                        error: Some(format!("CRC computation failed: {}", e)),
+                    });
+                    state.failed_files += 1;
+                    continue;
+                }
+            };
+
+            let entry = pipeline::types::CrcEntry {
+                file: pipeline::types::FileEntry {
+                    path: result.file.path.clone(),
+                    size: result.file.size,
+                    mtime_ms: result.file.mtime_ms,
+                },
+                src_path: None,
+                crc32c: crc,
+                raw_unique_id: result.raw_unique_id,
+                precomputed_hash: None,
+            };
+
+            let check_result = match db {
+                Some(db) => check_duplicate(&entry, db, vault_root, None),
+                None => pipeline::CheckResult::New,
+            };
+            classify_and_emit(entry, check_result, sink, &mut state);
+        }
+
+        Ok(state)
+    }
+
+    /// Stage B: process a pre-provided file list, compute CRC32C, look up DB.
+    ///
+    /// `db` may be `None`; in that case every file is classified as `New`.
+    fn collect_from_list(
+        paths: &[PathBuf],
+        vault_root: &Path,
+        db: Option<&Db>,
+        sink: &dyn EventSink,
+    ) -> anyhow::Result<ImportState> {
+        let vault_canon =
+            dunce::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+
+        let mut state = ImportState::new();
+
+        for path in paths {
+            if !path.exists() {
+                sink.emit(&Event::ScanItem {
+                    path: path.clone(),
+                    size: 0,
+                    mtime_ms: 0,
+                    status: ItemStatus::Failed,
+                    error: Some("file not found".to_string()),
+                });
+                continue;
+            }
+            if path.is_dir() {
+                continue;
+            }
+            if path.ancestors().any(|p| p == vault_canon) {
+                continue;
+            }
+
+            state.total_files += 1;
+
+            let entry = match build_crc_entry(path) {
+                Ok(e) => e,
+                Err(e) => {
+                    sink.emit(&Event::ScanItem {
+                        path: path.clone(),
+                        size: 0,
+                        mtime_ms: 0,
+                        status: ItemStatus::Failed,
+                        error: Some(format!("CRC computation failed: {}", e)),
+                    });
+                    state.failed_files += 1;
+                    continue;
+                }
+            };
+
+            let check_result = match db {
+                Some(db) => check_duplicate(&entry, db, vault_root, None),
+                None => pipeline::CheckResult::New,
+            };
+            classify_and_emit(entry, check_result, sink, &mut state);
+        }
+
+        Ok(state)
+    }
+
+    /// Scan-only entry point: runs Stage A + B without copying, hashing, or
+    /// inserting anything.
+    ///
+    /// Reuses [`ImportOptions::collect_from_scan`] so the scan logic is never
+    /// duplicated. `db` is optional — pass `None` when no vault is open.
+    ///
+    /// Returns `Err` if any files failed to scan so the caller can propagate
+    /// a non-zero exit code.
+    pub fn run_scan(self, db: Option<&Db>, sink: &dyn EventSink) -> anyhow::Result<()> {
+        let source_canon =
+            dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
+        let source_canon = normalize_path(&source_canon);
+
+        sink.emit(&Event::PhaseStarted {
+            phase: Phase::Scan,
+            total: None,
+            context: PhaseContext::source(source_canon.clone()),
+        });
+
+        let state = Self::collect_from_scan(
+            &source_canon,
+            &self.vault_root,
+            &self.import_config.allowed_extensions,
+            db,
+            sink,
+        )?;
+
+        sink.emit(&Event::PhaseFinished { phase: Phase::Scan });
+
+        if state.failed_files > 0 {
+            anyhow::bail!("{} file(s) could not be scanned", state.failed_files);
+        }
+
+        Ok(())
+    }
+
+    // ── Finalisation ──────────────────────────────────────────────────────────
+
+    /// Emit pre-flight summary, confirm with the user, then run Copy/Hash/Insert.
+    fn finalize(
+        self,
+        state: ImportState,
+        source_canon: PathBuf,
+        db: &Db,
+        sink: &dyn EventSink,
+        interactor: &dyn Interactor,
+    ) -> anyhow::Result<ImportSummary> {
+        if state.lookup_results.is_empty() {
+            sink.emit(&Event::PhaseFinished { phase: Phase::Scan });
+            let summary = ImportSummary::default();
+            sink.emit(&Event::Summary(Summary::Import(summary.clone())));
+            return Ok(summary);
+        }
+
+        let (new_files, dup_files) = pipeline::lookup::filter_new(state.lookup_results, self.force);
+        let likely_dup = dup_files.len();
+
+        sink.emit(&Event::Preflight {
+            source: source_canon.clone(),
+            total: state.total_files,
+            new: new_files.len(),
+            duplicate: likely_dup,
+            moved: state.moved_files.len(),
+            failed: state.failed_files,
+        });
+        sink.emit(&Event::PhaseFinished { phase: Phase::Scan });
+
+        // Nothing to import — all files were duplicates, moved, or failed
+        if new_files.is_empty() {
+            let summary = ImportSummary {
+                total: state.total_files,
+                duplicate: likely_dup,
+                failed: 0,
+                all_cache_hit: true,
+                ..Default::default()
+            };
+            sink.emit(&Event::Summary(Summary::Import(summary.clone())));
+            return Ok(summary);
+        }
+
+        if !self.yes && !self.dry_run && !interactor.confirm("Proceed with import?") {
+            let summary = ImportSummary {
+                total: state.total_files,
+                duplicate: likely_dup,
+                ..Default::default()
+            };
+            sink.emit(&Event::Summary(Summary::Import(summary.clone())));
+            return Ok(summary);
+        }
+
+        if self.dry_run {
+            let summary = ImportSummary {
+                total: state.total_files,
+                duplicate: likely_dup,
+                ..Default::default()
+            };
+            sink.emit(&Event::Summary(Summary::Import(summary.clone())));
+            return Ok(summary);
+        }
+
+        // ── Stage C ───────────────────────────────────────────────────────────
+        let (copied, copy_error_count) = Self::stage_copy(
+            new_files,
+            &source_canon,
+            &self.vault_root,
+            &self.strategy,
+            &self.import_config,
+            sink,
+        );
+
+        // ── Stage D ───────────────────────────────────────────────────────────
+        let hash_results = Self::stage_hash(
+            copied,
+            &source_canon,
+            &self.vault_root,
+            self.force,
+            self.full_id,
+            db,
+            sink,
+        )?;
+
+        // ── Stage E ───────────────────────────────────────────────────────────
+        let import_summary = Self::stage_insert(
+            hash_results,
+            &self.vault_root,
+            &source_canon,
+            self.force,
+            db,
+            state.total_files,
+            likely_dup,
+            copy_error_count,
+            sink,
+        )?;
+
+        Ok(import_summary)
+    }
+
+    // ── Stage functions (associated, no self) ─────────────────────────────────
+
+    /// Stage C: copy files from source to vault.
+    ///
+    /// Returns the successfully copied entries (as `CrcEntry` with `src_path`
+    /// set) and the number of copy errors.
+    fn stage_copy(
+        new_files: Vec<pipeline::types::CrcEntry>,
+        source_canon: &Path,
+        vault_root: &Path,
+        strategy: &SyncStrategy,
+        import_config: &ImportConfig,
+        sink: &dyn EventSink,
+    ) -> (Vec<pipeline::types::CrcEntry>, usize) {
+        // Resolve destination paths up-front (serial, EXIF-aware)
+        let mut prepared: Vec<(PathBuf, PathBuf, u64, i64, u32, Option<String>)> = Vec::new();
+        let mut assigned = std::collections::HashSet::new();
+
+        for entry in &new_files {
+            let rel = entry
+                .file
+                .path
+                .strip_prefix(source_canon)
+                .unwrap_or(&entry.file.path);
+            let (taken_ms, device) = read_exif_date_device(&entry.file.path, entry.file.mtime_ms);
+            let dest_rel = resolve_dest_path(&import_config.path_template, rel, taken_ms, &device);
+            let dest_abs = vault_root.join(&dest_rel);
+            let unique_dest =
+                resolve_unique_dest(&dest_abs, &import_config.rename_template, &assigned);
+            assigned.insert(unique_dest.clone());
+
+            prepared.push((
+                entry.file.path.clone(),
+                unique_dest,
+                entry.file.size,
+                entry.file.mtime_ms,
+                entry.crc32c,
+                entry.raw_unique_id.clone(),
+            ));
+        }
+
+        let total = prepared.len() as u64;
+        let transfer_strategies = strategy.to_transfer_strategies();
+
+        sink.emit(&Event::PhaseStarted {
+            phase: Phase::Copy,
+            total: Some(total),
+            context: PhaseContext::both(source_canon.to_path_buf(), vault_root.to_path_buf()),
+        });
+
+        let copied: Vec<pipeline::types::CrcEntry> = prepared
+            .into_par_iter()
+            .filter_map(|(src, dest, size, mtime, crc, raw_id)| {
+                // Create parent directory
+                if let Some(parent) = dest.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    sink.emit(&Event::CopyStarted {
+                        src: src.clone(),
+                        dst: dest.clone(),
+                        bytes: size,
+                    });
+                    sink.emit(&Event::CopyFinished {
+                        src: src.clone(),
+                        dst: dest.clone(),
+                        error: Some(e.to_string()),
+                    });
+                    return None;
+                }
+
+                let src_rel = src.strip_prefix(source_canon).unwrap_or(&src);
+                match transfer_file(
+                    source_canon,
+                    src_rel,
+                    vault_root,
+                    &dest,
+                    &transfer_strategies,
+                    Some(sink),
+                ) {
+                    Ok(_) => Some(pipeline::types::CrcEntry {
+                        file: pipeline::types::FileEntry {
+                            path: dest,
+                            size,
+                            mtime_ms: mtime,
+                        },
+                        src_path: Some(src),
+                        crc32c: crc,
+                        raw_unique_id: raw_id,
+                        precomputed_hash: None,
+                    }),
+                    Err(_) => None,
+                }
+            })
+            .collect();
+
+        sink.emit(&Event::PhaseFinished { phase: Phase::Copy });
+
+        let error_count = total as usize - copied.len();
+        (copied, error_count)
+    }
+
+    /// Stage D: compute strong hashes (XXH3-128, optionally SHA-256).
+    ///
+    /// Also performs a post-hash dedup check unless `force` is set.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_hash(
+        copied: Vec<pipeline::types::CrcEntry>,
+        source_canon: &Path,
+        vault_root: &Path,
+        force: bool,
+        full_id: bool,
+        db: &Db,
+        sink: &dyn EventSink,
+    ) -> anyhow::Result<Vec<pipeline::types::HashResult>> {
+        let total = copied.len() as u64;
+
+        sink.emit(&Event::PhaseStarted {
+            phase: Phase::Hash,
+            total: Some(total),
+            context: PhaseContext::both(source_canon.to_path_buf(), vault_root.to_path_buf()),
+        });
+
+        let hash_results = pipeline::hash::compute_hashes(copied, force || full_id, Some(sink));
+
+        sink.emit(&Event::PhaseFinished { phase: Phase::Hash });
+
+        if force {
+            Ok(hash_results)
+        } else {
+            Ok(pipeline::hash::check_duplicates(
+                hash_results,
+                db,
+                vault_root,
+                false,
+            )?)
+        }
+    }
+
+    /// Stage E: batch-insert records into the DB and write the import manifest.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_insert(
+        hash_results: Vec<pipeline::types::HashResult>,
+        vault_root: &Path,
+        source_root: &Path,
+        force: bool,
+        db: &Db,
+        total_files: usize,
+        likely_dup: usize,
+        copy_error_count: usize,
+        sink: &dyn EventSink,
+    ) -> anyhow::Result<ImportSummary> {
+        let insert_count = hash_results.len() as u64;
+        let session_id = session_id_now();
+
+        sink.emit(&Event::PhaseStarted {
+            phase: Phase::Insert,
+            total: Some(insert_count),
+            context: PhaseContext::both(source_root.to_path_buf(), vault_root.to_path_buf()),
+        });
+
+        let progress = std::sync::atomic::AtomicU64::new(0);
+        let progress_cb = || {
+            let done = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            sink.emit(&Event::Progress {
+                phase: Phase::Insert,
+                done,
+                total: insert_count,
+            });
+        };
+
+        let insert_opts = pipeline::insert::InsertOptions {
+            vault_root,
+            session_id: &session_id,
+            write_manifest: true,
+            source_root: Some(source_root),
+            force,
+            session_type: crate::verify::manifest::SessionType::Import,
+        };
+
+        let result =
+            pipeline::insert::batch_insert(hash_results, db, insert_opts, Some(&progress_cb))?;
+
+        let done = progress.load(std::sync::atomic::Ordering::Relaxed);
+        if done < insert_count {
+            sink.emit(&Event::Progress {
+                phase: Phase::Insert,
+                done,
+                total: insert_count,
+            });
+        }
+        sink.emit(&Event::PhaseFinished {
+            phase: Phase::Insert,
+        });
+
+        let import_summary = ImportSummary {
+            total: total_files,
+            imported: result.added,
+            duplicate: result.duplicate + likely_dup,
+            failed: result.failed + copy_error_count,
+            manifest_path: result.manifest_path.clone(),
+            all_cache_hit: false,
+        };
+
+        sink.emit(&Event::Summary(Summary::Import(import_summary.clone())));
+
+        Ok(import_summary)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::ItemStatus;
+    use std::sync::Mutex;
+
+    /// A sink that records every event for assertions.
+    #[derive(Debug, Default)]
+    struct RecordingSink(Mutex<Vec<Event>>);
+
+    impl EventSink for RecordingSink {
+        fn emit(&self, event: &Event) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+    }
+
+    #[test]
+    fn test_recording_sink_captures_scan_items() {
+        let sink = RecordingSink::default();
+        sink.emit(&Event::ScanItem {
+            path: PathBuf::from("/source/photo.jpg"),
+            size: 1024,
+            mtime_ms: 0,
+            status: ItemStatus::New,
+            error: None,
+        });
+        sink.emit(&Event::PhaseFinished { phase: Phase::Scan });
+
+        let events = sink.0.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            Event::ScanItem {
+                status: ItemStatus::New,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[1],
+            Event::PhaseFinished { phase: Phase::Scan }
+        ));
+    }
+
+    #[test]
+    fn test_event_serializes_to_json() {
+        let event = Event::Preflight {
+            source: PathBuf::from("/source"),
+            total: 10,
+            new: 7,
+            duplicate: 2,
+            moved: 1,
+            failed: 0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"preflight\""));
+        assert!(json.contains("\"new\":7"));
+    }
+
+    #[test]
+    fn test_summary_serializes_with_kind_tag() {
+        let event = Event::Summary(Summary::Import(ImportSummary {
+            total: 3,
+            imported: 2,
+            duplicate: 1,
+            failed: 0,
+            manifest_path: None,
+            all_cache_hit: false,
+        }));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"summary\""));
+        assert!(json.contains("\"kind\":\"import\""));
+        assert!(json.contains("\"imported\":2"));
+    }
+
+    // ── normalize_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_path_preserves_unix_root() {
+        assert_eq!(normalize_path(Path::new("/")), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_normalize_path_removes_trailing_slashes() {
+        assert_eq!(
+            normalize_path(Path::new("/home/user/")),
+            PathBuf::from("/home/user")
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_removes_trailing_backslashes() {
+        assert_eq!(
+            normalize_path(Path::new("/home/user\\")),
+            PathBuf::from("/home/user")
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_removes_quotes() {
+        assert_eq!(
+            normalize_path(Path::new("/home/user\"")),
+            PathBuf::from("/home/user")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_path_preserves_windows_drive_root() {
+        let normalized = normalize_path(Path::new("C:\\"));
+        assert!(normalized.to_string_lossy().starts_with("C:"));
+        assert!(normalized.to_string_lossy().contains('\\'));
+    }
+
+    #[test]
+    fn test_normalize_path_empty_becomes_unix_root() {
+        assert_eq!(normalize_path(Path::new("")), PathBuf::from("/"));
+    }
+}

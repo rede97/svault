@@ -16,14 +16,10 @@ path = "src/main.rs"
 default = []
 
 [dependencies]
-svault-core = { version = "0.1.0", path = "../svault-core", features = ["cli"] }
+svault-core = { version = "0.1.0", path = "../svault-core" }
+svault-ui = { version = "0.1.0", path = "../svault-ui" }
 anyhow = "1"
-chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-indicatif = "0.17"
-console = "0.15"
-serde_json = "1"
 env_logger = "0.11"
 rayon = "1"
-dashmap = "6"
 dunce = "1"

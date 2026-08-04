@@ -1,7 +1,5 @@
 //! Vault configuration (`svault.toml`).
 
-#[cfg(feature = "cli")]
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -29,15 +27,12 @@ pub struct GlobalConfig {
 
 /// Hash algorithm used for file identity and deduplication.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-#[cfg_attr(feature = "cli", derive(ValueEnum))]
 #[serde(rename_all = "snake_case")]
 pub enum HashAlgorithm {
     /// Fast hash (XXH3-128, default)
     #[default]
-    #[cfg_attr(feature = "cli", clap(name = "fast"))]
     Xxh3_128,
     /// Secure hash (SHA-256)
-    #[cfg_attr(feature = "cli", clap(name = "secure"))]
     Sha256,
 }
 
@@ -52,8 +47,6 @@ impl std::fmt::Display for HashAlgorithm {
 
 /// A single strategy argument that can appear in a `--strategy` list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "cli", derive(ValueEnum))]
-#[cfg_attr(feature = "cli", clap(rename_all = "snake_case"))]
 pub enum TransferStrategyArg {
     /// Copy-on-write clone (btrfs, xfs, APFS, ReFS).
     Reflink,
@@ -61,6 +54,30 @@ pub enum TransferStrategyArg {
     Hardlink,
     /// Plain stream copy (always works).
     Copy,
+}
+
+impl std::str::FromStr for TransferStrategyArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "reflink" => Ok(TransferStrategyArg::Reflink),
+            "hardlink" => Ok(TransferStrategyArg::Hardlink),
+            "copy" => Ok(TransferStrategyArg::Copy),
+            other => Err(format!("unknown strategy: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for TransferStrategyArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            TransferStrategyArg::Reflink => "reflink",
+            TransferStrategyArg::Hardlink => "hardlink",
+            TransferStrategyArg::Copy => "copy",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 impl TransferStrategyArg {

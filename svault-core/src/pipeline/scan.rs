@@ -15,12 +15,10 @@ use crate::pipeline::types::FileEntry;
 /// Also removes trailing backslashes which can cause issues on Windows.
 fn normalize_scan_root(path: &Path) -> PathBuf {
     let path_str = path.as_os_str().to_string_lossy();
-    
+
     // Strip trailing quote characters that may be introduced by shell escaping
-    let cleaned = path_str
-        .trim_end_matches('"')
-        .trim_end_matches('\'');
-    
+    let cleaned = path_str.trim_end_matches('"').trim_end_matches('\'');
+
     PathBuf::from(cleaned)
 }
 

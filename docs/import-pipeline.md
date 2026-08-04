@@ -265,65 +265,54 @@ Duplicate DCIM/Canon/IMG_003.CR3   17.1 MiB            # 仅 --show-dup 时显�
 Scanning [==>          ]  50/200  /mnt/sdcard/DCIM/Canon
 ```
 
-### 扫描完成：写入 Pending 文件 + 用户确认
+### 扫描完成：用户确认
 
 Stage B 完成后：
-1. 将扫描结果写入 `.svault/import/<session-id>.pending`
-2. 输出汇总 + 完整新文件列表（不折叠）
-3. 提示用户确认（`--yes` 跳过）
+1. 输出 preflight 汇总（new / duplicate / moved / failed）
+2. 提示用户确认（`--yes` 跳过；`--output json` 不交互）
 
 ```
-Scan complete: 142 new  (2.3 GiB),  58 duplicates,  200 total
+Finished: Scanned 200 files from /mnt/sdcard
 
-  DCIM/Canon/IMG_001.CR3    18.2 MiB
-  DCIM/Canon/IMG_002.CR3    17.8 MiB
-  ...
+Pre-flight:
+  Likely new:          142  will be imported
+  Likely duplicate:     58  already in vault (cache hit)
 
-Import 142 files (2.3 GiB) into vault? [y/N]
+Proceed with import? [y/N]
 ```
 
-### Pending 文件格式
+> **设计变更（2026-04）**：早期设计的 `.pending` 续传文件从未实现，
+> 已于架构重构时移除。中断恢复依赖的是 CRC32C 缓存 + 三层哈希去重——
+> 重新执行同一导入命令即可幂等续传，不需要额外状态文件。
 
-`.svault/import/<session-id>.pending`（纯文本，UTF-8，Tab 分隔）：
+### Stage C：复制阶段
 
-```
-source=/mnt/sdcard
-session=20240331T143000
-total=200 new=142 duplicate=58
-DCIM/Canon/IMG_001.CR3	18874368
-DCIM/Canon/IMG_002.CR3	17825792
-```
+文件直接复制到最终路径（由 `path_template` 解析）。
+传输策略优先级：`reflink` → `hardlink` → `copy`（`copy` 始终兜底）。
 
-**生命周期：**
-- Stage B 完成 → 写入
-- 导入完成（Stage E）→ 删除，写入 manifest
-- 进程中断 → 残留，下次 `svault import` 检测到后提示续传
+### Stage D：哈希阶段
 
-### Stage D：复制 + 哈希阶段
-
-文件直接复制到最终路径（由 `path_template` 解析），复制完成后立即计算强哈希：
-
-```
-Copying  DCIM/Canon/IMG_001.CR3  →  2024/03-15/Canon EOS R5
-Hashing  [===============]  142/142
-```
-
-复制和哈希在同一个阶段完成，减少中间状态。传输策略优先级：`reflink` → `hardlink` → `copy`。
+复制完成后计算强哈希（XXH3-128 必算，`--full-id`/`--force` 时加算 SHA-256），
+并做第二轮去重（防 batch 内重复与并发竞态）。
 
 ### Stage E：数据库写入
 
-批量入库（500 条/批），完成后删除 `.pending`，写入 manifest：
+批量事务入库，写入 manifest（`.svault/manifests/<type>-<session>.json`）：
 
 ```
-Import complete: 142 imported,  58 duplicates,  0 failed
-Manifest: .svault/manifests/import-20240331T143000.txt
+Import operation completed
+  Total files processed: 200
+  New files imported:  142
+  Duplicates skipped:  58
+  Manifest: .svault/manifests/import-1710518400.json
 ```
 
 ### 原子性与可恢复性
 
 - 复制直接到最终路径，DB 用事务写入，未提交自动回滚（WAL 模式）
-- 已复制但未入库的文件可通过 `svault reconcile` 补录
-- `.pending` 是唯一的状态持久化，进程中断后可续传
+- 中断后直接重新执行导入命令：CRC32C 缓存命中使已入库文件秒级跳过，
+  已复制未入库的文件由 Stage D 的去重识别为重复，不会重复入库
+- 已复制但未入库的孤儿文件可通过 `svault add` 补录
 
 ---
 

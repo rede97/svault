@@ -1,24 +1,26 @@
-//! Standalone recheck command implementation.
+//! `svault recheck` — manifest integrity verification.
 //!
-//! `svault recheck` reads an import manifest and verifies the integrity
-//! of both the source files and the vault copies against the recorded hashes.
-//! It writes a report to `.svault/staging/` so the user can decide which
+//! Reads an import manifest and verifies both the original source files
+//! and the vault copies against the hashes recorded at import time.
+//! A report is written to `.svault/staging/` so the user can decide which
 //! side is correct. No files are imported or modified.
 
 use std::fs;
 use std::path::Path;
 
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::db::Db;
+use crate::event::{Event, EventSink, Phase, RecheckSummary, Summary};
 use crate::hash::{sha256_file, xxh3_128_file};
-use crate::reporting::{RecheckReporter, ReporterBuilder};
 use crate::verify::manifest::ImportManifest;
 
 use super::utils::session_id_now;
 
 /// Result of rechecking a single file pair.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum RecheckStatus {
     /// Both source and vault match the manifest.
     Ok,
@@ -33,7 +35,7 @@ pub enum RecheckStatus {
     /// Vault copy is missing.
     VaultDeleted,
     /// Cannot read one of the files.
-    Error(String),
+    Error { message: String },
 }
 
 /// Per-file recheck result.
@@ -57,36 +59,31 @@ pub struct RecheckOptions {
 /// Verification strategy:
 /// - If manifest has SHA-256, use it for definitive verification
 /// - Otherwise, use XXH3-128 (fast but less secure)
-pub fn run_recheck<RB: ReporterBuilder>(
-    opts: RecheckOptions,
-    _db: &Db,
-    reporter_builder: &RB,
-) -> anyhow::Result<()> {
+pub fn run_recheck(opts: RecheckOptions, _db: &Db, sink: &dyn EventSink) -> anyhow::Result<()> {
     let session_id = session_id_now();
     let manifest = &opts.manifest;
     let total = manifest.files.len();
 
     if total == 0 {
-        // Nothing to check — reporter.not_started() or similar could be added
-        // if the CLI wants to show a warning; core stays silent.
         return Ok(());
     }
 
-    let reporter = reporter_builder.recheck_reporter(total as u64);
-    reporter.started(total, &manifest.session_id, &manifest.source_root);
+    sink.emit(&Event::RecheckStarted {
+        total,
+        session_id: manifest.session_id.clone(),
+        source: manifest.source_root.clone(),
+    });
 
     let results: Vec<RecheckResult> = manifest
         .files
         .clone()
         .into_par_iter()
         .map(|record| {
-            let vault_abs = record.dest_path
+            let vault_abs = record
+                .dest_path
                 .as_ref()
                 .map(|p| opts.vault_root.join(p))
                 .unwrap_or_else(|| opts.vault_root.join("unknown"));
-
-            // Signal start of rechecking this file pair
-            reporter.item_started(&record.src_path, &vault_abs);
 
             let has_sha256 = record.sha256.is_some();
             let expected_hash = if has_sha256 {
@@ -99,8 +96,14 @@ pub fn run_recheck<RB: ReporterBuilder>(
                 match compute_hash(&record.src_path, has_sha256) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        let status = RecheckStatus::Error(format!("source read error: {e}"));
-                        reporter.item_finished(&record.src_path, &vault_abs, &status);
+                        let status = RecheckStatus::Error {
+                            message: format!("source read error: {e}"),
+                        };
+                        sink.emit(&Event::RecheckItem {
+                            src: record.src_path.clone(),
+                            vault: vault_abs.clone(),
+                            status: status.clone(),
+                        });
                         return RecheckResult {
                             src_path: record.src_path,
                             vault_path: vault_abs,
@@ -117,8 +120,14 @@ pub fn run_recheck<RB: ReporterBuilder>(
                 match compute_hash(&vault_abs, has_sha256) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        let status = RecheckStatus::Error(format!("vault read error: {e}"));
-                        reporter.item_finished(&record.src_path, &vault_abs, &status);
+                        let status = RecheckStatus::Error {
+                            message: format!("vault read error: {e}"),
+                        };
+                        sink.emit(&Event::RecheckItem {
+                            src: record.src_path.clone(),
+                            vault: vault_abs.clone(),
+                            status: status.clone(),
+                        });
                         return RecheckResult {
                             src_path: record.src_path,
                             vault_path: vault_abs,
@@ -146,7 +155,11 @@ pub fn run_recheck<RB: ReporterBuilder>(
                 }
             };
 
-            reporter.item_finished(&record.src_path, &vault_abs, &status);
+            sink.emit(&Event::RecheckItem {
+                src: record.src_path.clone(),
+                vault: vault_abs.clone(),
+                status: status.clone(),
+            });
 
             RecheckResult {
                 src_path: record.src_path,
@@ -157,47 +170,32 @@ pub fn run_recheck<RB: ReporterBuilder>(
         })
         .collect();
 
-    reporter.finish();
+    sink.emit(&Event::PhaseFinished {
+        phase: Phase::Recheck,
+    });
 
     // Tally results
-    let mut ok = 0usize;
-    let mut source_modified = 0usize;
-    let mut vault_corrupted = 0usize;
-    let mut both_diverged = 0usize;
-    let mut source_deleted = 0usize;
-    let mut vault_deleted = 0usize;
-    let mut errors = 0usize;
-    let mut sha256_verified = 0usize;
+    let mut tally = RecheckSummary::default();
 
     for r in &results {
         if r.used_sha256 {
-            sha256_verified += 1;
+            tally.sha256_verified += 1;
         }
         match &r.status {
-            RecheckStatus::Ok => ok += 1,
-            RecheckStatus::SourceModified => source_modified += 1,
-            RecheckStatus::VaultCorrupted => vault_corrupted += 1,
-            RecheckStatus::BothDiverged => both_diverged += 1,
-            RecheckStatus::SourceDeleted => source_deleted += 1,
-            RecheckStatus::VaultDeleted => vault_deleted += 1,
-            RecheckStatus::Error(_) => errors += 1,
+            RecheckStatus::Ok => tally.ok += 1,
+            RecheckStatus::SourceModified => tally.source_modified += 1,
+            RecheckStatus::VaultCorrupted => tally.vault_corrupted += 1,
+            RecheckStatus::BothDiverged => tally.both_diverged += 1,
+            RecheckStatus::SourceDeleted => tally.source_deleted += 1,
+            RecheckStatus::VaultDeleted => tally.vault_deleted += 1,
+            RecheckStatus::Error { .. } => tally.errors += 1,
         }
     }
 
-    // Write JSON report first, then call reporter.summary with the path
-    let report_path = write_report(&opts.vault_root, &session_id, &results)?;
+    // Write JSON report, then emit the summary with its path
+    tally.report_path = write_report(&opts.vault_root, &session_id, &results)?;
 
-    reporter.summary(
-        ok,
-        source_modified,
-        vault_corrupted,
-        both_diverged,
-        source_deleted,
-        vault_deleted,
-        errors,
-        sha256_verified,
-        &report_path,
-    );
+    sink.emit(&Event::Summary(Summary::Recheck(tally)));
 
     Ok(())
 }
@@ -230,7 +228,6 @@ fn write_report(
 
     let report_path = staging.join(format!("recheck_{}.json", session_id));
 
-    // Build JSON report
     let mut report = serde_json::Map::new();
     report.insert("session_id".to_string(), session_id.into());
     report.insert(

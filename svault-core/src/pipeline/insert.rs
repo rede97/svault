@@ -4,10 +4,12 @@ use std::path::Path;
 
 use crate::db::Db;
 use crate::pipeline::types::{FileHash, HashResult, PipelineSummary};
-use crate::verify::manifest::{ImportManifest, ImportRecord, ManifestManager, ItemStatus, SessionType, ManifestSummary};
+use crate::verify::manifest::{
+    ImportManifest, ImportRecord, ItemStatus, ManifestManager, ManifestSummary, SessionType,
+};
 
 /// Convert a path to Unix-style string (forward slashes) for cross-platform storage.
-/// 
+///
 /// On Windows, paths use backslash separators which are incompatible with Linux.
 /// We store all paths with forward slashes to ensure the database is portable
 /// between Windows and Linux.
@@ -16,9 +18,12 @@ fn path_to_unix_string(path: &Path) -> String {
     // This handles Windows paths that may contain backslashes
     let path_str = path.to_string_lossy();
     let normalized = path_str.replace('\\', "/");
-    
+
     // Remove leading slash if present (from absolute paths)
-    normalized.strip_prefix('/').map(String::from).unwrap_or(normalized)
+    normalized
+        .strip_prefix('/')
+        .map(String::from)
+        .unwrap_or(normalized)
 }
 
 /// Options for batch insertion.
@@ -33,12 +38,6 @@ pub struct InsertOptions<'a> {
     pub force: bool,
     /// Session type for manifest
     pub session_type: SessionType,
-}
-
-impl Default for SessionType {
-    fn default() -> Self {
-        SessionType::Import
-    }
 }
 
 /// Convert hash bytes to hex string for manifest.
@@ -56,7 +55,7 @@ pub fn batch_insert(
     progress_cb: Option<&dyn Fn()>,
 ) -> anyhow::Result<PipelineSummary> {
     let mut summary = PipelineSummary::new(results.len());
-    let now_ms = crate::import::utils::unix_now_ms();
+    let now_ms = crate::ops::utils::unix_now_ms();
 
     // Prepare manifest if needed
     let mut manifest = if opts.write_manifest {
@@ -89,9 +88,7 @@ pub fn batch_insert(
         // Get hashes early for manifest recording
         let (xxh3_hex, sha256_hex) = match &r.hash {
             FileHash::Fast(xxh3) => (Some(bytes_to_hex(xxh3)), None),
-            FileHash::Full(xxh3, sha256) => {
-                (Some(bytes_to_hex(xxh3)), Some(bytes_to_hex(sha256)))
-            }
+            FileHash::Full(xxh3, sha256) => (Some(bytes_to_hex(xxh3)), Some(bytes_to_hex(sha256))),
         };
 
         // Skip if already tracked by path (unless force mode or the existing file is 'missing')
@@ -269,7 +266,7 @@ pub fn batch_insert(
     let payload = serde_json::json!({
         "session_id": opts.session_id,
         "session_type": opts.session_type.to_string(),
-        "source": opts.source_root.map(|p| path_to_unix_string(p)).unwrap_or_default(),
+        "source": opts.source_root.map(path_to_unix_string).unwrap_or_default(),
         "total_files": summary.total,
         "added": summary.added,
         "duplicate": summary.duplicate,
@@ -287,18 +284,18 @@ pub fn batch_insert(
     )?;
 
     // Write manifest with summary
-    if let Some(ref mut m) = manifest {
-        if !m.files.is_empty() {
-            m.summary = Some(ManifestSummary {
-                total: summary.total,
-                added: summary.added,
-                duplicate: summary.duplicate,
-                failed: summary.failed,
-                skipped: summary.skipped,
-            });
-            let manager = ManifestManager::new(opts.vault_root);
-            summary.manifest_path = Some(manager.save(m)?);
-        }
+    if let Some(ref mut m) = manifest
+        && !m.files.is_empty()
+    {
+        m.summary = Some(ManifestSummary {
+            total: summary.total,
+            added: summary.added,
+            duplicate: summary.duplicate,
+            failed: summary.failed,
+            skipped: summary.skipped,
+        });
+        let manager = ManifestManager::new(opts.vault_root);
+        summary.manifest_path = Some(manager.save(m)?);
     }
 
     Ok(summary)
@@ -351,15 +348,15 @@ mod tests {
     fn test_path_to_unix_string_cross_platform_compatibility() {
         // This test verifies that the same relative path structure
         // is stored identically regardless of platform
-        
+
         // Unix-style input
         let unix_path = Path::new("2024/03/photo.jpg");
         let unix_result = path_to_unix_string(unix_path);
-        
+
         // Windows-style input (simulated)
         let windows_path = Path::new("2024\\03\\photo.jpg");
         let windows_result = path_to_unix_string(windows_path);
-        
+
         // Both should produce the same Unix-style output
         assert_eq!(unix_result, "2024/03/photo.jpg");
         assert_eq!(windows_result, "2024/03/photo.jpg");

@@ -40,67 +40,9 @@ pub enum OutputFormat {
 }
 
 #[derive(Subcommand)]
-pub enum HistorySubcommand {
-    /// List import sessions (batches)
-    Sessions {
-        /// Filter by source path
-        #[arg(long, value_name = "PATH")]
-        source: Option<String>,
-
-        /// Show sessions from this time (RFC 3339 or YYYY-MM-DD)
-        #[arg(long, value_name = "DATETIME")]
-        from: Option<String>,
-
-        /// Show sessions up to this time (RFC 3339 or YYYY-MM-DD)
-        #[arg(long, value_name = "DATETIME")]
-        to: Option<String>,
-
-        /// Maximum number of sessions to show
-        #[arg(long, default_value = "50", value_name = "N")]
-        limit: usize,
-
-        /// Offset for pagination
-        #[arg(long, default_value = "0", value_name = "N")]
-        offset: usize,
-    },
-    /// List items in a specific import session
-    Items {
-        /// Session ID (required)
-        #[arg(long, value_name = "ID", required = true)]
-        session: String,
-
-        /// Filter by status
-        #[arg(long, value_name = "STATUS")]
-        status: Option<String>,
-
-        /// Maximum number of items to show
-        #[arg(long, default_value = "50", value_name = "N")]
-        limit: usize,
-
-        /// Offset for pagination
-        #[arg(long, default_value = "0", value_name = "N")]
-        offset: usize,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum Command {
     /// Initialize a new vault
     Init,
-
-    /// Scan directory and output file status for import pipeline
-    ///
-    /// Output format: SCAN:<source_path> [status:filename ...]
-    /// Status: new=will import, dup=duplicate, fail=error
-    Scan {
-        /// Source directory to scan
-        #[arg(value_name = "SOURCE")]
-        source: std::path::PathBuf,
-
-        /// Show duplicate files during scanning
-        #[arg(long)]
-        show_dup: bool,
-    },
 
     /// Import media files from a source directory
     Import {
@@ -123,7 +65,7 @@ pub enum Command {
         /// File transfer strategy: reflink, hardlink, copy.
         /// Can be combined with commas (e.g. --strategy reflink,hardlink).
         /// Defaults to reflink; copy is always the final fallback.
-        #[arg(long, value_delimiter = ',', value_enum, default_value = "reflink")]
+        #[arg(long, value_delimiter = ',', default_value = "reflink")]
         strategy: Vec<TransferStrategyArg>,
 
         /// Force import even when the file is confirmed as a duplicate.
@@ -172,41 +114,16 @@ pub enum Command {
         path: std::path::PathBuf,
     },
 
-    /// Sync files from another vault
-    Sync {
-        /// Root directory of the source vault to sync from.
-        /// Must contain `.svault/vault.db`.
-        #[arg(value_name = "SOURCE_VAULT")]
-        source: std::path::PathBuf,
-
-        /// Transfer strategy: reflink, hardlink, copy.
-        /// Can be combined with commas (e.g. --strategy reflink,hardlink).
-        /// Defaults to reflink; copy is always the final fallback.
-        #[arg(long, value_delimiter = ',', value_enum, default_value = "reflink")]
-        strategy: Vec<TransferStrategyArg>,
-
-        /// Scope of post-sync integrity verification.
-        /// norm verifies only files touched in this sync;
-        /// full verifies the entire local vault database.
-        #[arg(long, default_value = "norm", value_enum)]
-        verify: SyncVerifyScope,
-    },
-
     /// Update database paths for moved or renamed files
     ///
     /// Scans the vault and updates the database to reflect files that were
     /// moved or renamed outside of Svault. Missing files are automatically
-    /// marked as missing in the database. Use --delete to permanently remove files.
+    /// marked as missing in the database. Svault never deletes user files.
     Update {
         /// Sub-directory inside the vault to scan for relocated files.
         /// Defaults to the current working directory (same discovery rules as import).
         #[arg(long, value_name = "PATH")]
         target: Option<std::path::PathBuf>,
-
-        /// Actually delete files from vault that are missing from disk.
-        /// WARNING: This permanently removes files from the vault!
-        #[arg(long)]
-        delete: bool,
     },
 
     /// Verify archive integrity
@@ -235,34 +152,69 @@ pub enum Command {
     /// Show vault statistics
     Status,
 
-    /// Query the event log
-    /// Query import history (sessions or items)
+    /// Export a subset of the vault to a working directory
     ///
-    /// Default shows import sessions (batches). Use subcommands for detailed queries.
-    History {
-        #[command(subcommand)]
-        subcommand: Option<HistorySubcommand>,
-    },
-
-    /// Clone a subset to a working directory
+    /// Copies files (optionally filtered) out of the vault into a plain
+    /// directory, preserving the vault's relative paths. The target does
+    /// not become a vault; a manifest JSON is written alongside the files.
     Clone {
-        /// Destination directory for the cloned subset
+        /// Destination directory for the exported files
         #[arg(long, value_name = "PATH")]
         target: std::path::PathBuf,
 
-        /// Filter by date range (e.g. 2024-03-01..2024-03-31)
+        /// Only export files modified in this date range (e.g. 2024-03-01..2024-03-31)
         #[arg(long, value_name = "RANGE")]
         filter_date: Option<String>,
 
-        /// Filter by camera model
-        #[arg(long, value_name = "MODEL")]
-        filter_camera: Option<String>,
+        /// File transfer strategy: reflink, hardlink, copy.
+        /// Can be combined with commas (e.g. --strategy reflink,hardlink).
+        #[arg(long, value_delimiter = ',', default_value = "reflink")]
+        strategy: Vec<TransferStrategyArg>,
+    },
+
+    /// Copy files from another vault that this vault is missing
+    ///
+    /// Compares both vaults' database records (hash-accelerated — no full
+    /// re-hashing), shows a diff plan, and copies missing files in.
+    /// The source vault is opened read-only and never modified.
+    /// Files only in this vault are kept (Svault never deletes files).
+    Sync {
+        /// Root directory of the source vault to sync from.
+        /// Must contain `.svault/vault.db`.
+        #[arg(value_name = "SOURCE_VAULT")]
+        source: std::path::PathBuf,
+
+        /// Transfer strategy: reflink, hardlink, copy.
+        /// Can be combined with commas (e.g. --strategy reflink,hardlink).
+        #[arg(long, value_delimiter = ',', default_value = "reflink")]
+        strategy: Vec<TransferStrategyArg>,
+
+        /// Scope of post-sync integrity verification.
+        /// norm verifies only files added in this sync;
+        /// full verifies the entire local vault database.
+        #[arg(long, default_value = "norm")]
+        verify: svault_core::ops::sync::SyncVerifyScope,
     },
 
     /// Database maintenance
     Db {
         #[command(subcommand)]
         command: DbCommand,
+    },
+
+    /// Scan directory and output file status for import pipeline (debug builds only)
+    ///
+    /// Output format: SCAN:<source_path> [status:filename ...]
+    /// Status: new=will import, dup=duplicate, fail=error
+    #[cfg(debug_assertions)]
+    Scan {
+        /// Source directory to scan
+        #[arg(value_name = "SOURCE")]
+        source: std::path::PathBuf,
+
+        /// Show duplicate files during scanning
+        #[arg(long)]
+        show_dup: bool,
     },
 
     /// Debug utilities (debug builds only)
@@ -321,14 +273,4 @@ pub enum DumpFormat {
     Json,
     /// SQL INSERT statements
     Sql,
-}
-
-#[derive(Clone, ValueEnum)]
-pub enum SyncVerifyScope {
-    /// No post-sync verification
-    None,
-    /// Verify only files added or updated in this sync (default)
-    Norm,
-    /// Verify every file in the local vault database
-    Full,
 }

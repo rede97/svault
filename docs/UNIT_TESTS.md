@@ -1,8 +1,8 @@
 # Svault 测试跟踪文档
 
 > 本文档跟踪所有单元测试和集成测试的状态，随时更新。
-> 
-> 最后更新：2026-04-08
+>
+> 最后更新：2026-04-16（架构重构后）
 
 ---
 
@@ -10,13 +10,20 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (Unit) | 117 | 117 | 0 | 0 |
-| Python E2E 测试 (Linux) | 242 | — | — | — |
-| **总计** | — | — | — | — |
+| 单元测试 (svault-core) | 153 | 153 | 0 | 0 |
+| 单元测试 (svault-ui / svault-cli) | 3 | 3 | 0 | 2 ignored |
+| Python E2E 测试 (Windows) | 249 | 206 | 1* | 39 skipped |
 
-> **注意：** 
-> - E2E 测试 `pytest --collect-only` 可收集到 241 个，收集阶段已验证；完整测试运行（full run）未在本轮验证。
-> - 此前 Windows 测试数据未经验证，已移除。
+> \* 剩余 1 failed + 4 errors 均为 Linux 专属测试（ext4/btrfs/strace），
+> 重构前基线完全相同（零回归），需在 Linux CI 验证。
+
+> **2026-04-16 架构重构变更：**
+> - 移除 `test_history.py`（history 命令已移除，见 docs/PARKED.md）
+> - `test_path_compatibility.py` 改用 `db dump` 查询（替代 history）
+> - core 单元测试以 `cargo test -p svault-core -- --list` 为准；
+>   下方逐测试表格冻结于重构前，仅保留 hash/config 等未变动模块的参考价值。
+
+> **注意：** E2E 需在 Linux/macOS 运行（RAMDisk）。
 
 ---
 

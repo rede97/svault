@@ -4,9 +4,11 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use serde::Serialize;
+
 use crate::db::Db;
+use crate::event::{Event, EventSink, Phase, PhaseContext};
 use crate::hash::sha256_file;
-use crate::reporting::{HashReporter, ReporterBuilder};
 
 /// Options for background hash computation.
 pub struct BackgroundHashOptions {
@@ -19,28 +21,29 @@ pub struct BackgroundHashOptions {
 }
 
 /// Result of a background hash run.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct BackgroundHashSummary {
     pub processed: usize,
     pub failed: usize,
 }
 
 /// Compute missing SHA-256 hashes for files in the vault.
-pub fn run_background_hash<RB: ReporterBuilder>(
+pub fn run_background_hash(
     opts: BackgroundHashOptions,
     db: &Db,
-    reporter_builder: &RB,
+    sink: &dyn EventSink,
 ) -> anyhow::Result<BackgroundHashSummary> {
     let files = db.get_files_pending_sha256(opts.limit)?;
     let total = files.len();
 
-    // Always create reporter, even when no files pending
-    // Use a dummy source path since background hash doesn't have a source directory
-    let dummy_source = std::path::PathBuf::from(".");
-    let reporter = reporter_builder.hash_reporter(&dummy_source, total as u64);
+    sink.emit(&Event::PhaseStarted {
+        phase: Phase::Hash,
+        total: Some(total as u64),
+        context: PhaseContext::vault(opts.vault_root.clone()),
+    });
 
     if total == 0 {
-        reporter.finish();
+        sink.emit(&Event::PhaseFinished { phase: Phase::Hash });
         return Ok(BackgroundHashSummary::default());
     }
 
@@ -49,7 +52,10 @@ pub fn run_background_hash<RB: ReporterBuilder>(
     for file in files.iter() {
         let full_path = Path::new(&opts.vault_root).join(&file.path);
 
-        reporter.item_started(&full_path, file.size as u64);
+        sink.emit(&Event::HashStarted {
+            path: full_path.clone(),
+            bytes: file.size as u64,
+        });
 
         let error = match sha256_file(&full_path) {
             Ok(digest) => {
@@ -82,14 +88,18 @@ pub fn run_background_hash<RB: ReporterBuilder>(
             }
         };
 
-        reporter.item_finished(&full_path, error.as_deref(), file.size as u64);
+        sink.emit(&Event::HashFinished {
+            path: full_path,
+            bytes: file.size as u64,
+            error,
+        });
 
         if opts.nice {
             thread::sleep(Duration::from_millis(10));
         }
     }
 
-    reporter.finish();
+    sink.emit(&Event::PhaseFinished { phase: Phase::Hash });
 
     Ok(summary)
 }

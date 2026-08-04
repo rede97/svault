@@ -1,298 +1,175 @@
-"""Sync command tests.
+"""Tests for `svault sync` — copying files from a peer vault.
 
-Tests the svault sync functionality which copies files between two vaults
-using SHA-256 content-based deduplication.
+中文说明：
+sync 以 Beyond Compare 风格比对两个 vault 的数据库记录（hash 加速），
+把本 vault 缺失的文件复制过来。源 vault 以只读方式打开，永不被修改；
+只存在于本 vault 的文件只会被报告，永不被删除。
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from pathlib import Path
 
 import pytest
+from conftest import VaultEnv, copy_fixture
 
-from conftest import VaultEnv, copy_fixture, FIXTURES_DIR
 
+@pytest.fixture
+def peer_vault(vault: VaultEnv) -> VaultEnv:
+    """A second vault living next to the primary one (same binary/ramdisk)."""
+    peer_dir = vault.root / f"peer_{vault.vault_dir.name}"
+    peer_source = vault.root / f"peer_source_{vault.vault_dir.name}"
+    peer_dir.mkdir(parents=True, exist_ok=True)
+    peer_source.mkdir(parents=True, exist_ok=True)
 
-def init_second_vault(binary: Path, vault_dir: Path) -> None:
-    """Initialize a second vault at the given path."""
-    svault_meta = vault_dir / ".svault"
-    if svault_meta.exists():
-        shutil.rmtree(svault_meta)
-    config = vault_dir / "svault.toml"
-    if config.exists():
-        config.unlink()
-
-    import subprocess
-    subprocess.run(
-        [str(binary), "init"],
-        check=True, text=True, capture_output=True, cwd=str(vault_dir),
+    peer = VaultEnv(
+        root=vault.root,
+        binary=vault.binary,
+        vault_dir=peer_dir,
+        source_dir=peer_source,
+        output_dir=vault.output_dir,
     )
+    peer.init()
+    return peer
 
 
-class TestSyncBasic:
-    """Basic sync functionality tests."""
+def _import_into(env: VaultEnv, fixture: str) -> Path:
+    """Copy a fixture into env's source dir and import it."""
+    src = env.source_dir / fixture
+    shutil.copy(copy_fixture_source(fixture), src)
+    env.import_dir(env.source_dir)
+    return src
 
-    def test_sync_basic_success(self, vault: VaultEnv) -> None:
-        """Basic sync should succeed and copy files from source to target vault."""
-        # Import files into source vault
-        copy_fixture(vault, "apple_with_exif.jpg")
-        copy_fixture(vault, "no_exif.jpg")
+
+def copy_fixture_source(fixture_name: str) -> Path:
+    """Absolute path of a fixture in tests/e2e/fixtures/source/."""
+    from conftest import FIXTURES_DIR
+
+    return FIXTURES_DIR / "source" / fixture_name
+
+
+class TestSyncCommand:
+    """End-to-end tests for `svault sync`."""
+
+    def test_sync_copies_missing_files(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """Files only in the source vault are copied and registered."""
+        _import_into(vault, "no_exif.jpg")          # source (peer direction: vault=source)
+        _import_into(peer_vault, "apple_with_exif.jpg")
+
+        # Sync peer (which only has apple) FROM vault (which only has no_exif)
+        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        assert result.returncode == 0
+        assert "To copy" in result.stderr or "To copy" in result.stdout
+
+        # no_exif.jpg now exists in peer vault and is registered
+        rows = peer_vault.find_file_in_db("no_exif.jpg")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "imported"
+        imported = list(peer_vault.vault_dir.rglob("no_exif.jpg"))
+        assert len(imported) == 1
+        assert imported[0].read_bytes() == copy_fixture_source("no_exif.jpg").read_bytes()
+
+    def test_sync_is_idempotent(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """Second sync finds everything identical and copies nothing."""
+        _import_into(vault, "no_exif.jpg")
+
+        peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
+
+        combined = result.stdout + result.stderr
+        assert "Identical:" in combined
+        assert "To copy" not in combined
+        rows = peer_vault.find_file_in_db("no_exif.jpg")
+        assert len(rows) == 1  # still exactly one record
+
+    def test_sync_keeps_dest_only_files(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """Files only in the local vault are reported and kept, never deleted."""
+        _import_into(vault, "no_exif.jpg")
+        _import_into(peer_vault, "apple_with_exif.jpg")
+
+        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        combined = result.stdout + result.stderr
+        assert "Only local:" in combined or "Only dest:" in combined
+
+        # apple_with_exif.jpg still exists in peer vault
+        assert len(list(peer_vault.vault_dir.rglob("apple_with_exif.jpg"))) == 1
+        assert len(peer_vault.find_file_in_db("apple_with_exif.jpg")) == 1
+
+    def test_sync_conflict_keeps_local(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """Same vault-relative path but different content → local file kept."""
+        # Import files with the SAME name into both vaults but different content.
+        # The import path template places them at the same vault-relative path.
+        shared_name = "shared_photo.jpg"
+
+        src1 = vault.source_dir / shared_name
+        src1.write_bytes(b"content-AAA")
         vault.import_dir(vault.source_dir)
 
-        # Ensure SHA-256 is computed for sync
-        vault.run("verify", "--background-hash", capture=True)
+        src2 = peer_vault.source_dir / shared_name
+        src2.write_bytes(b"content-BBB-different")
+        peer_vault.import_dir(peer_vault.source_dir)
 
-        # Create and init target vault
-        target_dir = vault.root / "target_vault"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
+        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        combined = result.stdout + result.stderr
+        assert "Conflict" in combined
 
-        # Sync from source vault to target vault (CWD = target)
-        result = vault.run(
-            "sync", str(vault.vault_dir),
-            cwd=target_dir,
-            capture=True
+        # Local content preserved
+        local_file = list(peer_vault.vault_dir.rglob(shared_name))
+        assert len(local_file) == 1
+        assert local_file[0].read_bytes() == b"content-BBB-different"
+
+    def test_sync_detects_moved_files(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """Same hash at a different path is reported as moved, not copied."""
+        _import_into(vault, "no_exif.jpg")
+
+        # First sync the file in, then move it inside the peer vault + update
+        peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        moved_dir = peer_vault.vault_dir / "archive"
+        moved_dir.mkdir(exist_ok=True)
+        original = list(peer_vault.vault_dir.rglob("no_exif.jpg"))[0]
+        shutil.move(str(original), moved_dir / "no_exif.jpg")
+        peer_vault.run("update", "--yes")
+
+        result = peer_vault.run("sync", str(vault.vault_dir), "--yes")
+        combined = result.stdout + result.stderr
+        assert "Moved:" in combined
+        # Nothing copied again
+        assert len(peer_vault.find_file_in_db("no_exif.jpg")) == 1
+
+    def test_sync_refuses_same_vault(self, vault: VaultEnv) -> None:
+        """Syncing a vault with itself is an error."""
+        result = vault.run("sync", str(vault.vault_dir), "--yes", check=False)
+        assert result.returncode != 0
+        assert "same vault" in (result.stderr + result.stdout)
+
+    def test_sync_refuses_non_vault_source(self, vault: VaultEnv) -> None:
+        """A plain directory without .svault/vault.db is rejected."""
+        plain = vault.root / "not_a_vault"
+        plain.mkdir(exist_ok=True)
+        result = vault.run("sync", str(plain), "--yes", check=False)
+        assert result.returncode != 0
+        assert "not a svault vault" in (result.stderr + result.stdout)
+
+    def test_sync_does_not_modify_source(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """The source vault's DB and files must remain untouched."""
+        _import_into(vault, "no_exif.jpg")
+        events_before = vault.db_query("SELECT COUNT(*) AS c FROM events")
+
+        peer_vault.run("sync", str(vault.vault_dir), "--yes")
+
+        events_after = vault.db_query("SELECT COUNT(*) AS c FROM events")
+        assert events_before == events_after
+
+    def test_sync_json_output(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
+        """JSON mode emits a parseable event stream with a sync summary."""
+        _import_into(vault, "no_exif.jpg")
+
+        result = peer_vault.run(
+            "--output=json", "sync", str(vault.vault_dir), "--yes"
         )
-        assert result.returncode == 0
-
-        # Check summary
-        assert "Transferred:" in result.stdout
-
-        # Verify files exist in target vault DB
-        db_path = target_dir / ".svault" / "vault.db"
-        assert db_path.exists()
-
-        import sqlite3
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT path, status FROM files WHERE status = 'imported'"
-        ).fetchall()
-        conn.close()
-
-        assert len(rows) >= 2, f"Expected at least 2 files in target, got {len(rows)}"
-
-    def test_sync_json_output(self, vault: VaultEnv) -> None:
-        """Sync with --output=json should emit JSON events."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        vault.run("verify", "--background-hash", capture=True)
-
-        target_dir = vault.root / "target_vault_json"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
-
-        result = vault.run(
-            "sync", str(vault.vault_dir),
-            "--output=json",
-            cwd=target_dir,
-            capture=True
-        )
-        assert result.returncode == 0
-
-        lines = [l for l in result.stdout.strip().split('\n') if l]
-        events = [json.loads(l) for l in lines]
-        event_types = [e["event"] for e in events]
-
-        assert "sync_diff_started" in event_types
-        assert "sync_diff_computed" in event_types
-        assert "sync_diff_finished" in event_types
-        assert "sync_transfer_started" in event_types
-        assert "sync_transfer_item_started" in event_types
-        assert "sync_transfer_item_finished" in event_types
-        assert "sync_transfer_finished" in event_types
-        assert "sync_transfer_summary" in event_types
-
-    def test_sync_nothing_to_sync(self, vault: VaultEnv) -> None:
-        """Sync when target already has all files should report nothing to sync."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        vault.run("verify", "--background-hash", capture=True)
-
-        target_dir = vault.root / "target_vault_nothing"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
-
-        # First sync
-        result1 = vault.run(
-            "sync", str(vault.vault_dir),
-            "--output=json",
-            cwd=target_dir,
-            capture=True
-        )
-        assert result1.returncode == 0
-
-        # Second sync — nothing new
-        result2 = vault.run(
-            "sync", str(vault.vault_dir),
-            "--output=json",
-            cwd=target_dir,
-            capture=True
-        )
-        assert result2.returncode == 0
-
-        events = [json.loads(l) for l in result2.stdout.strip().split('\n') if l]
-        event_types = [e["event"] for e in events]
-        assert "sync_diff_nothing_to_sync" in event_types
-
-    def test_sync_empty_source(self, vault: VaultEnv) -> None:
-        """Sync from empty source vault should report nothing to sync."""
-        target_dir = vault.root / "target_vault_empty_src"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
-
-        result = vault.run(
-            "sync", str(vault.vault_dir),
-            "--output=json",
-            cwd=target_dir,
-            capture=True
-        )
-        assert result.returncode == 0
-
-        events = [json.loads(l) for l in result.stdout.strip().split('\n') if l]
-        event_types = [e["event"] for e in events]
-        assert "sync_diff_nothing_to_sync" in event_types
-
-    def test_sync_preserves_directory_structure(self, vault: VaultEnv) -> None:
-        """Sync should preserve vault directory structure on target."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        vault.run("verify", "--background-hash", capture=True)
-
-        target_dir = vault.root / "target_vault_structure"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
-
-        result = vault.run(
-            "sync", str(vault.vault_dir),
-            cwd=target_dir,
-            capture=True
-        )
-        assert result.returncode == 0
-
-        import sqlite3
-        db_path = target_dir / ".svault" / "vault.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT path FROM files WHERE status = 'imported'"
-        ).fetchall()
-        conn.close()
-
-        for row in rows:
-            target_file = target_dir / row["path"]
-            assert target_file.exists(), f"Target file should exist: {target_file}"
-
-    def test_sync_file_content_matches(self, vault: VaultEnv) -> None:
-        """Synced files should have identical content to source."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        vault.run("verify", "--background-hash", capture=True)
-
-        target_dir = vault.root / "target_vault_content"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
-
-        result = vault.run(
-            "sync", str(vault.vault_dir),
-            cwd=target_dir,
-            capture=True
-        )
-        assert result.returncode == 0
-
-        import sqlite3
-        db_path = target_dir / ".svault" / "vault.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT path FROM files WHERE status = 'imported'"
-        ).fetchall()
-        conn.close()
-
-        for row in rows:
-            source_file = vault.vault_dir / row["path"]
-            target_file = target_dir / row["path"]
-            assert source_file.read_bytes() == target_file.read_bytes()
-
-
-class TestSyncTransfer:
-    """Sync transfer behavior tests."""
-
-    def test_sync_skips_existing_files(self, vault: VaultEnv) -> None:
-        """Sync should skip files that already exist in target vault."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-        vault.run("verify", "--background-hash", capture=True)
-
-        target_dir = vault.root / "target_vault_skip"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        init_second_vault(vault.binary, target_dir)
-
-        # First sync
-        vault.run("sync", str(vault.vault_dir), cwd=target_dir, capture=True)
-
-        # Second sync — should find nothing new
-        result = vault.run(
-            "sync", str(vault.vault_dir),
-            "--output=json",
-            cwd=target_dir,
-            capture=True
-        )
-        assert result.returncode == 0
-
-        events = [json.loads(l) for l in result.stdout.strip().split('\n') if l]
-        event_types = [e["event"] for e in events]
-        assert "sync_diff_nothing_to_sync" in event_types
-
-
-class TestCloneJson:
-    """Clone JSON output tests (verifying JSON reporters work)."""
-
-    def test_clone_json_output_events(self, vault: VaultEnv) -> None:
-        """Clone with --output=json should emit proper event sequence."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        vault.import_dir(vault.source_dir)
-
-        target_dir = vault.root / "clone_target_json_events"
-        result = vault.run(
-            "clone", f"--target={target_dir}",
-            "--output=json",
-            capture=True
-        )
-        assert result.returncode == 0
-
-        lines = [l for l in result.stdout.strip().split('\n') if l]
-        events = [json.loads(l) for l in lines]
-        event_types = [e["event"] for e in events]
-
-        assert "clone_started" in event_types
-        assert "clone_diff_computed" in event_types
-        assert "clone_finished" in event_types
-        assert "sync_transfer_started" in event_types
-        assert "sync_transfer_item_started" in event_types
-        assert "sync_transfer_item_finished" in event_types
-        assert "sync_transfer_finished" in event_types
-        assert "sync_transfer_summary" in event_types
-        assert "clone_summary" in event_types
-
-    def test_clone_json_nothing_to_clone(self, vault: VaultEnv) -> None:
-        """Clone with --output=json should emit nothing_to_clone for empty vault."""
-        target_dir = vault.root / "clone_target_empty_json"
-
-        result = vault.run(
-            "clone", f"--target={target_dir}",
-            "--output=json",
-            capture=True
-        )
-        assert result.returncode == 0
-
-        lines = [l for l in result.stdout.strip().split('\n') if l]
-        events = [json.loads(l) for l in lines]
-
-        event_types = [e["event"] for e in events]
-        assert "clone_started" in event_types
-        assert "clone_nothing_to_clone" in event_types
-        assert "clone_finished" in event_types
+        events = [json.loads(line) for line in result.stdout.strip().split("\n") if line]
+        summaries = [e for e in events if e.get("event") == "summary" and e.get("kind") == "sync"]
+        assert len(summaries) == 1
+        assert summaries[0]["copied"] == 1

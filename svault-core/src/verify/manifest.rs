@@ -80,13 +80,16 @@ pub struct ImportRecord {
 }
 
 /// Session type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionType {
+    #[default]
     Import,
     Add,
     Update,
     Recheck,
+    Sync,
+    Clone,
 }
 
 impl std::fmt::Display for SessionType {
@@ -96,6 +99,8 @@ impl std::fmt::Display for SessionType {
             SessionType::Add => "add",
             SessionType::Update => "update",
             SessionType::Recheck => "recheck",
+            SessionType::Sync => "sync",
+            SessionType::Clone => "clone",
         };
         write!(f, "{}", s)
     }
@@ -154,7 +159,9 @@ impl ImportManifest {
 
     /// Find record by destination path.
     pub fn find_by_dest(&self, dest_path: &Path) -> Option<&ImportRecord> {
-        self.files.iter().find(|f| f.dest_path.as_ref().map(|p| p.as_path()) == Some(dest_path))
+        self.files
+            .iter()
+            .find(|f| f.dest_path.as_deref() == Some(dest_path))
     }
 
     /// Get files filtered by status.
@@ -211,20 +218,33 @@ impl ManifestManager {
         Ok(())
     }
 
-    /// Save manifest.
+    /// Save manifest. The filename reflects the session type
+    /// (`import-<id>.json`, `sync-<id>.json`, …).
     pub fn save(&self, manifest: &ImportManifest) -> anyhow::Result<PathBuf> {
         self.ensure_dir()?;
-        let path = self
-            .manifests_dir
-            .join(format!("import-{}.json", manifest.session_id));
+        let path = self.manifests_dir.join(format!(
+            "{}-{}.json",
+            manifest.session_type, manifest.session_id
+        ));
         manifest.save(&path)?;
         Ok(path)
     }
 
     /// Load manifest by session ID.
+    ///
+    /// Looks up `import-<id>.json` first, then other session-type prefixes,
+    /// so recheck works for sync/import sessions alike.
     pub fn load(&self, session_id: &str) -> anyhow::Result<ImportManifest> {
-        let path = self.manifests_dir.join(format!("import-{session_id}.json"));
-        ImportManifest::load(&path)
+        for prefix in ["import", "sync", "add", "clone", "update"] {
+            let path = self
+                .manifests_dir
+                .join(format!("{}-{}.json", prefix, session_id));
+            if path.exists() {
+                return ImportManifest::load(&path);
+            }
+        }
+        // Fall back to the historical name for a clear error message.
+        ImportManifest::load(&self.manifests_dir.join(format!("import-{session_id}.json")))
     }
 
     /// List all manifests (newest first).
@@ -244,7 +264,7 @@ impl ManifestManager {
         }
 
         // Sort by import time (newest first)
-        manifests.sort_by(|a, b| b.1.imported_at.cmp(&a.1.imported_at));
+        manifests.sort_by_key(|b| std::cmp::Reverse(b.1.imported_at));
         Ok(manifests)
     }
 

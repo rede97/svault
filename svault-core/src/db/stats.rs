@@ -1,11 +1,12 @@
 //! Vault statistics and status queries.
 
 use rusqlite::Result;
+use serde::Serialize;
 
 use super::Db;
 
 /// Overall vault statistics for `svault status`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct VaultStats {
     /// Total number of files in the database.
     pub total_files: i64,
@@ -26,7 +27,7 @@ pub struct VaultStats {
 }
 
 /// Storage statistics by file extension.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ExtensionStats {
     /// File extension (lowercase, without dot).
     pub extension: String,

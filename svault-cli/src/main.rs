@@ -2,28 +2,17 @@
 //!
 //! Command-line interface for **Svault** — a content-addressed multimedia archive.
 //!
-//! ## Quick start
-//!
-//! ```bash
-//! # Initialize a vault
-//! svault init
-//!
-//! # Import photos from a directory or device
-//! svault import /path/to/photos
-//!
-//! # Check vault health
-//! svault status
-//! svault verify
-//! ```
+//! This crate is the thin application layer (L2): it parses arguments with
+//! clap, builds sinks/interactors from `svault-ui`, and calls into
+//! `svault-core`. See `docs/ARCHITECTURE.md`.
 
 pub mod cli;
 pub mod commands;
-pub mod reporting;
 
 use clap::Parser;
-use cli::{Cli, Command, DbCommand};
 #[cfg(debug_assertions)]
 use cli::DebugCommand;
+use cli::{Cli, Command, DbCommand};
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     // Configure Rayon thread pool if specified
@@ -36,14 +25,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Extract global flags before matching on command
     let output = cli.output;
+    let quiet = cli.quiet;
     let dry_run = cli.dry_run;
     let yes = cli.yes;
 
-    // Note: JSON output support is limited; individual commands handle their own output formatting
-
     match cli.command {
         Command::Init => commands::init::run(),
-        Command::Scan { source, show_dup } => commands::scan::run(output, source, show_dup),
         Command::Import {
             source,
             files_from,
@@ -53,18 +40,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             full_id,
             show_dup,
         } => commands::import::run(
-            output, dry_run, yes, source, files_from, target, strategy, force, full_id, show_dup,
+            output, quiet, dry_run, yes, source, files_from, target, strategy, force, full_id,
+            show_dup,
         ),
         Command::Recheck {
             source,
             target,
             session,
-        } => commands::recheck::run(source, target, session),
-        Command::Add { path } => commands::add::run(path),
-        Command::Sync { source, strategy, verify: _ } => {
-            commands::sync::run(output, source, strategy)
-        }
-        Command::Update { target, delete } => commands::update::run(dry_run, yes, target, delete),
+        } => commands::recheck::run(output, quiet, source, target, session),
+        Command::Add { path } => commands::add::run(output, quiet, path),
+        Command::Update { target } => commands::update::run(output, quiet, dry_run, yes, target),
         Command::Verify {
             file,
             recent,
@@ -73,6 +58,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             background_hash_limit,
         } => commands::verify::run(
             output,
+            quiet,
             file,
             recent,
             upgrade_links,
@@ -80,12 +66,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             background_hash_limit,
         ),
         Command::Status => commands::status::run(output),
-        Command::History { subcommand } => commands::history::run(output, subcommand),
         Command::Clone {
             target,
             filter_date,
-            filter_camera,
-        } => commands::clone::run(output, target, filter_date, filter_camera),
+            strategy,
+        } => commands::clone::run(output, quiet, target, filter_date, strategy),
+        Command::Sync {
+            source,
+            strategy,
+            verify,
+        } => commands::sync::run(output, quiet, yes, source, strategy, verify),
         Command::Db { command } => match command {
             DbCommand::VerifyChain => commands::db::run_verify_chain(),
             DbCommand::Dump {
@@ -95,12 +85,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::db::run_dump(tables, format, limit),
         },
         #[cfg(debug_assertions)]
+        Command::Scan { source, show_dup } => commands::scan::run(source, show_dup),
+        #[cfg(debug_assertions)]
         Command::Debug { command } => match command {
             DebugCommand::Reporter {
                 count,
                 delay_ms,
                 show_dup,
-            } => commands::debug_reporter::run(output, count, delay_ms, show_dup),
+            } => commands::debug_reporter::run(count, delay_ms, show_dup),
         },
     }
 }

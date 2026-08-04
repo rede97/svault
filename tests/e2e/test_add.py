@@ -33,7 +33,8 @@ class TestAddCommand:
         rows = vault.db_files()
         assert len(rows) == 1
         assert rows[0]["status"] == "imported"
-        assert str(Path("manual") / "photo.jpg") in rows[0]["path"]
+        # DB paths are always stored Unix-style (cross-platform design)
+        assert "manual/photo.jpg" in rows[0]["path"]
 
     def test_add_skips_already_tracked(self, vault: VaultEnv) -> None:
         """Re-adding an already tracked file should skip it."""

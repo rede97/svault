@@ -89,6 +89,20 @@ uv pip install -e "."
 | `test_import_dedup.py` | 身份判定矩阵：去重 + 文件名冲突 | `dedup`, `conflict` |
 | `test_import_recovery.py` | 幂等性、增量导入、恢复场景 | - |
 | `test_import_interruption.py` | 信号注入中断与恢复 | - |
+| `test_import_cross_fs.py` | 跨文件系统导入（ext4/btrfs/reflink） | `cross_fs`, Linux |
+| `test_import_disk_full.py` | 磁盘写满时的行为 | - |
+| `test_import_video_metadata.py` | 视频元数据提取 | - |
+| `test_add.py` | `add` 注册 vault 内文件 | - |
+| `test_update.py` | `update` 路径修正与 missing 标记 | - |
+| `test_clone.py` | `clone` 单向导出（过滤、审计事件） | - |
+| `test_sync.py` | `sync` vault 间同步（幂等、冲突、moved、只读源） | - |
+| `test_scan_import_pipeline.py` | scan → files-from 管道工作流 | debug binary |
+| `test_background_hash.py` | `verify --background-hash` 补齐 SHA-256 | - |
+| `test_binding.py` | 复合媒体绑定（Live Photo 等） | - |
+| `test_media_formats.py` | 媒体格式识别 | - |
+| `test_raw_id.py` | RAW 唯一 ID 去重 | - |
+| `test_path_compatibility.py` | 跨平台路径格式（Unix 风格存储） | - |
+| `test_config_transfer.py` | 配置与传输策略 | - |
 | `test_chaos.py` | 边界/异常场景 | `chaos`, `slow` |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
 | `test_verify.py` | 完整性验证（哈希匹配、损坏检测） | `verify` |

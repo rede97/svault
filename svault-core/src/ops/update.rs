@@ -3,6 +3,9 @@
 //! Scans the vault directory, computes hashes, and matches them against
 //! database records that are marked `imported` but whose paths no longer exist.
 //! When a match is found, the file has been moved/renamed outside of Svault.
+//!
+//! Missing files are marked `missing` in the database. **Svault never deletes
+//! user files** (core principle) — there is intentionally no delete option.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -11,26 +14,28 @@ use std::path::Path;
 
 use jwalk::WalkDir;
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::db::Db;
-use crate::hash::{sha256_file, xxh3_128_file};
-use crate::reporting::{
-    HashReporter, Interactor, MatchConfidence, ReporterBuilder, UpdateApplyReporter,
+use crate::event::{
+    Event, EventSink, Hint, Interactor, MatchConfidence, Phase, PhaseContext, Summary,
 };
+use crate::hash::{sha256_file, xxh3_128_file};
 
 /// Convert a path to Unix-style string (forward slashes) for cross-platform storage.
 fn path_to_unix_string(path: &Path) -> String {
-    // First, get the path as a string, replacing any backslashes with forward slashes
-    // This handles Windows paths that may contain backslashes
     let path_str = path.to_string_lossy();
     let normalized = path_str.replace('\\', "/");
-    
+
     // Remove leading slash if present (from absolute paths)
-    normalized.strip_prefix('/').map(String::from).unwrap_or(normalized)
+    normalized
+        .strip_prefix('/')
+        .map(String::from)
+        .unwrap_or(normalized)
 }
 
 /// Summary of an `update` operation.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct UpdateSummary {
     pub scanned: usize,
     pub missing: usize,
@@ -45,8 +50,6 @@ pub struct UpdateOptions {
     pub vault_root: std::path::PathBuf,
     pub dry_run: bool,
     pub yes: bool,
-    /// Actually delete files (if they exist).
-    pub delete: bool,
 }
 
 /// A single update match.
@@ -57,22 +60,19 @@ pub struct UpdateMatch {
     pub file_id: i64,
 }
 
-// MatchConfidence is now defined in crate::reporting
-
 /// Run `update` on the vault.
-pub fn run_update<RB: ReporterBuilder, I: Interactor>(
+pub fn run_update(
     opts: UpdateOptions,
     db: &Db,
-    reporter_builder: &RB,
-    interactor: &I,
+    sink: &dyn EventSink,
+    interactor: &dyn Interactor,
 ) -> anyhow::Result<UpdateSummary> {
     // 1. Find missing files in DB
     let missing_files = db.get_missing_files(&opts.vault_root)?;
     let missing_count = missing_files.len();
 
     if missing_count == 0 {
-        let apply_reporter = reporter_builder.update_apply_reporter(0);
-        apply_reporter.nothing_to_update();
+        sink.emit(&Event::Hint(Hint::NothingToUpdate));
         return Ok(UpdateSummary::default());
     }
 
@@ -110,90 +110,87 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
     let mut missing_by_sha256: HashMap<String, Vec<&crate::db::files::FileRow>> = HashMap::new();
 
     for row in &missing_files {
-        // Index by xxh3_128 (always)
         if let Some(xxh3) = row.xxh3_128.as_ref().map(|b| hex_encode(b)) {
             missing_by_xxh3.entry(xxh3).or_default().push(row);
         }
-        // Index by sha256 (if available)
         if let Some(sha256) = row.sha256.as_ref().map(|b| hex_encode(b)) {
             missing_by_sha256.entry(sha256).or_default().push(row);
         }
     }
 
     // 3. Hash all disk files and look for matches
-    let hash_reporter = reporter_builder.update_hash_reporter(&opts.vault_root, scanned as u64);
+    sink.emit(&Event::PhaseStarted {
+        phase: Phase::Hash,
+        total: Some(scanned as u64),
+        context: PhaseContext::vault(opts.vault_root.clone()),
+    });
 
     let matches: Vec<(UpdateMatch, MatchConfidence)> = disk_entries
         .into_par_iter()
         .filter_map(|path| {
-            // Get file size for reporter
             let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            
-            // Signal start of hashing this file
-            hash_reporter.item_started(&path, size);
 
-            // Helper closure to ensure item_finished is called
-            let (result, error): (Option<(UpdateMatch, MatchConfidence)>, Option<String>) = 
-                match (|| -> Option<(UpdateMatch, MatchConfidence)> {
-                    // Always compute xxh3_128 first (fast)
-                    let xxh3_str = xxh3_128_file(&path)
-                        .map(|h| hex_encode(&h.to_bytes()))
-                        .ok()?;
+            sink.emit(&Event::HashStarted {
+                path: path.clone(),
+                bytes: size,
+            });
 
-                    // First: try fast match by xxh3_128
-                    let candidates = missing_by_xxh3.get(&xxh3_str)?;
-                    let meta = fs::metadata(&path).ok()?;
+            let result: Option<(UpdateMatch, MatchConfidence)> = (|| {
+                // Always compute xxh3_128 first (fast)
+                let xxh3_str = xxh3_128_file(&path)
+                    .map(|h| hex_encode(&h.to_bytes()))
+                    .ok()?;
 
-                    for candidate in candidates {
-                        if candidate.size == meta.len() as i64 {
-                            let rel_new = path.strip_prefix(&opts.vault_root).unwrap_or(&path);
+                // Try fast match by xxh3_128
+                let candidates = missing_by_xxh3.get(&xxh3_str)?;
+                let meta = fs::metadata(&path).ok()?;
 
-                            // If candidate has sha256, compute and verify for definitive match
-                            let confidence = if candidate.sha256.is_some() {
-                                match sha256_file(&path) {
-                                    Ok(sha256_hash) => {
-                                        let disk_sha256 = sha256_hash.to_hex();
-                                        let candidate_sha256 = candidate
-                                            .sha256
-                                            .as_ref()
-                                            .map(|b| hex_encode(b))
-                                            .unwrap_or_default();
+                for candidate in candidates {
+                    if candidate.size == meta.len() as i64 {
+                        let rel_new = path.strip_prefix(&opts.vault_root).unwrap_or(&path);
 
-                                        if disk_sha256 == candidate_sha256 {
-                                            MatchConfidence::Definitive
-                                        } else {
-                                            // SHA-256 mismatch - this is a collision or corruption
-                                            continue;
-                                        }
-                                    }
-                                    Err(_) => {
-                                        // Can't compute sha256, fall back to fast match
-                                        MatchConfidence::Fast
+                        // If candidate has sha256, verify for definitive match
+                        let confidence = if candidate.sha256.is_some() {
+                            match sha256_file(&path) {
+                                Ok(sha256_hash) => {
+                                    let disk_sha256 = sha256_hash.to_hex();
+                                    let candidate_sha256 = candidate
+                                        .sha256
+                                        .as_ref()
+                                        .map(|b| hex_encode(b))
+                                        .unwrap_or_default();
+
+                                    if disk_sha256 == candidate_sha256 {
+                                        MatchConfidence::Definitive
+                                    } else {
+                                        // SHA-256 mismatch — collision or corruption
+                                        continue;
                                     }
                                 }
-                            } else {
-                                // No sha256 in DB, use fast match
-                                MatchConfidence::Fast
-                            };
+                                Err(_) => MatchConfidence::Fast,
+                            }
+                        } else {
+                            MatchConfidence::Fast
+                        };
 
-                            return Some((
-                                UpdateMatch {
-                                    old_path: candidate.path.clone(),
-                                    new_path: path_to_unix_string(rel_new),
-                                    file_id: candidate.id,
-                                },
-                                confidence,
-                            ));
-                        }
+                        return Some((
+                            UpdateMatch {
+                                old_path: candidate.path.clone(),
+                                new_path: path_to_unix_string(rel_new),
+                                file_id: candidate.id,
+                            },
+                            confidence,
+                        ));
                     }
-                    None
-                })() {
-                Some(m) => (Some(m), None),
-                None => (None, None), // No match found is not an error
-            };
+                }
+                None
+            })();
 
-            // Signal end of hashing this file
-            hash_reporter.item_finished(&path, error.as_deref(), size);
+            sink.emit(&Event::HashFinished {
+                path: path.clone(),
+                bytes: size,
+                error: None,
+            });
             result
         })
         .collect();
@@ -201,11 +198,14 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
     let matched = matches.len();
     let unmatched = missing_count - matched;
 
-    // Report matches
     for (m, conf) in &matches {
-        hash_reporter.matched(&m.old_path, &m.new_path, *conf);
+        sink.emit(&Event::RelocateMatched {
+            old_path: m.old_path.clone(),
+            new_path: m.new_path.clone(),
+            confidence: *conf,
+        });
     }
-    hash_reporter.finish();
+    sink.emit(&Event::PhaseFinished { phase: Phase::Hash });
 
     // 4. Dry-run or confirm
     let mut updated = 0;
@@ -215,10 +215,18 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
         } else {
             0
         };
-    let apply_reporter = reporter_builder.update_apply_reporter(apply_total as u64);
+
+    sink.emit(&Event::PhaseStarted {
+        phase: Phase::Apply,
+        total: Some(apply_total as u64),
+        context: PhaseContext::default(),
+    });
 
     if !opts.dry_run && matched > 0 {
         if !opts.yes && !interactor.confirm("Apply path updates?") {
+            sink.emit(&Event::PhaseFinished {
+                phase: Phase::Apply,
+            });
             return Ok(UpdateSummary {
                 missing: missing_count,
                 scanned,
@@ -231,18 +239,25 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
         // Apply updates
         for (idx, m) in matches.iter().map(|(m, _)| m).enumerate() {
             if let Err(e) = db.update_file_path(m.file_id, &m.new_path) {
-                apply_reporter.error(&format!("Failed to update: {}", e), &m.old_path);
+                sink.emit(&Event::ApplyError {
+                    path: m.old_path.clone(),
+                    message: format!("Failed to update: {}", e),
+                });
             } else {
                 updated += 1;
             }
-            apply_reporter.progress((idx + 1) as u64, apply_total as u64);
+            sink.emit(&Event::Progress {
+                phase: Phase::Apply,
+                done: (idx + 1) as u64,
+                total: apply_total as u64,
+            });
         }
     }
 
-    // 5. Clean phase (mark unmatched as missing, or delete)
+    // 5. Clean phase (mark unmatched as missing — never delete files)
     if unmatched > 0 {
         if opts.dry_run {
-            apply_reporter.dry_run_missing(unmatched);
+            sink.emit(&Event::Hint(Hint::DryRunMissing { count: unmatched }));
         } else {
             let to_clean: Vec<_> = missing_files
                 .iter()
@@ -251,23 +266,34 @@ pub fn run_update<RB: ReporterBuilder, I: Interactor>(
 
             for (idx, f) in to_clean.iter().enumerate() {
                 if let Err(e) = db.update_file_status(f.id, "missing") {
-                    apply_reporter.error(&format!("Failed to mark as missing: {}", e), &f.path);
+                    sink.emit(&Event::ApplyError {
+                        path: f.path.clone(),
+                        message: format!("Failed to mark as missing: {}", e),
+                    });
                 }
-                apply_reporter.progress((matched + idx + 1) as u64, apply_total as u64);
+                sink.emit(&Event::Progress {
+                    phase: Phase::Apply,
+                    done: (matched + idx + 1) as u64,
+                    total: apply_total as u64,
+                });
             }
         }
     }
 
-    apply_reporter.finish();
-    apply_reporter.summary(scanned, missing_count, matched, unmatched, updated);
+    sink.emit(&Event::PhaseFinished {
+        phase: Phase::Apply,
+    });
 
-    Ok(UpdateSummary {
+    let summary = UpdateSummary {
         scanned,
         missing: missing_count,
         matched,
         unmatched,
         updated,
-    })
+    };
+    sink.emit(&Event::Summary(Summary::Update(summary.clone())));
+
+    Ok(summary)
 }
 
 /// Hex encode bytes.
@@ -281,25 +307,19 @@ mod tests {
 
     #[test]
     fn test_path_to_unix_string_update_module() {
-        // Test that Windows-style paths are converted correctly
         let windows_path = Path::new("2024\\03\\file.jpg");
-        let result = path_to_unix_string(windows_path);
-        assert_eq!(result, "2024/03/file.jpg");
+        assert_eq!(path_to_unix_string(windows_path), "2024/03/file.jpg");
     }
 
     #[test]
     fn test_path_to_unix_string_unix_stays_unix() {
-        // Unix paths should remain unchanged
         let unix_path = Path::new("2024/03/file.jpg");
-        let result = path_to_unix_string(unix_path);
-        assert_eq!(result, "2024/03/file.jpg");
+        assert_eq!(path_to_unix_string(unix_path), "2024/03/file.jpg");
     }
 
     #[test]
     fn test_path_to_unix_string_mixed_separators() {
-        // Mixed separators (edge case)
         let mixed_path = Path::new("2024/03\\file.jpg");
-        let result = path_to_unix_string(mixed_path);
-        assert_eq!(result, "2024/03/file.jpg");
+        assert_eq!(path_to_unix_string(mixed_path), "2024/03/file.jpg");
     }
 }

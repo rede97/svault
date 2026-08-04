@@ -1,15 +1,8 @@
-//! Scan command — output file status in svault's pipeable text format.
+//! Scan command (debug builds only) — output file status in svault's
+//! pipeable text format.
 //!
-//! Delegates entirely to [`ImportOptions::run_scan`] with a [`PipeReporterBuilder`]
+//! Delegates entirely to [`ImportOptions::run_scan`] with a [`PipeSink`]
 //! so the scan logic is never duplicated relative to the import pipeline.
-//!
-//! # Output format
-//! ```text
-//! SCAN:/absolute/source/path
-//! new:DCIM/IMG_0001.jpg
-//! dup:DCIM/IMG_0003.jpg
-//! fail:DCIM/broken.dng
-//! ```
 //!
 //! # Example usage
 //! ```bash
@@ -22,13 +15,12 @@
 
 use std::path::PathBuf;
 
-use crate::cli::OutputFormat;
-use crate::reporting::PipeReporterBuilder;
 use svault_core::config::SyncStrategy;
 use svault_core::context::VaultContext;
-use svault_core::import::ImportOptions;
+use svault_core::ops::ImportOptions;
+use svault_ui::PipeSink;
 
-pub fn run(_output: OutputFormat, source: PathBuf, show_dup: bool) -> anyhow::Result<()> {
+pub fn run(source: PathBuf, show_dup: bool) -> anyhow::Result<()> {
     // Vault context is optional: without a vault we can still scan, but
     // duplicate detection is disabled and the default extension list is used.
     let vault_ctx = VaultContext::open(None, &source).ok();
@@ -54,8 +46,8 @@ pub fn run(_output: OutputFormat, source: PathBuf, show_dup: bool) -> anyhow::Re
         files_from: None,
     };
 
-    let reporter_builder = PipeReporterBuilder::new(show_dup);
-    opts.run_scan(db, &reporter_builder)?;
+    let sink = PipeSink::new(show_dup);
+    opts.run_scan(db, &sink)?;
 
     Ok(())
 }

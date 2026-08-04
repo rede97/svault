@@ -14,6 +14,14 @@ import pytest
 from conftest import VaultEnv, copy_fixture
 
 
+def db_file_rows(vault: VaultEnv) -> list[dict]:
+    """Query the files table via `svault db dump` (replaces removed `history`)."""
+    result = vault.run("db", "dump", "files", "--format=json", capture=True)
+    tables = json.loads(result.stdout)
+    files = [t for t in tables if t.get("name") == "files"]
+    return files[0]["rows"] if files else []
+
+
 class TestCrossPlatformPathCompatibility:
     """Cross-platform path compatibility tests."""
 
@@ -22,25 +30,12 @@ class TestCrossPlatformPathCompatibility:
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
         
-        # Get session and items
-        result = vault.run("history", "sessions", "--output=json", capture=True)
-        events = [json.loads(line) for line in result.stdout.strip().split('\n') if line]
-        session_items = [e for e in events if e.get("event") == "history_sessions_item"]
-        assert len(session_items) > 0
+        # Query imported file records from the database
+        rows = db_file_rows(vault)
+        assert len(rows) > 0, "Should have at least one file record"
         
-        session_id = session_items[0]["session_id"]
-        
-        # Query items
-        result = vault.run(
-            "history", "items", f"--session={session_id}", "--output=json", capture=True
-        )
-        item_events = [json.loads(line) for line in result.stdout.strip().split('\n') if line]
-        item_rows = [e for e in item_events if e.get("event") == "history_items_item"]
-        
-        assert len(item_rows) > 0, "Should have at least one item"
-        
-        for item in item_rows:
-            vault_path = item.get("vault_path", "")
+        for row in rows:
+            vault_path = row.get("path", "")
             # Strong assertion: explicitly forbid backslashes
             assert '\\' not in vault_path, (
                 f"Path should use forward slashes, got: {vault_path}"
@@ -90,30 +85,19 @@ class TestCrossPlatformPathCompatibility:
         copy_fixture(vault, "apple_with_exif.jpg")
         vault.import_dir(vault.source_dir)
         
-        # Get history items
-        result = vault.run("history", "sessions", "--output=json", capture=True)
-        events = [json.loads(line) for line in result.stdout.strip().split('\n') if line]
-        session_items = [e for e in events if e.get("event") == "history_sessions_item"]
-        
-        if not session_items:
-            pytest.skip("No sessions found")
-        
-        session_id = session_items[0]["session_id"]
-        
-        result = vault.run(
-            "history", "items", f"--session={session_id}", "--output=json", capture=True
-        )
-        item_events = [json.loads(line) for line in result.stdout.strip().split('\n') if line]
-        item_rows = [e for e in item_events if e.get("event") == "history_items_item"]
+        # Query imported file records from the database
+        rows = db_file_rows(vault)
+        if not rows:
+            pytest.skip("No file records found")
         
         # Read manifest
         manifests_dir = vault.vault_dir / ".svault" / "manifests"
         if not manifests_dir.exists():
             pytest.skip("No manifests directory found")
         
-        manifest_files = list(manifests_dir.glob(f"import-{session_id}.json"))
+        manifest_files = list(manifests_dir.glob("*.json"))
         if not manifest_files:
-            pytest.skip("Manifest not found for session")
+            pytest.skip("No manifest files found")
         
         with open(manifest_files[0], 'r') as f:
             manifest = json.load(f)
@@ -124,10 +108,10 @@ class TestCrossPlatformPathCompatibility:
             if f.get("dest_path")
         }
         
-        history_vault_paths = {item.get("vault_path", "") for item in item_rows}
+        db_vault_paths = {row.get("path", "") for row in rows}
         
         # Paths should be consistent (both use Unix format)
-        common_paths = manifest_dest_paths & history_vault_paths
+        common_paths = manifest_dest_paths & db_vault_paths
         assert len(common_paths) > 0 or len(manifest_dest_paths) == 0, (
             "Paths in DB and manifest should be consistent"
         )
@@ -147,7 +131,7 @@ class TestCrossPlatformPathCompatibility:
         # Check for missing files - if paths are wrong, files would be reported missing
         missing_events = [
             e for e in verify_events 
-            if e.get("event") == "verify_item" and e.get("status") == "missing"
+            if e.get("event") == "verify_item" and e.get("result", {}).get("result") == "missing"
         ]
         
         # Should not have missing files for freshly imported content

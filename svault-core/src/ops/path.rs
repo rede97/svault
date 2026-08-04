@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::import::exif::secs_to_ymd;
+use crate::ops::exif::secs_to_ymd;
 
 /// Resolve the destination path from the template and file metadata.
 /// Supported tokens: `$year`, `$mon`, `$day`, `$device`, `$filename`, `$stem`, `$ext`

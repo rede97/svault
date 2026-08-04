@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use serde::Serialize;
+
 use crate::config::{ImportConfig, SyncStrategy};
 
 /// Options controlling a single import run.
@@ -35,35 +37,8 @@ pub struct ImportOptions {
     pub files_from: Option<Vec<PathBuf>>,
 }
 
-/// Per-file status after Stage B.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FileStatus {
-    /// CRC32C cache miss — probably a new file.
-    LikelyNew,
-    /// CRC32C cache hit — probably already in vault.
-    LikelyCacheDuplicate,
-    /// Confirmed imported (Stage E complete).
-    Imported,
-    /// Confirmed duplicate (Stage D dedup).
-    Duplicate,
-    /// Processing failed.
-    Failed(String),
-}
-
-/// Per-file scan result from Stage B.
-#[derive(Debug, Clone)]
-pub struct ScanEntry {
-    pub src_path: PathBuf,
-    pub size: u64,
-    pub mtime_ms: i64,
-    pub crc32c: u32,
-    pub status: FileStatus,
-    /// RAW unique ID for precise duplicate detection (camera serial + image ID)
-    pub raw_unique_id: Option<String>,
-}
-
 /// Final summary returned to the caller.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ImportSummary {
     pub total: usize,
     pub imported: usize,

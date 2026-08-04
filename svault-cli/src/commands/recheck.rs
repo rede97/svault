@@ -1,12 +1,15 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use crate::reporting::TerminalReporterBuilder;
 use svault_core::context::VaultContext;
-use svault_core::import::recheck::{RecheckOptions, run_recheck};
+use svault_core::ops::recheck::{RecheckOptions, run_recheck};
 use svault_core::verify::manifest::ManifestManager;
 
+use crate::cli::OutputFormat;
+use crate::commands::SinkSet;
+
 pub fn run(
+    output: OutputFormat,
+    quiet: bool,
     source: Option<PathBuf>,
     target: Option<PathBuf>,
     session: Option<String>,
@@ -45,7 +48,7 @@ pub fn run(
         vault_root: ctx.vault_root().to_path_buf(),
         manifest,
     };
-    let reporter_builder = Arc::new(TerminalReporterBuilder::new());
-    run_recheck(opts, ctx.db(), reporter_builder.as_ref())?;
+    let sink = SinkSet::new(&output, quiet, false);
+    run_recheck(opts, ctx.db(), sink.as_sink())?;
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Shared path helpers for CLI reporting.
+//! Path display helpers for terminal rendering.
 
 use std::path::Path;
 

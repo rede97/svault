@@ -10,7 +10,6 @@ categories = ["filesystem"]
 
 [features]
 default = []
-cli = ["dep:clap"]
 
 [dependencies]
 anyhow = "1"
@@ -26,13 +25,11 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 dashmap = "6"
 rayon = "1"
 dunce = "1"
-rich_rust = "0.2"
 kamadak-exif = "0.5"
 regex = "1"
 chrono = "0.4"
 fs2 = "0.4"
 thiserror = "1"
-clap = { version = "4", features = ["derive"], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"

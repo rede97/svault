@@ -33,20 +33,6 @@ pub struct FileRow {
 // ---------------------------------------------------------------------------
 
 impl Db {
-    /// Returns the current CRC32C cache epoch from `metadata`.
-    /// Epoch 1 is the default written during `init`.
-    pub fn crc32c_epoch(&self) -> Result<i64> {
-        let epoch: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'crc32c_epoch'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(epoch.and_then(|s| s.parse().ok()).unwrap_or(1))
-    }
-
     // -----------------------------------------------------------------------
     // Lookup queries
     // -----------------------------------------------------------------------
@@ -190,7 +176,7 @@ impl Db {
 
     /// Get files imported in the last N seconds.
     pub fn get_recent_files(&self, seconds: u64) -> Result<Vec<FileRow>> {
-        let since_ms = crate::import::utils::unix_now_ms() - (seconds as i64 * 1000);
+        let since_ms = crate::ops::utils::unix_now_ms() - (seconds as i64 * 1000);
         self.get_files_imported_since(since_ms)
     }
 
