@@ -45,14 +45,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-# 尝试导入 FUSE
+# 尝试导入 FUSE（fusepy）
 try:
     import fuse
-    from fuse import Fuse
+    from fuse import FUSE, Operations
     FUSE_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):  # OSError: libfuse 共享库缺失
     FUSE_AVAILABLE = False
-    Fuse = object  # 占位符
+    Operations = object  # 占位符
 
 
 @dataclass
@@ -107,7 +107,7 @@ class IOStats:
     last_offset: int = 0
 
 
-class FaultInjectedFS(Fuse):
+class FaultInjectedFS(Operations):
     """故障注入 FUSE 文件系统
     
     基于 fusepy 的用户态文件系统，支持：
@@ -149,6 +149,7 @@ class FaultInjectedFS(Fuse):
         self._lock = threading.RLock()
         self._active_pauses: dict[str, threading.Event] = {}
         self._io_log: list[dict] = []  # 记录所有 IO 操作
+        self._mounted = threading.Event()  # init 回调触发后置位
     
     def _real_path(self, path: str) -> Path:
         """将 FUSE 路径转换为真实路径"""
@@ -213,8 +214,21 @@ class FaultInjectedFS(Fuse):
     # =========================================================================
     # FUSE 回调实现
     # =========================================================================
-    
-    def getattr(self, path: str) -> dict:
+
+    def init(self, path: str) -> None:
+        """FUSE 初始化回调（挂载完成后由 fusepy 调用）"""
+        self._mounted.set()
+        return None  # fusepy 将返回值按 c_void_p 转换，Python 对象会 TypeError
+
+    def wait_mounted(self, timeout: float = 5.0) -> bool:
+        """等待挂载完成
+
+        Returns:
+            是否在超时内置位（True = 已挂载）
+        """
+        return self._mounted.wait(timeout)
+
+    def getattr(self, path: str, fh: int | None = None) -> dict:
         """获取文件属性"""
         real_path = self._real_path(path)
         
@@ -234,7 +248,7 @@ class FaultInjectedFS(Fuse):
             'st_gid': st.st_gid,
         }
     
-    def readdir(self, path: str, offset: int) -> list:
+    def readdir(self, path: str, fh: int) -> list:
         """读取目录"""
         real_path = self._real_path(path)
         
@@ -354,26 +368,22 @@ class FaultInjectedFS(Fuse):
     # 控制接口
     # =========================================================================
     
-    def start(self, foreground: bool = False) -> None:
-        """启动 FUSE 文件系统
-        
+    def start(self, foreground: bool = True) -> None:
+        """启动 FUSE 文件系统（阻塞式，须在专用线程中调用）
+
+        fusepy 的 ``FUSE()`` 会持续服务直到挂载点被卸载；调用方
+        （conftest）已在后台线程中运行本方法，因此始终以前台模式服务。
+
         Args:
-            foreground: 是否在前台运行（调试时使用）
+            foreground: 兼容旧接口的保留参数，无实际作用
         """
         self._running = True
-        
-        # 解析参数
-        args = [
+        FUSE(
+            self,
             str(self.mount_point),
-            '-o', 'allow_other',  # 允许其他用户访问
-            '-o', 'default_permissions',
-        ]
-        
-        if not foreground:
-            args.append('-f')  # 前台模式，线程控制更简单
-        
-        self.parse(args)
-        self.main()
+            foreground=True,
+            allow_other=True,
+        )
     
     def stop(self) -> None:
         """停止 FUSE 文件系统"""

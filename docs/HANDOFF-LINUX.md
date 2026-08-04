@@ -95,15 +95,38 @@ cd /tmp/svault-ramdisk && mkdir -p src vaultA vaultB
 4. clone 重复导出会重新复制（对方并行提交的 path+size 跳过优化未采纳，可作为后续小改进）
 5. diff 引擎边缘：dest 同 identity 多路径时只保留一个索引项——v1 接受
 
-## 5. 环境验证记录（由你填写）
+## 5. 环境验证记录（Linux 侧已填写 · 2026-08-04）
 
 | 项目 | 结果 | 备注 |
 |------|------|------|
-| 全套 E2E（249） | ⬜ | |
-| cross_fs 4 errors + 1 failed 清零 | ⬜ | |
-| fuse_tests | ⬜ | |
-| CI 三 OS 全绿 | ⬜ | |
-| btrfs reflink 实测 | ⬜ | |
+| 全套 E2E（249） | ✅ | 220 passed / 0 failed（249 = 220 主套件 + 29 FUSE 占位，后者默认被 `--ignore` 排除） |
+| cross_fs 4 errors + 1 failed 清零 | ✅ | 4 项全过：ext4 copy、btrfs reflink、stream copy、reflink 能力探测（loop 设备挂载真实 ext4/btrfs） |
+| fuse_tests | ✅ 可运行 | 29 skipped / 0 errors；测试体均为“待实现”占位，框架级 bug 已修复（见 §7） |
+| CI 三 OS 全绿 | ✅ | `2bbad4b`：ubuntu / macos / windows 全 success（GitHub API 核实） |
+| btrfs reflink 实测 | ✅ | 本机无原生 btrfs 挂载点；loop-device btrfs reflink 测试通过；另在真实 ext4（`--test-dir`）跑 import/clone/sync/verify 子集 138 passed |
+
+**本机环境**：Ubuntu 24.04（内核 6.x），Python 3.12，`exiftool`/`strace`/`fusermount3` 齐备；为 FUSE 测试安装了 `libfuse2t64`（apt）与 `fusepy 3.0.1`（tests/e2e/.venv）。
+
+## 7. Linux 侧修复记录（2026-08-04）
+
+执行过程中发现并修复了 3 个**先于本次重构就存在**的潜伏 bug（均非回归）：
+
+1. **`run_fuse.sh` PROJECT_ROOT 计算错误**：脚本位于 `fuse_tests/` 内但只上溯两级，
+   指向 `tests/` 而非仓库根，导致永远找不到 svault 二进制并尝试在错误目录 `cargo build`。
+   修正为 `../../..`；同时把不可靠的裸 `pip install` 改为 `python3 -m pip install`。
+2. **`fault_inject_fs.py` 使用已淘汰的 fusepy API**：`from fuse import Fuse` + 子类化 +
+   `parse()/main()` 是 fusepy 前身（python-fuse）的接口；现代 fusepy（≥2.x）只导出
+   `FUSE`/`Operations`。已移植：子类化 `Operations`、`getattr/readdir` 签名对齐、
+   `start()` 改为阻塞式 `FUSE(self, mountpoint, foreground=True, allow_other=True)`
+   （conftest 本就在后台线程调用），新增 `init` 回调 + `wait_mounted()` 替代固定
+   `time.sleep(0.5)`。另外 `import fuse` 在缺 libfuse 时抛 `OSError` 而非 `ImportError`，
+   conftest 与 fault_inject_fs 的兜底已同步修正。
+3. **`run.sh --test-dir` 从未真正可用**：pytest 预解析会把 `--test-dir` 的绝对路径值
+   当作初始路径锚点，导致 e2e 目录的 `conftest.py`（注册全部自定义选项）不被加载，
+   报 `unrecognized arguments: --test-dir`。修复：pytest 调用显式传入位置参数 `.`。
+
+**环境侧注意**：本次为执行 E2E 临时配置了 sudo 免密（`/etc/sudoers.d/99-svault-e2e`），
+**任务结束后请人工执行 `sudo rm /etc/sudoers.d/99-svault-e2e` 回收**。
 
 ## 6. 铁律提醒（违反=事故）
 

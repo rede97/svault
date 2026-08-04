@@ -121,8 +121,11 @@ else
 fi
 
 # Run tests
+# 注意：必须显式传入 "." 作为位置参数。否则 pytest 会把 --test-dir 的
+# 绝对路径值误认为初始路径锚点，导致本目录的 conftest.py（自定义选项）
+# 不被加载，报 "unrecognized arguments: --test-dir"。
 if command -v uv &> /dev/null; then
-    uv run python -m pytest "${PYTEST_ARGS[@]}"
+    uv run python -m pytest . "${PYTEST_ARGS[@]}"
 else
-    "$PYTHON" -m pytest "${PYTEST_ARGS[@]}"
+    "$PYTHON" -m pytest . "${PYTEST_ARGS[@]}"
 fi

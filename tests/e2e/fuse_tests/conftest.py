@@ -24,7 +24,7 @@ try:
     import fuse
     FUSE_AVAILABLE = True
     FUSE_BACKEND = "fusepy"
-except ImportError:
+except (ImportError, OSError):  # OSError: libfuse 共享库缺失
     try:
         import pyfuse3
         FUSE_AVAILABLE = True
@@ -113,7 +113,9 @@ def vault_with_fuse_source(
     fs_thread.start()
     
     # 等待挂载完成
-    time.sleep(0.5)
+    if not fs.wait_mounted(timeout=10):
+        fs.stop()
+        pytest.fail("FUSE 挂载超时")
     
     try:
         yield vault, fuse_mount_point, fs

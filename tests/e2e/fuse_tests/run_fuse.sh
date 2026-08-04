@@ -103,9 +103,9 @@ elif python3 -c "import pyfuse3" 2>/dev/null; then
     echo "  ✓ pyfuse3 已安装"
 else
     echo -e "${YELLOW}  ⚠ 未找到 FUSE 库，尝试安装 fusepy...${NC}"
-    pip install fusepy || {
+    python3 -m pip install fusepy || {
         echo -e "${RED}错误: 无法安装 fusepy${NC}"
-        echo "请手动安装: pip install fusepy"
+        echo "请手动安装: python3 -m pip install fusepy"
         exit 1
     }
 fi
@@ -131,7 +131,7 @@ echo ""
 
 # 检查 svault 二进制
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$E2E_DIR/../../.." && pwd)"
 SVALUT_DEBUG="$PROJECT_ROOT/target/debug/svault"
 SVALUT_RELEASE="$PROJECT_ROOT/target/release/svault"
 
