@@ -316,9 +316,12 @@ class TestExifFallback:
     def test_partial_exif_device_only_no_date(self, vault: VaultEnv) -> None:
         """Photo with device but no date should use mtime for date."""
         from conftest import EXIFTOOL_AVAILABLE
-        
+
         if not EXIFTOOL_AVAILABLE:
-            pytest.skip("exiftool not available")
+            pytest.fail(
+                "exiftool 是 E2E 强制依赖。安装: "
+                "sudo apt install libimage-exiftool-perl / brew install exiftool"
+            )
         
         import os
         import subprocess

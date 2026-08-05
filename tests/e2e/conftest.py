@@ -648,33 +648,39 @@ def source_factory(vault: VaultEnv) -> callable:
         
         Note:
             - Format is auto-detected from file extension
-            - If exiftool is not installed, EXIF data will be silently skipped
-            - Tests requiring EXIF should check for exiftool availability
+            - exiftool 是 E2E 强制依赖（EXIF 固件写入的公认标准实现）；
+              请求 EXIF 写入但 exiftool 缺失时本 fixture 直接 pytest.fail
         """
         target_dir = vault.source_dir
         if subdir:
             target_dir = target_dir / subdir
             target_dir.mkdir(parents=True, exist_ok=True)
-        
+
         filepath = target_dir / filename
-        
+
         if content is not None:
             # Use provided raw content
             filepath.write_bytes(content)
         else:
             # Auto-detect format from extension
             ext = filepath.suffix.lower().lstrip('.')
-            
+
             # Use content marker for uniqueness
             content_marker = f"test_{filename}"
-            
+
             # Create media file based on extension
             try:
                 create_media_file(filepath, ext, content_marker)
-                
+
                 # Add EXIF for supported image formats
                 if exif_date or exif_make or exif_model:
-                    if ext in ('jpg', 'jpeg', 'tiff', 'tif') and shutil.which("exiftool"):
+                    if ext in ('jpg', 'jpeg', 'tiff', 'tif'):
+                        if not shutil.which("exiftool"):
+                            pytest.fail(
+                                "exiftool 是 E2E 强制依赖（EXIF 固件写入的公认标准实现）。"
+                                "安装: sudo apt install libimage-exiftool-perl (Debian/Ubuntu) "
+                                "或 brew install exiftool (macOS)"
+                            )
                         cmd = ["exiftool", "-overwrite_original", "-ignoreMinorErrors"]
                         if exif_date:
                             cmd.extend([
@@ -686,7 +692,11 @@ def source_factory(vault: VaultEnv) -> callable:
                         if exif_model:
                             cmd.append(f"-Model={exif_model}")
                         cmd.append(str(filepath))
-                        subprocess.run(cmd, check=False, capture_output=True)
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            pytest.fail(
+                                f"exiftool 写入 EXIF 失败 ({filepath.name}): {result.stderr}"
+                            )
             except ValueError:
                 # Unknown extension, create as generic file
                 filepath.write_bytes(b"test content")

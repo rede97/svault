@@ -49,12 +49,14 @@ if (-not (Test-Path $BINARY)) {
     }
 }
 
-# Check for exiftool (used by some tests)
+# Check for exiftool (mandatory: standard implementation for writing
+# real camera EXIF into test fixtures)
 Write-Host "Checking exiftool..."
 $exiftool = Get-Command exiftool -ErrorAction SilentlyContinue
 if (-not $exiftool) {
-    Write-Host "Warning: exiftool is not installed. Some tests may fail." -ForegroundColor Yellow
+    Write-Host "Error: exiftool is a MANDATORY dependency for the E2E suite." -ForegroundColor Red
     Write-Host "Install it from: https://exiftool.org/"
+    exit 1
 }
 
 # Build pytest arguments

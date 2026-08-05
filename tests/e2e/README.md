@@ -12,6 +12,15 @@
 
 ## 快速开始
 
+### 0. 系统依赖（强制）
+
+| 工具 | 用途 | 安装 |
+|------|------|------|
+| **exiftool** | **强制**。EXIF 固件写入的公认标准实现，确保测试固件与真实相机文件一致。缺失时 `run.sh` 直接退出、`source_factory` 直接 `pytest.fail` | `sudo apt install libimage-exiftool-perl` / `brew install exiftool` |
+| strace | `test_import_interruption.py` 信号注入 | `sudo apt install strace` |
+| FUSE + fusepy | `fuse_tests/` 故障注入 | `sudo apt install fuse3 && pip install fusepy` |
+| ffmpeg | 部分视频元数据测试 | `sudo apt install ffmpeg` |
+
 ### 1. 环境设置（使用 uv）
 
 ```bash

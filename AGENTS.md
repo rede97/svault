@@ -111,6 +111,8 @@ sudo bash run.sh -k "test_cross_fs"          # 需要 root 的测试
 
 #### 测试固件规范
 
+- **exiftool 是 E2E 强制依赖**——EXIF 固件写入的公认标准实现；`run.sh` 入口硬检查，
+  `source_factory` 在请求 EXIF 写入但 exiftool 缺失时直接 `pytest.fail`（不做静默降级）
 - **禁止**使用 `piexif` 等 Python EXIF 库
 - **必须使用** `exiftool` 写入 EXIF 数据（确保与真实相机文件一致）
 

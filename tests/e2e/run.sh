@@ -104,12 +104,15 @@ if [ ! -f "$BINARY" ]; then
     cargo build $BUILD_ARGS
 fi
 
-# Check for exiftool (used by some tests)
+# Check for exiftool (mandatory: standard implementation for writing
+# real camera EXIF into test fixtures; missing it fails ~12 tests)
 echo "Checking exiftool..."
 if ! command -v exiftool &> /dev/null; then
-    echo "Warning: exiftool is not installed. Some tests may fail."
+    echo "Error: exiftool is a MANDATORY dependency for the E2E suite."
+    echo "It is the recognized standard for writing real camera EXIF into fixtures."
     echo "Install it with: sudo apt install libimage-exiftool-perl  (Debian/Ubuntu)"
     echo "              or: brew install exiftool                    (macOS)"
+    exit 1
 fi
 
 # Default: exclude FUSE tests unless --fuse specified
