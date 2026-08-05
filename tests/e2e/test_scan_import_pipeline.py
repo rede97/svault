@@ -144,10 +144,6 @@ class TestScanFilterImportPipeline:
         assert result.stdout.strip() == ""
 
 
-class TestScanOutputFormat:
-    """Test scan output format details."""
-
-
 class TestImportFilesFrom:
     """Test import --files-from option."""
 

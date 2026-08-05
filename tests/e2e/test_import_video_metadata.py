@@ -178,10 +178,6 @@ class TestVideoMetadataExtraction:
         path = db_result[0]["path"]
         assert "2024" in path, f"File organized by mtime not creation_time: {path}"
 
-
-class TestVideoDeviceInfo:
-    """V4: Video device info extraction tests."""
-
 def create_mov_with_device_info(
     path: Path,
     creation_time: datetime,

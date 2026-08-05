@@ -32,7 +32,7 @@ import pytest
 # pytest 不会把本目录加入 sys.path，需手动加入以便导入 fault_inject_fs
 sys.path.insert(0, str(Path(__file__).parent))
 
-from conftest import VaultEnv, create_minimal_jpeg
+from conftest import VaultEnv, create_minimal_jpeg, create_minimal_mp4
 from fault_inject_fs import FaultInjectedFS, FaultRule
 
 # 标记所有测试需要 FUSE
@@ -196,23 +196,32 @@ class TestImportPauseScenarios:
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """多文件场景下暂停 + SIGTERM：部分文件已复制未入库，重跑幂等
+        """多文件场景下复制阶段暂停 + SIGTERM：孤儿文件改名重复制（OPEN-3 强锁定）
 
         判据（failure-handling.md §8.2 P1、§5 恢复矩阵、OPEN-3 现行行为）：
-        1. 暂停在第 5 个文件时：进程存活；DB 无记录（Stage E 是整批单事务，
-           未到达即为空）；vault 可能已有部分已复制文件
-        2. SIGTERM 后重跑：10 个文件全部入库，verify 通过
-        3. vault 数据文件数 >= 10（已复制未入库的孤儿文件重跑时改名重复制，
-           这是 OPEN-3 锁定的现行行为）
+        1. 暂停发生在 **Stage C 复制阶段**（200KB 文件 @100KB——JPEG CRC 只读
+           头部 64KB，该偏移在 Stage B 读取范围之外，必然在复制时触发）
+        2. 等待其余 9 个文件复制完成后 SIGTERM：DB 为空（整批事务未到达），
+           vault 有 9 个完整孤儿 + 1 个截断半成品
+        3. 重跑：10 个全部入库；10 个孤儿均改名 .1 重复制 → vault 共 20 个
+           数据文件；multi_4.jpg 保持截断而 multi_4.1.jpg 完整
         """
         vault, fuse_mount, fs = vault_with_fuse_source
+        file_size = 200 * 1024
+        # 用 MP4 而非 JPEG：kamadak-exif 的 read_from_file 会整读 JPEG（EXIF 阶段
+        # 即触发暂停）；MP4 无 EXIF 整读，CRC 为 Head+Tail(64KB)，100KB 是
+        # 读取盲区，暂停必然发生在 Stage C 顺序复制
         for i in range(10):
-            _create_padded_jpeg(vault.source_dir, f"multi_{i}.jpg", 4 * 1024)
+            mp4 = vault.source_dir / f"multi_{i}.mp4"
+            create_minimal_mp4(mp4, f"MULTI_{i}")
+            with open(mp4, "ab") as f:
+                f.write(b"\xff" * (file_size - mp4.stat().st_size))
 
         fs.add_rule(
             FaultRule(
-                path="/multi_4.jpg",
-                offset=2048,  # 第 5 个文件的 50%
+                path="/multi_4.mp4",
+                offset=132 * 1024,  # CRC 盲区 [128KB, 136KB)：head 合并读 128KB、
+                # tail 从 136KB 起 → 只在 Stage C 复制时触发
                 action="pause",
                 pause_event=threading.Event(),
                 trigger_count=1,
@@ -220,9 +229,23 @@ class TestImportPauseScenarios:
         )
 
         proc = _start_import(vault, fuse_mount)
-        assert _wait_paused(fs, "/multi_4.jpg"), "导入未在 multi_4.jpg 处触发暂停"
+        assert _wait_paused(fs, "/multi_4.mp4"), "导入未在 multi_4.mp4 复制阶段触发暂停"
         assert proc.poll() is None, "暂停期间导入进程应存活"
-        copied_before_kill = len(_vault_data_files(vault))
+
+        # 等其余 9 个文件复制完成（multi_4 暂停不阻塞 rayon 其他 worker）
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            others = [
+                f for f in _vault_data_files(vault) if f.name != "multi_4.mp4"
+            ]
+            if len(others) == 9:
+                break
+            time.sleep(0.1)
+        else:
+            proc.kill()
+            fs.resume()
+            pytest.fail("其余 9 个文件未在 60s 内复制完成")
+        copied_before_kill = 9
 
         proc.terminate()  # SIGTERM
         proc.wait(timeout=15)
@@ -232,21 +255,30 @@ class TestImportPauseScenarios:
         # Stage E 整批单事务未到达 → DB 为空（§5 恢复矩阵）
         assert vault.db_files() == [], "整批事务未提交，DB 应为空"
 
-        # 幂等重跑：全部入库
+        # 中断现场：9 个完整孤儿 + multi_4.jpg 截断半成品
+        partial = [
+            p for p in vault.vault_dir.rglob("multi_4.mp4") if ".svault" not in p.parts
+        ]
+        assert len(partial) == 1 and partial[0].stat().st_size < file_size, (
+            "multi_4.mp4 应是截断半成品（OPEN-3：半成品不清理）"
+        )
+
+        # 幂等重跑：全部入库；10 个孤儿（含半成品）改名 .1 重复制
         result = vault.import_dir(fuse_mount)
         assert result.returncode == 0, f"重跑失败: {result.stderr}"
         assert len(vault.db_files()) == 10, "重跑后 10 个文件应全部入库"
 
+        vault_files = _vault_data_files(vault)
+        assert len(vault_files) == 10 + 10, (
+            f"OPEN-3：10 孤儿 + 10 改名重复制 = 20，实际 {len(vault_files)}"
+        )
+        full_recopies = [f for f in vault_files if ".1." in f.name]
+        assert len(full_recopies) == copied_before_kill + 1, (
+            "9 个完整孤儿 + 1 个半成品均应改名 .1 重复制"
+        )
+
         verify = vault.run("verify", check=False)
         assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
-
-        # OPEN-3 现行行为：中断前已复制的文件无法被去重识别，
-        # 重跑改名重复制 → vault 数据文件数 >= 10 + 中断前已复制数
-        assert len(_vault_data_files(vault)) >= 10
-        if copied_before_kill > 0:
-            assert len(_vault_data_files(vault)) >= 10 + copied_before_kill, (
-                "孤儿文件重跑改名重复制（OPEN-3 锁定行为）"
-            )
 
 
 class TestImportErrorInjection:

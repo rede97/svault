@@ -136,7 +136,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 |----------|----------------|------------|
 | 源文件读取 EIO（Stage B） | 该文件 `ScanItem{Failed}`，跳过继续 | Preflight 事件 failed 计数；退出码 0 |
 | 源文件读取 EIO（Stage C） | 该文件 `CopyFinished{error}`，跳过继续 | 退出码 0；manifest 无此文件 |
-| vault 目标哈希 EIO（Stage D） | **BUG-1：误计为 duplicate**（§7），跳过继续 | manifest status=duplicate（错误分类） |
+| vault 目标哈希 EIO（Stage D） | 计入 **failed**，跳过继续（BUG-1 已于 `d970fd0` 修复：结构化 `hash_error` 字段替代前缀匹配） | 退出码 0；manifest status=Failed |
 | 进程在 Stage A–D 被杀死 | DB 无任何记录；vault 可能残留已复制文件 | 重跑幂等（§6） |
 | 进程在 Stage E 事务中被杀死 | 事务回滚，DB 无记录；已复制文件全部成为孤儿 | 重跑：孤儿改名重复制（§6 边界） |
 | 事务提交后、manifest 写入前被杀死 | DB 有记录，无 manifest | recheck --session 找不到该会话 |
@@ -280,7 +280,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 | 编号 | 描述 | 证据 | 影响 |
 |------|------|------|------|
-| BUG-1 | `insert.rs:121` 用 `reason.starts_with("hash error")` 判定哈希失败，但实际消息前缀是 `"xxh3_128 error"` / `"sha256 error"`（`hash.rs:47,74`），永不匹配 → **哈希 IO 错误被计为 duplicate**，manifest status=duplicate | `insert.rs:121-148` | 故障注入判据受影响；失败统计失真 |
+| BUG-1 | ~~`insert.rs:121` 用 `reason.starts_with("hash error")` 判定哈希失败，但实际消息前缀永不匹配 → 哈希 IO 错误被计为 duplicate~~ **已修复（`d970fd0`，2026-08-05）**：`HashResult.hash_error` 结构化字段替代字符串前缀匹配；回归单测 `batch_insert_classifies_hash_error_as_failed_not_duplicate` | — | 已闭环 |
 | BUG-2 | `update` 的路径修正/missing 标记直接 UPDATE，绕过 append_event 写协议，events 表无记录 | `db/files.rs:237-253` | 事件溯源完整性受损 |
 | BUG-3 | manifest 非原子写入，写一半中断留截断 JSON | `manifest.rs:142-145` | recheck 加载失败 |
 | BUG-4 | session_id 为 Unix 秒，同秒同类会话 manifest 互相覆盖 | `ops/utils.rs:14-19` | manifest 丢失 |
@@ -359,9 +359,9 @@ DB 查询 / 文件系统状态）。
 
 ### 8.5 已覆盖、不重复建设
 
-- 信号中断恢复：`tests/e2e/test_import_interruption.py`（strace 信号注入，12 例）
-- 幂等/增量恢复：`test_import_recovery.py`（16 例）
-- 手动破坏 vault 后 verify 失败、events 表篡改检测：ai-user-testing §C（AI-VERIFY-002 / AI-DB-001）
+- 信号中断恢复：`tests/e2e/test_import_interruption.py`（strace 信号注入；2026-08-06 套件重设计后 7 例，其中 strace 中断 3 例：SIGTERM 重跑、write 阶段中断、SIGKILL 后 DB/链一致性）
+- 幂等/增量恢复：`test_import_recovery.py`（重设计后 9 例，幂等/增量/修改识别/vault 内移动各有代表）
+- 手动破坏 vault 后 verify 失败、events 表篡改检测：ai-user-testing §C（AI-VERIFY-002 / AI-DB-001），E2E 对应 `test_verify.py` 损坏检测族 + `TestDbVerifyChain`
 
 ---
 

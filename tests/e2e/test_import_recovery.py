@@ -212,44 +212,43 @@ class TestPartialFailureRecovery:
         assert len(files) == 10
 
     def test_recover_after_corrupted_files(self, vault: VaultEnv) -> None:
-        """损坏文件修复后恢复
+        """截断文件修复后重导入：锁定实测行为（2026-08-06 实测）
 
-        场景：
-        1. 创建正常文件和损坏文件
-        2. 导入（正常文件成功，损坏文件可能被导入）
-        3. 修复损坏文件
-        4. 再次导入
-        5. 验证所有文件都在
+        现实契约（与原注释的想象不同，svault 无格式校验）：
+        1. 截断 JPEG **会被正常导入**（元数据解析失败 → 仅 CRC 指纹路径，
+           file-identity.md §Stage 3 fallback）：5 好 + 3 截断 = 8 条记录
+        2. 修复后内容变化 → 判为新文件；目标路径已被同名旧文件占用 →
+           按 rename_template 改名 .1 另存：再 +3 条 = 11 条
         """
         # 创建正常文件
         for i in range(5):
             f = vault.source_dir / f"good_{i:03d}.jpg"
             create_minimal_jpeg(f, f"GOOD_{i}")
 
-        # 创建损坏文件
+        # 创建截断文件（内容互不相同，避免互相判重）
         corrupted = []
         for i in range(3):
             f = vault.source_dir / f"bad_{i:03d}.jpg"
-            f.write_bytes(b'\xff\xd8\xff\xe0' + b'incomplete')
+            f.write_bytes(b'\xff\xd8\xff\xe0' + f'incomplete_{i}'.encode())
             corrupted.append(f)
 
-        # 第一次导入
+        # 第一次导入：截断不阻止导入（无格式校验），exit 0，8 条全入库
         result1 = vault.import_dir(vault.source_dir, check=False)
-        count1 = len(vault.db_files())
-        assert count1 >= 5  # 至少正常文件被导入
+        assert result1.returncode == 0, f"截断文件不应导致失败: {result1.stderr}"
+        assert len(vault.db_files()) == 8, "5 好 + 3 截断应全部入库"
 
-        # 修复损坏文件
+        # 修复截断文件（内容改变）
         for i, f in enumerate(corrupted):
             create_minimal_jpeg(f, f"FIXED_{i}")
 
-        # 第二次导入
+        # 第二次导入：修复版是新内容 → 判新；同名旧文件在库 → 改名 .1
         result2 = vault.import_dir(vault.source_dir)
         assert result2.returncode == 0
 
-        # 验证至少有8个文件（5个正常 + 3个修复后的）
-        # 注意：损坏文件可能在第一次导入时也被导入了，所以可能有重复
         files = vault.db_files()
-        assert len(files) >= 8, f"Expected at least 8 files, got {len(files)}"
+        assert len(files) == 11, f"8 旧 + 3 修复版应共 11 条，实际 {len(files)}"
+        renamed = [f for f in files if ".1." in f["path"]]
+        assert len(renamed) == 3, "3 个修复版应按 rename_template 改名 .1 另存"
 
 
 class TestConcurrentSourceModification:
@@ -281,10 +280,6 @@ class TestConcurrentSourceModification:
         # 应该有2个文件（内容不同）
         files = vault.db_files()
         assert len(files) == 2
-
-
-class TestLargeScaleRecovery:
-    """大规模恢复测试"""
 
 
 class TestEdgeCases:

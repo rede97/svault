@@ -430,4 +430,51 @@ mod tests {
         assert!(db.get_file_by_path("2024/eio.jpg").unwrap().is_none());
         assert!(db.get_file_by_path("2024/new.jpg").unwrap().is_some());
     }
+
+    /// BUG-1 契约的 manifest 层：哈希 IO 错误必须以 status=Failed + 错误消息
+    /// 写入 manifest（此前被误写为 Duplicate）。
+    #[test]
+    fn batch_insert_writes_hash_error_to_manifest_as_failed() {
+        use std::path::PathBuf;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let vault_root = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+
+        let results = vec![HashResult {
+            path: vault_root.join("2024/eio.jpg"),
+            src_path: Some(PathBuf::from("/src/eio.jpg")),
+            size: 10,
+            mtime_ms: 0,
+            crc32c: 42,
+            raw_unique_id: None,
+            hash: FileHash::Fast(vec![]),
+            is_duplicate: false,
+            dup_reason: None,
+            hash_error: Some("xxh3_128 error: EIO".to_string()),
+        }];
+
+        let opts = InsertOptions {
+            vault_root,
+            session_id: "s1",
+            write_manifest: true,
+            source_root: Some(Path::new("/src")),
+            force: false,
+            session_type: SessionType::Import,
+        };
+        let summary = batch_insert(results, &db, opts, None).unwrap();
+        assert_eq!(summary.failed, 1);
+
+        // Manifest 必须落盘且将该文件记为 Failed
+        let manifest_path = summary
+            .manifest_path
+            .expect("write_manifest=true 应产生 manifest 路径");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let files = json["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["status"], "failed");
+        assert_eq!(files[0]["error"].as_str().unwrap(), "xxh3_128 error: EIO");
+        assert!(files[0]["dest_path"].is_null());
+    }
 }

@@ -11,6 +11,7 @@ Tests graceful handling of out-of-space conditions:
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -199,7 +200,12 @@ def small_disk(test_dir: Path, check_loopback_support):
         # vault 在 loopback 内（小磁盘，会满）
         vault_dir = mount_point / "vault"
         # source 在测试目录内但在 loopback 外（大磁盘，不会满）
+        # test_dir 是跨测试共享的 RAMDisk 根——必须清理，否则上一用例的
+        # 大文件会污染本用例的首个导入
         source_dir = test_dir / "disk_full_source"
+        if source_dir.exists():
+            shutil.rmtree(source_dir)
+        source_dir.mkdir(parents=True, exist_ok=True)
         yield vault_dir, source_dir
     except RuntimeError as e:
         pytest.skip(f"Cannot create loopback filesystem: {e}")
@@ -292,17 +298,16 @@ class TestDiskFullHandling:
     def test_no_partial_files_after_disk_full(
         self, small_disk: tuple[Path, Path], svault_binary: Path, check_loopback_support
     ):
-        """D2: No partial files should remain after disk full failure.
-        
-        Steps:
-        1. Initialize vault
-        2. Import small JPEG (should fit)
-        3. Try to import large JPEGs (should fail)
-        4. Verify no partial files in vault
+        """D2: ENOSPC 后 DB 不含失败文件；半成品残留受控（OPEN-3 锁定行为）
+
+        判据（failure-handling.md §3.1/G7/OPEN-3）：
+        1. 已满盘上的导入必须失败（rc != 0），本条件不再是可空转的 if
+        2. DB 只含首个成功文件（事务回滚 / 失败文件不入库）
+        3. 失败文件的 vault 残留（若存在）必须是截断/空文件——
+           绝不许出现"静默完整副本"
         """
         vault_dir, source_dir = small_disk
-        
-        # Initialize vault
+
         vault_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             [str(svault_binary), "init"],
@@ -310,44 +315,55 @@ class TestDiskFullHandling:
             check=True,
             capture_output=True,
         )
-        
-        # Create first small JPEG (should fit)
+
+        # 首个小文件（放得下）
         source_dir.mkdir(parents=True, exist_ok=True)
         file1 = source_dir / "photo1.jpg"
         create_minimal_jpeg(file1, "SMALL_PHOTO")
-        
-        result = subprocess.run(
-            [str(svault_binary), "import", str(source_dir)],
-            cwd=vault_dir,
-            capture_output=True,
-            text=True,
-        )
-        
-        # First import should succeed
-        assert result.returncode == 0, f"First import failed: {result.stderr}"
-        
-        # Create second large JPEG (should cause disk full)
-        file2 = source_dir / "photo2.jpg"
-        create_minimal_jpeg(file2, "LARGE_PHOTO")
-        with open(file2, 'ab') as f:
-            f.write(b"\xff" * (20 * 1024 * 1024))  # Add 20MB padding
-        
+
         result = subprocess.run(
             [str(svault_binary), "--yes", "import", str(source_dir)],
             cwd=vault_dir,
             capture_output=True,
+            text=True,
         )
-        
-        # Should fail with disk full (exit code 4 or 1)
-        if result.returncode in [EXIT_DISK_FULL, 1]:
-            # Check that no partial files exist
-            objects_dir = vault_dir / ".svault" / "objects"
-            if objects_dir.exists():
-                for obj_file in objects_dir.rglob("*"):
-                    if obj_file.is_file():
-                        assert not obj_file.name.endswith(".tmp"), (
-                            f"Found temporary file: {obj_file}"
-                        )
+        assert result.returncode == 0, f"First import failed: {result.stderr}"
+
+        # 30MB 大文件：32MB 盘减去 init+photo1 后必然放不下
+        file2 = source_dir / "photo2.jpg"
+        create_minimal_jpeg(file2, "LARGE_PHOTO")
+        full_size = 30 * 1024 * 1024
+        with open(file2, 'ab') as f:
+            f.write(b"\xff" * (full_size - file2.stat().st_size))
+
+        result = subprocess.run(
+            [str(svault_binary), "--yes", "import", str(source_dir)],
+            cwd=vault_dir,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0, (
+            f"满盘导入必须失败（原条件断言会空转）: rc={result.returncode}"
+        )
+
+        # DB 只含 photo1（photo2 未入库）
+        import sqlite3
+        conn = sqlite3.connect(str(vault_dir / ".svault" / "vault.db"))
+        rows = [r[0] for r in conn.execute("SELECT path FROM files").fetchall()]
+        conn.close()
+        assert len(rows) == 1 and "photo1" in rows[0], (
+            f"DB 应只含首个成功文件: {rows}"
+        )
+
+        # OPEN-3：半成品不清理是锁定行为，但残留必须是截断/空文件
+        residue = [
+            p for p in vault_dir.rglob("photo2*.jpg")
+            if ".svault" not in p.parts
+        ]
+        for p in residue:
+            assert p.stat().st_size < full_size, (
+                f"绝不允许静默完整副本: {p} ({p.stat().st_size} bytes)"
+            )
 
     def test_can_import_after_cleanup(
         self, small_disk: tuple[Path, Path], svault_binary: Path, check_loopback_support
@@ -377,7 +393,7 @@ class TestDiskFullHandling:
         create_minimal_jpeg(file1, "PHOTO_ONE")
         
         subprocess.run(
-            [str(svault_binary), "import", str(source_dir)],
+            [str(svault_binary), "--yes", "import", str(source_dir)],
             cwd=vault_dir,
             check=True,
             capture_output=True,
@@ -406,7 +422,3 @@ class TestDiskFullHandling:
             assert result.returncode == 0, (
                 f"Import failed after cleanup: {result.stderr}"
             )
-
-
-class TestDiskFullEdgeCases:
-    """Edge cases for disk full handling."""

@@ -100,10 +100,6 @@ class TestAddFormats:
         assert len(rows) == 3
 
 
-class TestAddExifHandling:
-    """Test EXIF metadata extraction during add."""
-
-
 class TestAddBatch:
     """Test add with multiple files and directories."""
 

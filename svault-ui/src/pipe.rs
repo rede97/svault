@@ -24,7 +24,9 @@ use crate::path::relative_display_path;
 /// parsed unambiguously by `svault import --files-from` (whose tokenizer
 /// treats `\X` as an escape pair and only splits on unescaped whitespace).
 fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace(' ', "\\ ").replace(':', "\\:")
+    s.replace('\\', "\\\\")
+        .replace(' ', "\\ ")
+        .replace(':', "\\:")
 }
 
 /// Scan-only sink writing the pipeable scan protocol to stdout.

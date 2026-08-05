@@ -162,14 +162,19 @@ mod tests {
 
     /// Unescape helper mirroring the caller's decode order.
     fn unescape(s: &str) -> String {
-        s.replace("\\ ", " ").replace("\\:", ":").replace("\\\\", "\\")
+        s.replace("\\ ", " ")
+            .replace("\\:", ":")
+            .replace("\\\\", "\\")
     }
 
     #[test]
     fn split_respects_escaped_space() {
         let parts = split_escaped_whitespace("SCAN:/src new:my\\ photo\\ 01.jpg dup:x.jpg");
         assert_eq!(parts, ["SCAN:/src", "new:my\\ photo\\ 01.jpg", "dup:x.jpg"]);
-        assert_eq!(unescape(parts[1].strip_prefix("new:").unwrap()), "my photo 01.jpg");
+        assert_eq!(
+            unescape(parts[1].strip_prefix("new:").unwrap()),
+            "my photo 01.jpg"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (svault-core) | 153 | 153 | 0 | 0 |
+| 单元测试 (svault-core) | 154 | 154 | 0 | 0 |
 | 单元测试 (svault-ui / svault-cli) | 6 | 6 | 0 | 2 ignored |
 | Python E2E 测试 (Linux) | 167 执行（158 函数） | 167 | 0 | 环境性 skip |
 | FUSE 故障注入 (Linux, `fuse_tests/`) | 21 | 17 | 0 | 4（P2 待设施） |
@@ -32,7 +32,7 @@
 >   P1×4（多文件暂停、源中途修改、不稳定读取、EAGAIN 内核重试）、
 >   P2×2（空文件边界×2）
 > - 08-06 删除 16 个无必要测试（永不实现 4 / 已有等价覆盖 7 / 冗余 5），理由见 §8.3
-> - 修复 BUG-1：哈希 IO 错误误计 duplicate（`insert.rs`），+1 回归单测
+> - 修复 BUG-1：哈希 IO 错误误计 duplicate（`insert.rs`），+2 回归单测（分类 + manifest Failed 契约）
 
 > **2026-04-16 架构重构变更：**
 > - 移除 `test_history.py`（history 命令已移除，见 docs/PARKED.md）

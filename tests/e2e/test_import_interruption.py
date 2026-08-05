@@ -80,7 +80,11 @@ class TestSignalInterruption:
         files_after_interrupt = vault.db_files()
         count_after_interrupt = len(files_after_interrupt)
         print(f"Files imported before interrupt: {count_after_interrupt}/{num_files}")
-        assert count_after_interrupt <= num_files
+        # Stage E 整批单事务契约（failure-handling §5）：全部入库或全不入库，
+        # 不存在中间计数
+        assert count_after_interrupt in (0, num_files), (
+            f"整批事务应全有或全无，实际 {count_after_interrupt}/{num_files}"
+        )
 
         # Resume import
         result = vault.import_dir(vault.source_dir)
@@ -155,8 +159,9 @@ class TestDatabaseConsistency:
 
         cursor = conn.execute("SELECT COUNT(*) FROM files")
         file_count = cursor.fetchone()[0]
-        assert file_count >= 0
         conn.close()
+        # 整批单事务：中断后要么 0 条要么全部 5 条
+        assert file_count in (0, 5), f"整批事务应全有或全无，实际 {file_count}/5"
 
         # 事件链在中断后必须仍可验证（WAL 事务回滚不破坏链）
         chain = vault.run("db", "verify-chain", check=False)
@@ -169,10 +174,6 @@ class TestDatabaseConsistency:
         assert len(vault.db_files()) == 5
 
 
-class TestImportResumption:
-    """导入恢复测试"""
-
-
 # =============================================================================
 # Level 2: Concurrent Modification (merged from test_concurrent_modification.py)
 # =============================================================================
@@ -181,17 +182,19 @@ class TestFileDeletionDuringImport:
     """导入过程中文件被删除的处理"""
     
     def test_detect_file_deleted_before_copy(self, vault: VaultEnv) -> None:
-        """扫描后、复制前文件被删除的处理"""
+        """导入前源文件被删除：不存在的文件不参与处理，其余正常导入（exit 0）"""
         f1 = vault.source_dir / "keep.jpg"
         f2 = vault.source_dir / "delete_me.jpg"
         create_minimal_jpeg(f1, "KEEP_THIS")
         create_minimal_jpeg(f2, "DELETE_THIS")
-        
+
         f2.unlink()
-        
+
         result = vault.import_dir(vault.source_dir, check=False)
-        assert result.returncode in [0, 1]
-        
+        assert result.returncode == 0, (
+            f"源文件缺失不应导致整批失败（G3/G4）: rc={result.returncode} {result.stderr}"
+        )
+
         files = vault.db_files()
         assert len(files) == 1
         assert "keep" in files[0]["path"]
@@ -200,18 +203,25 @@ class TestFileModificationDuringImport:
     """导入过程中文件被修改的检测"""
     
     def test_detect_content_change_before_copy(self, vault: VaultEnv) -> None:
-        """扫描后文件内容被修改的处理"""
+        """导入前源文件内容被修改：导入的是最终内容（exit 0，内容一致）"""
         f = vault.source_dir / "modify.jpg"
         create_minimal_jpeg(f, "ORIGINAL_CONTENT")
-        
+
         time.sleep(0.1)
         create_minimal_jpeg(f, "MODIFIED_CONTENT_DIFFERENT")
-        
+
         result = vault.import_dir(vault.source_dir, check=False)
-        assert result.returncode in [0, 1]
-        
+        assert result.returncode == 0, (
+            f"导入应完成: rc={result.returncode} {result.stderr}"
+        )
+
         files = vault.db_files()
         assert len(files) == 1
+        vault_files = [p for p in vault.get_vault_files() if p.suffix == ".jpg"]
+        assert len(vault_files) == 1
+        assert vault_files[0].read_bytes() == f.read_bytes(), (
+            "vault 副本必须与修改后的源内容一致"
+        )
 
 
 # =============================================================================

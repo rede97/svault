@@ -386,7 +386,3 @@ class TestCrossFilesystemImport:
             
             # Verify file exists (different mounts can't hardlink)
             assert vault_files[0].exists(), "File should exist in vault"
-
-
-class TestFilesystemCapabilities:
-    """Test filesystem capability detection."""

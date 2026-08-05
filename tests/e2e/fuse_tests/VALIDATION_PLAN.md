@@ -9,7 +9,7 @@
 验证 svault 在精确控制的 IO 故障场景下的健壮性，包括：
 1. 传输中途中断的数据一致性
 2. 部分写入文件的检测和处理
-3. 错误恢复和重试机制
+3. 错误恢复与幂等重跑（svault 无 IO 重试层，见 failure-handling.md G2；EAGAIN 项已按实测修正）
 4. 极端边界条件下的行为
 
 ## 测试架构
@@ -75,7 +75,7 @@ fuse_tests/
   4. 清除限制，重新 import 验证恢复
 
 **测试: `test_import_eagain_retry`**
-- **目标**: EAGAIN 重试机制
+- **目标**: ~~EAGAIN 重试机制~~（已按实测改写为 eagain_error：FUSE 内核客户端透明重试，见 failure-handling.md §8.2）
 - **步骤**:
   1. 配置前 3 次 read 返回 EAGAIN，第 4 次成功
   2. 验证 svault 是否正确重试
