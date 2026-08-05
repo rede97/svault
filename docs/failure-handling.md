@@ -6,7 +6,7 @@
 >   中的测试场景只有与本文档判据一致的部分有效。
 > - 本文档与代码冲突时，按仓库惯例**当场修正其一**（修代码或修文档），
 >   不允许两者长期不一致（见 docs/REFACTOR-2026-04.md §遗留规则）。
-> - 其他文档（import-pipeline.md / cli.md / sync-design.md / database-schema.md）
+> - 其他文档（import-pipeline.md / cli.md / database-schema.md）
 >   中与故障行为相关的段落，凡与本文档冲突，以本文档为准并应回改。
 > - 每条决策标注代码证据（`文件:行号`）。行号会腐烂，仅作定位参考；符号名优先。
 > - 状态标记：**[VERIFIED]** = 已对照代码核实；**[OPEN-n]** = 待维护者拍板（见 §9）。
@@ -116,8 +116,8 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - **半成品不清理**：reflink 失败可能留下空目标文件（`fs.rs:551-554`）；
   stream copy 写失败留下截断文件（`fs.rs:330-343`）。后续策略/重跑靠
   `File::create` 截断覆盖（`fs.rs:274`）。登记为 **[OPEN-3]**。
-- 复制**直达最终路径**，无 tmp→rename 原子提交（sync-design.md 的
-  tmp→rename 设计未实现）。
+- 复制**直达最终路径**，无 tmp→rename 原子提交（该设计未实现，已随
+  sync-design.md 删除，见 PARKED §6）。
 - 死代码：`capabilities_for` / `best_strategy`（`fs.rs:464-473`）无调用者，
   sync/clone 不做传输预检。
 
@@ -181,7 +181,8 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 ### 3.5 `sync` [VERIFIED]
 
 - 前置检查仅有：源路径存在、源≠目标、源有 `.svault/vault.db`。
-  **无 health pre-flight**（sync-design.md §步骤 0 未实现）。
+  **无 health pre-flight**（该设计未实现，已随 sync-design.md 删除，
+  见 PARKED §6）。
 - 源 DB 只读打开（G6）；比对只取 `status='imported'` 记录
   （`ops/sync.rs:110,116`）。
 - diff 依据 identity = SHA-256 优先、XXH3-128 兜底（`sync/diff.rs:37-39`）；
@@ -226,8 +227,8 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 **决策**：F3/F4 类测试的判据 MUST 断言"现行检测能力边界"（如上表），
 并在测试名/注释中明确这是**局限性确认测试**而非缺陷。真正的修复手段
-（多副本比对、外部校验、`svault recover` 损坏恢复）属于 sync-design.md
-§第三种模式的未实现设计（见 §7 DRIFT-2、[OPEN-5]）。
+（多副本比对、外部校验、`svault recover` 损坏恢复）属于已暂缓的设计
+（docs/PARKED.md §6；另见 §7 DRIFT-2、[OPEN-5]）。
 
 ---
 
@@ -289,7 +290,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 | 编号 | 文档 | 漂移内容 |
 |------|------|----------|
 | DRIFT-1 | import-pipeline.md | 11 处不符：lookup_stream 不存在（串行内联）；层 3 唯一约束不存在；无 500 条分批提交（整批单事务）；crc32c 只在 Stage E 落库；duplicate 从不写 files 表；无 import_sessions 表；manifest 是 JSON 非文本；孤儿文件 Stage D 无法识别；无归档文件清理；CRC32C 命名 |
-| DRIFT-2 | sync-design.md | 设计稿大量未实现：health pre-flight、sync_journal 断点续传、tmp→rename、clone=sync --export、"只比 sha256"、`svault recover` 命令（CLI 无此子命令） |
+| DRIFT-2 | ~~sync-design.md~~（2026-08-05 已删除） | 原设计稿大量未实现且基于已移除的 reporter trait 体系：health pre-flight、sync_journal 断点续传、tmp→rename、clone=sync --export、"只比 sha256"、`svault recover` 命令。recover 等暂缓设计已抢救至 PARKED §6；原文见 `git show f34d53b:docs/sync-design.md` |
 | DRIFT-3 | ARCHITECTURE.md §6.1 | "只读源 vault" 措辞：clone 实际读写打开源 DB 并写 vault.cloned 审计事件 |
 | DRIFT-4 | cli.md / database-schema.md | 事件名示例（file.imported / file.path_updated）与实际（batch.imported / file.sha256_resolved / vault.cloned）不符；recheck 报告 session 实为新时间戳；recheck 报告 status 为 Debug 格式 |
 
@@ -361,7 +362,7 @@ DB 查询 / 文件系统状态）。
 | OPEN-2 | BUG-2：update 绕过事件溯源写协议 | A. 修代码走 append_event；B. 接受现状并更新 database-schema.md |
 | OPEN-3 | 半成品/孤儿文件不清理 + 重跑改名重复制 | A. 接受为设计（本文档已锁定）；B. 立项"导入后孤儿清理/识别" |
 | OPEN-4 | manifest 非原子 + session_id 秒冲突 | A. 接受；B. tmp+rename + 纳秒/UUID session_id |
-| OPEN-5 | sync-design.md 未实现设计（health pre-flight / journal / recover） | A. 文档降级标注"未实现设计稿"；B. 立项实现（recover 涉及 .svault/corrupted/ 与逐文件确认交互） |
+| OPEN-5 | PARKED §6 暂缓设计（recover / health pre-flight / sync_journal） | A. 维持暂缓；B. 立项实现（recover 涉及 .svault/corrupted/ 与逐文件确认交互，必须走 Event/Interactor，不得复活 reporter trait） |
 | OPEN-6 | 部分失败退出码不一致：import/sync/clone=0，verify=1 | A. 接受（verify 是审计命令，语义不同）；B. 统一 |
 | OPEN-7 | DRIFT-1/3/4 原文档回改 | A. 本次一并回改；B. 仅保留本文档权威声明，原文档加指向 |
 

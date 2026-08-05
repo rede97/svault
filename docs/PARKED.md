@@ -53,3 +53,25 @@ E2E 测试使用 debug 二进制，因此 `test_scan_import_pipeline.py` 不受�
 **移除原因**：接口面过大（12 trait + 10 个 builder 关联类型），
 每加一个命令需改 4 处。已由单一 `Event` enum + `EventSink` 替代
 （见 [ARCHITECTURE.md](./ARCHITECTURE.md) §2.1）。
+
+## 6. `svault recover` 损坏恢复（未实现设计，暂缓）
+
+**设计**：vault 文件损坏（bit rot/坏道）但 DB 完好时，从健康备份 vault
+拉取完好副本替换。损坏原件移到 `.svault/corrupted/`（不删除），
+逐文件确认 `[y/N/a/q]`。同时暂缓的还有 sync health pre-flight
+（源端一致性检查阻止 sync）与 sync_journal 断点续传。
+
+**暂缓原因**：仅为设计稿（原 `docs/sync-design.md` §第三种模式），
+从未实现；且该设计稿基于已移除的 reporter trait 体系
+（HealthReporter/RecoverReporter），直接复活会引入第二套报告抽象。
+
+**现状记录**：现行损坏检测能力边界见
+[failure-handling.md](./failure-handling.md) §4。
+若立项实现，交互必须走 `Event`/`Interactor`，不得恢复 reporter trait。
+原设计稿可从 git 历史恢复：`git show f34d53b:docs/sync-design.md`。
+
+## 7. 已知小遗留（2026-08-04 Linux 验证确认，非 bug）
+
+1. `verify --background-hash` 的 Summary 事件未统一（用 messages 输出）
+2. clone 重复导出会重新复制（path+size 跳过优化未采纳，可作后续小改进）
+3. diff 引擎边缘：dest 同 identity 多路径时只保留一个索引项——v1 接受
