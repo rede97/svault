@@ -56,44 +56,6 @@ class TestConfigHandling:
         assert len(rows) == 1
         # Verify SHA-256 was computed
         assert rows[0]["sha256"] is not None, "SHA-256 should be computed with --full-id"
-    
-    def test_custom_config_extensions(self, vault: VaultEnv) -> None:
-        """Custom allowed_extensions should filter files."""
-        config_path = vault.vault_dir / "svault.toml"
-        config_path.write_text("""
-[global]
-
-[import]
-path_template = "$year/$filename"
-allowed_extensions = ["png"]
-""")
-        
-        create_minimal_jpeg(vault.source_dir / "test.jpg", "jpg_content")
-        create_minimal_jpeg(vault.source_dir / "test.png", "png_content")
-        
-        vault.import_dir(vault.source_dir)
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
-        assert rows[0]["path"].endswith(".png")
-    
-    def test_config_persists_after_reinit(self, vault: VaultEnv) -> None:
-        """Config modifications should persist after re-init if init preserves them."""
-        config_path = vault.vault_dir / "svault.toml"
-        
-        custom_config = """
-[global]
-hash = "sha256"
-
-[import]
-store_exif = true
-path_template = "$device/$filename"
-allowed_extensions = ["raw", "dng"]
-"""
-        config_path.write_text(custom_config)
-        
-        result = vault.init()
-        assert result.returncode in [0, 1]
 
 
 # =============================================================================
@@ -116,61 +78,23 @@ class TestTransferStrategies:
         assert rows[0]["status"] == "imported"
     
     def test_strategy_hardlink_only(self, vault: VaultEnv) -> None:
-        """--strategy hardlink should work when source and vault are on same filesystem."""
-        create_minimal_jpeg(vault.source_dir / "test.jpg", "content")
-        
+        """--strategy hardlink 必须产生真硬链（同 inode），不是复制。"""
+        src = vault.source_dir / "test.jpg"
+        create_minimal_jpeg(src, "content")
+
         result = vault.import_dir(vault.source_dir, strategy="hardlink")
         assert result.returncode == 0
-        
+
         vault_files = [f for f in vault.get_vault_files() if f.suffix == ".jpg"]
         assert len(vault_files) == 1
-    
-    def test_strategy_copy_always_works(self, vault: VaultEnv) -> None:
-        """--strategy copy should always work regardless of filesystem."""
-        create_minimal_jpeg(vault.source_dir / "test.jpg", "content")
-        
-        result = vault.import_dir(vault.source_dir, strategy="copy")
-        assert result.returncode == 0
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
-    
-    def test_strategy_empty_list_uses_default(self, vault: VaultEnv) -> None:
-        """Empty strategy should use default (reflink)."""
-        create_minimal_jpeg(vault.source_dir / "test.jpg", "content")
-        
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
-    
-    def test_multiple_files_with_mixed_strategies(self, vault: VaultEnv) -> None:
-        """Multiple files should all be imported regardless of strategy."""
-        for i in range(5):
-            create_minimal_jpeg(vault.source_dir / f"test{i}.jpg", f"content{i}")
-        
-        result = vault.import_dir(vault.source_dir, strategy="reflink,hardlink,copy")
-        assert result.returncode == 0
-        
-        rows = vault.db_files()
-        assert len(rows) == 5
+        assert os.stat(src).st_ino == os.stat(vault_files[0]).st_ino, (
+            "hardlink 策略下源与 vault 副本应共享 inode"
+        )
 
 
 @pytest.mark.transfer
 class TestStrategyFallbackChain:
     """Tests specifically for strategy fallback chain behavior."""
-    
-    def test_fallback_order_reflink_to_hardlink_to_copy(self, vault: VaultEnv) -> None:
-        """Verify fallback chain: reflink -> hardlink -> copy."""
-        create_minimal_jpeg(vault.source_dir / "fallback_test.jpg", "test_content")
-        
-        result = vault.import_dir(vault.source_dir, strategy="reflink,hardlink,copy")
-        assert result.returncode == 0
-        
-        vault_files = list(vault.vault_dir.rglob("*.jpg"))
-        vault_files = [f for f in vault_files if ".svault" not in str(f)]
-        assert len(vault_files) == 1
     
     def test_explicit_copy_bypasses_optimization(self, vault: VaultEnv) -> None:
         """--strategy copy should always create a real copy, never hardlink."""
@@ -260,24 +184,26 @@ class TestConfigErrors:
     """Tests for configuration error handling."""
     
     def test_corrupted_config_shows_error(self, vault: VaultEnv) -> None:
-        """Corrupted config should produce a clear error message."""
+        """非法 TOML：exit 1 且 stderr 给出 TOML 解析错误（实测锁定 2026-08-06）。"""
         config_path = vault.vault_dir / "svault.toml"
         config_path.write_text("this is not valid toml {{{")
-        
+
         create_minimal_jpeg(vault.source_dir / "test.jpg", "content")
         result = vault.import_dir(vault.source_dir, check=False)
-        
-        assert result.returncode in [0, 1]
+
+        assert result.returncode == 1
+        assert "TOML parse error" in result.stderr
     
     def test_missing_config_sections(self, vault: VaultEnv) -> None:
-        """Config with missing required sections should be handled."""
+        """缺少必需 [import] 段：exit 1 且 stderr 指出缺失字段（实测锁定 2026-08-06）。"""
         config_path = vault.vault_dir / "svault.toml"
         config_path.write_text("""
 [global]
 hash = "sha256"
 """)
-        
+
         create_minimal_jpeg(vault.source_dir / "test.jpg", "content")
-        
+
         result = vault.import_dir(vault.source_dir, check=False)
-        assert result.returncode in [0, 1]
+        assert result.returncode == 1
+        assert "missing field" in result.stderr and "import" in result.stderr

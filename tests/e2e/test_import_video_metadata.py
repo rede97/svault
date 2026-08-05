@@ -326,42 +326,6 @@ class TestVideoDeviceExtraction:
         # Note: svault may or may not include device info in path
         # depending on its implementation. We just verify file was imported.
 
-    def test_video_device_model_samsung(
-        self, vault, ffmpeg_available
-    ):
-        """V4b: Samsung device model extraction.
-        
-        Test with Samsung-style model naming.
-        """
-        if not ffmpeg_available:
-            pytest.skip("ffmpeg not available")
-        
-        timestamp = datetime(2024, 7, 20, 15, 45, 0, tzinfo=timezone.utc)
-        video_path = vault.source_dir / "samsung_video.mov"
-        
-        # Create MOV with Samsung metadata
-        success = create_mov_with_device_info(
-            video_path,
-            timestamp,
-            make="Samsung",
-            model="SM-S908B",  # Galaxy S22 Ultra
-        )
-        assert success
-        
-        # Verify metadata
-        device_info = verify_video_device_info(video_path)
-        print(f"Samsung device info: {device_info}")
-        
-        # Import
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-        
-        # Verify file was imported (check path contains expected date)
-        db_result = vault.db_query(
-            "SELECT path FROM files WHERE path LIKE '%2024%' AND path LIKE '%.mov%'"
-        )
-        assert len(db_result) >= 1, "Samsung video not imported"
-
     def test_video_imported_to_device_path(
         self, vault, ffmpeg_available
     ):

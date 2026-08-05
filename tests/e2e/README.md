@@ -83,30 +83,38 @@ uv pip install -e "."
 
 ## 测试文件说明
 
+> **套件宪法（2026-08-06 重设计）：**
+> 1. **一测试一契约**——每个测试锁定一个唯一的可观测契约（退出码 / DB 状态 /
+>    文件系统状态 / 输出内容）。禁止参数缩放版（N=2/8/20 同判据）、禁止数据源变体
+>    （同判据换 fixture）。
+> 2. **禁止弱断言**——`rc in [0, 1]`、`len(x) >= 1`、恒真条件均不允许；
+>    发现即加固（锁真实行为）或删除。
+> 3. **文件按命令域组织**——文件名 = 命令名；跨命令流程（恢复、中断、管线）独立成文件。
+> 4. **覆盖归属唯一**——每个行为契约只有一个负责测试。新增测试前先查下表归属。
+> 5. 故障注入（FUSE/strace 信号）归 `fuse_tests/` 与 `test_import_interruption.py`，
+>    判据以 [docs/failure-handling.md](../../docs/failure-handling.md) 为准。
+
 | 文件 | 内容 | 标记 |
 |------|------|------|
-| `test_import.py` | 主导入流程、CLI 语义、`--show-dup` | - |
-| `test_import_dedup.py` | 身份判定矩阵：去重 + 文件名冲突 | `dedup`, `conflict` |
-| `test_import_recovery.py` | 幂等性、增量导入、恢复场景 | - |
-| `test_import_interruption.py` | 信号注入中断与恢复 | - |
+| `test_import.py` | 主导入流程、EXIF/设备/回退路径组织、CLI 交互、`--force`、`--show-dup`、边界（截断/嵌套/空目录） | `chaos`（边界组） |
+| `test_import_dedup.py` | 身份判定矩阵：去重 + 文件名冲突 + CRC 碰撞 | `dedup`, `conflict` |
+| `test_import_recovery.py` | 幂等重跑、增量导入、修改识别、vault 内移动 | - |
+| `test_import_interruption.py` | strace 信号中断恢复、并发修改、不可读/伪装文件 | - |
 | `test_import_cross_fs.py` | 跨文件系统导入（ext4/btrfs/reflink） | `cross_fs`, Linux |
-| `test_import_disk_full.py` | 磁盘写满时的行为 | - |
-| `test_import_video_metadata.py` | 视频元数据提取 | - |
-| `test_add.py` | `add` 注册 vault 内文件 | - |
-| `test_update.py` | `update` 路径修正与 missing 标记 | - |
+| `test_import_disk_full.py` | ENOSPC 行为（loopback ext4 真实满盘） | - |
+| `test_import_video_metadata.py` | 视频元数据提取（creation_time、设备） | - |
+| `test_add.py` | `add` 注册 vault 内文件、去重、vault 内移动检测 | - |
+| `test_update.py` | `update` 路径修正、missing 标记、dry-run | - |
 | `test_clone.py` | `clone` 单向导出（过滤、审计事件） | - |
 | `test_sync.py` | `sync` vault 间同步（幂等、冲突、moved、只读源） | - |
-| `test_scan_import_pipeline.py` | scan → files-from 管道工作流 | debug binary |
-| `test_background_hash.py` | `verify --background-hash` 补齐 SHA-256 | - |
+| `test_scan_import_pipeline.py` | scan → files-from 管道工作流、空格路径往返契约 | debug binary |
 | `test_binding.py` | 复合媒体绑定（Live Photo 等） | - |
-| `test_media_formats.py` | 媒体格式识别 | - |
+| `test_media_formats.py` | 媒体格式矩阵（base/别名/大小写三契约）、过滤、路径模板 | - |
 | `test_raw_id.py` | RAW 唯一 ID 去重 | - |
 | `test_path_compatibility.py` | 跨平台路径格式（Unix 风格存储） | - |
-| `test_config_transfer.py` | 配置与传输策略 | - |
-| `test_chaos.py` | 边界/异常场景 | `chaos`, `slow` |
+| `test_config_transfer.py` | 配置（创建/错误处理）、传输策略、hardlink 升级 | - |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
-| `test_verify.py` | 完整性验证（哈希匹配、损坏检测） | `verify` |
-| `fuse_tests/test_corruption_fuse.py` | 硬件损坏/静默损坏 FUSE 测试 | `fuse`, `corruption` |
+| `test_verify.py` | verify（损坏检测/算法选择/摘要）、recheck、background-hash、db verify-chain | `verify` |
 | `fuse_tests/` | **FUSE 深度故障注入测试** | `fuse`, `slow` |
 
 ## 使用 Fixtures

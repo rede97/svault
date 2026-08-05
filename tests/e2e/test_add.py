@@ -87,30 +87,6 @@ class TestAddFormats:
         assert len(rows) == 1
         assert rows[0]["path"].endswith(".jpg")
 
-    def test_add_mp4(self, vault: VaultEnv) -> None:
-        """Add MP4 video files."""
-        vault_file = vault.vault_dir / "video.mp4"
-        create_minimal_mp4(vault_file)
-
-        result = vault.run("add", str(vault.vault_dir))
-        assert result.returncode == 0
-
-        rows = vault.db_files()
-        assert len(rows) == 1
-        assert rows[0]["path"].endswith(".mp4")
-
-    def test_add_dng_raw(self, vault: VaultEnv) -> None:
-        """Add DNG RAW files."""
-        vault_file = vault.vault_dir / "raw.dng"
-        create_minimal_raw(vault_file)
-
-        result = vault.run("add", str(vault.vault_dir))
-        assert result.returncode == 0
-
-        rows = vault.db_files()
-        assert len(rows) == 1
-        assert rows[0]["path"].endswith(".dng")
-
     def test_add_mixed_formats(self, vault: VaultEnv) -> None:
         """Add multiple files with different formats (JPEG, MP4, DNG)."""
         create_minimal_jpeg(vault.vault_dir / "photo.jpg")
@@ -126,42 +102,6 @@ class TestAddFormats:
 
 class TestAddExifHandling:
     """Test EXIF metadata extraction during add."""
-
-    def test_add_extracts_exif_date(self, vault: VaultEnv) -> None:
-        """Add should extract EXIF date for path organization."""
-        import subprocess
-        
-        # Create JPEG with specific EXIF date using exiftool
-        vault_file = vault.vault_dir / "dated_photo.jpg"
-        create_minimal_jpeg(vault_file)
-        
-        # Add EXIF date
-        subprocess.run([
-            "exiftool", "-overwrite_original",
-            "-DateTimeOriginal=2023:07:15 14:30:00",
-            "-Make=Canon",
-            "-Model=EOS R5",
-            str(vault_file)
-        ], check=True, capture_output=True)
-
-        result = vault.run("add", str(vault.vault_dir))
-        assert result.returncode == 0
-
-        # File should be tracked
-        rows = vault.db_files()
-        assert len(rows) == 1
-
-    def test_add_falls_back_to_mtime_without_exif(self, vault: VaultEnv) -> None:
-        """Add should use mtime when EXIF is unavailable."""
-        vault_file = vault.vault_dir / "no_exif.jpg"
-        # Create JPEG without EXIF (just minimal structure)
-        create_minimal_jpeg(vault_file)
-
-        result = vault.run("add", str(vault.vault_dir))
-        assert result.returncode == 0
-
-        rows = vault.db_files()
-        assert len(rows) == 1
 
 
 class TestAddBatch:
@@ -201,23 +141,6 @@ class TestAddBatch:
 
 class TestAddWithImport:
     """Test add command interaction with import."""
-
-    def test_add_after_import_same_file(self, vault: VaultEnv) -> None:
-        """Import then add the same file (should skip as already tracked)."""
-        # Create file in source and import
-        src_file = vault.source_dir / "photo.jpg"
-        create_minimal_jpeg(src_file, "SAME_CONTENT")
-        vault.import_dir(vault.source_dir)
-
-        # Create identical file in vault with different name
-        dup_file = vault.vault_dir / "same_content.jpg"
-        create_minimal_jpeg(dup_file, "SAME_CONTENT")
-
-        # Add should detect duplicate
-        result = vault.run("add", str(vault.vault_dir))
-        assert result.returncode == 0
-        rows = vault.db_files()
-        assert len(rows) == 1
 
     def test_import_after_add(self, vault: VaultEnv) -> None:
         """Add then import the same file (import should detect duplicate)."""

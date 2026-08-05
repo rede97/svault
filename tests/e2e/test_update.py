@@ -53,18 +53,6 @@ class TestReconcileCommand:
         rows = vault.db_files()
         assert rows[0]["path"] == original_path
 
-    def test_update_no_missing_files(self, vault: VaultEnv) -> None:
-        """When all files are in place, reconcile should report nothing to do."""
-        src_file = vault.source_dir / "photo.jpg"
-        create_minimal_jpeg(src_file, "STAY_PUT_12345")
-        vault.import_dir(vault.source_dir)
-
-        result = vault.run("update", f"--target={vault.vault_dir}")
-        assert result.returncode == 0
-        rows = vault.db_files()
-        assert len(rows) == 1
-        assert rows[0]["status"] == "imported"
-
     def test_update_renamed_directory_then_verify_passes(self, vault: VaultEnv) -> None:
         """Rename an entire directory inside the vault, reconcile, then verify should pass."""
         from conftest import copy_fixture
@@ -111,26 +99,6 @@ class TestReconcileCommand:
         rows = vault.db_query("SELECT status FROM files WHERE path LIKE '%.jpg%'")
         assert len(rows) == 1
         assert rows[0]["status"] == "missing"
-
-    def test_update_missing_dry_run_no_changes(self, vault: VaultEnv) -> None:
-        """update --dry-run should not modify the database for missing files."""
-        src_file = vault.source_dir / "photo.jpg"
-        create_minimal_jpeg(src_file, "CLEAN_TEST_12345")
-        vault.import_dir(vault.source_dir)
-
-        # Delete file from vault
-        vault_files = vault.get_vault_files("*.jpg")
-        vault_files[0].unlink()
-
-        original_status = vault.db_files()[0]["status"]
-
-        # Run --dry-run (preview mode)
-        result = vault.run("update", "--dry-run", f"--target={vault.vault_dir}")
-        assert result.returncode == 0
-
-        # DB should be unchanged
-        rows = vault.db_files()
-        assert rows[0]["status"] == original_status
 
     def test_update_after_recover_and_delete(self, vault: VaultEnv) -> None:
         """Recover a missing file, then delete it again - update should mark it missing.

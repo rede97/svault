@@ -11,12 +11,19 @@
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
 | 单元测试 (svault-core) | 153 | 153 | 0 | 0 |
-| 单元测试 (svault-ui / svault-cli) | 3 | 3 | 0 | 2 ignored |
-| Python E2E 测试 (Windows) | 249 | 206 | 1* | 39 skipped |
+| 单元测试 (svault-ui / svault-cli) | 6 | 6 | 0 | 2 ignored |
+| Python E2E 测试 (Linux) | 167 执行（158 函数） | 167 | 0 | 环境性 skip |
 | FUSE 故障注入 (Linux, `fuse_tests/`) | 21 | 17 | 0 | 4（P2 待设施） |
 
-> \* 剩余 1 failed + 4 errors 均为 Linux 专属测试（ext4/btrfs/strace），
-> 重构前基线完全相同（零回归），需在 Linux CI 验证。
+> **2026-08-06 E2E 套件重设计（220 → 167）：**
+> - 删除 60 个冗余/零价值用例（五组，评估记录见会话与提交 `test: redesign`）；
+>   修复 `test_import_dedup.py` 同名类遮蔽（3 个从不运行的死测试）
+> - 合并：`test_chaos.py` → `test_import.py`（边界组）、`test_background_hash.py` → `test_verify.py`
+> - 加固 6 个弱断言（config 错误信息 ×2、空格路径真实往返、hardlink inode、
+>   中断后事件链校验、截断 JPEG 退出码）
+> - **发现并修复真实产品缺陷**：scan 协议转义与 files-from 分词不对称——
+>   空格文件名无法经 `scan | import --files-from` 导入（`pipe.rs`/`import.rs`），+3 单测 +1 E2E
+> - 套件宪法（一测试一契约 / 禁止弱断言 / 覆盖归属唯一）见 tests/e2e/README.md
 
 > **2026-08-05 FUSE 故障注入落地（08-06 精简）：**
 > - 判据单一事实源：[docs/failure-handling.md](./failure-handling.md) §8
@@ -168,46 +175,46 @@
 
 端到端测试位于 `tests/e2e/`，使用 `pytest` + RAMDisk 隔离测试环境。
 
-### Import E2E 测试分工（5个核心文件 + 环境专用文件）
+> **2026-08-06 套件重设计**（220 → 167 用例，-24%）：删除 60 个冗余/零价值用例、
+> 修复 `test_import_dedup.py` 同名类遮蔽（3 个从不运行的死测试）、
+> 合并 `test_chaos.py`→`test_import.py`、`test_background_hash.py`→`test_verify.py`、
+> 加固 6 个弱断言。套件宪法见 [tests/e2e/README.md](../tests/e2e/README.md) §测试文件说明。
+> 本轮还发现并修复**真实产品缺陷**：scan 协议转义与 files-from 分词不对称
+> （空格文件名无法经管线导入），见提交记录。
 
-**核心行为文件（5个，68个用例）：**
+### 文件分工（19 个文件，158 测试函数 / 167 执行）
 
-| 文件 | 用例数 | 职责范围 | 一句话说明 |
-|------|--------|----------|------------|
-| `test_import.py` | 20 | 常规导入、EXIF、CLI 语义 | 主流程 + 交互行为 |
-| `test_import_recovery.py` | 16 | 幂等性、增量导入、恢复 | 重试与恢复策略 |
-| `test_import_interruption.py` | 12 | **信号中断**（strace inject） | 故障注入与一致性 |
-| `test_import_dedup.py` | 16 | 去重 + 冲突（已合并 conflict） | 身份判定矩阵 |
-| `test_chaos.py` | 4 | 边界情况 | 异常输入与边缘场景 |
+> 用例数为测试函数数；参数化展开后实际执行 167（如 media_formats 的 jpeg 三参数）。
 
-**环境专用文件（保持独立，不合并）：**
-
-| 文件 | 职责 | 独立原因 |
-|------|------|----------|
-| `test_import_disk_full.py` | ENOSPC 处理 | 依赖磁盘容量控制 |
-| `test_import_cross_fs.py` | ext4/btrfs 差异 | 依赖多文件系统环境 |
-| `test_import_video_metadata.py` | 视频元数据提取 | 独立复杂度，避免主文件膨胀 |
-| `test_scan_import_pipeline.py` | scan -> filter -> import 流水线 | 独立接口测试 |
-| `test_config_transfer.py` | 传输策略配置 | 配置域，非 import 主行为 |
-
-**合并历史：**
-- 2026-04-08: `test_import_conflict.py` → `test_import_dedup.py`（5个用例迁移）
+| 文件 | 用例数 | 职责 |
+|------|--------|------|
+| `test_import.py` | 19 | 主流程、EXIF/设备/回退路径组织、CLI 交互、force、show-dup、边界（chaos 并入） |
+| `test_import_dedup.py` | 12 | 身份判定矩阵：去重、冲突重命名、CRC 碰撞（已修复同名类遮蔽） |
+| `test_import_recovery.py` | 9 | 幂等重跑、增量导入、修改识别、vault 内移动 |
+| `test_import_interruption.py` | 7 | strace 信号中断恢复、并发修改、不可读/伪装文件 |
+| `test_import_disk_full.py` | 3 | ENOSPC（loopback ext4 真实满盘） |
+| `test_import_cross_fs.py` | 2 | 跨文件系统（ext4/btrfs） |
+| `test_import_video_metadata.py` | 7 | 视频 creation_time、设备信息、路径组织 |
+| `test_scan_import_pipeline.py` | 8 | scan → files-from 管线、空格路径往返契约 |
+| `test_config_transfer.py` | 9 | 配置创建/错误处理、传输策略、hardlink 升级 |
+| `test_verify.py` | 18 | verify（损坏检测/算法/摘要）、recheck、background-hash（并入）、db verify-chain |
+| `test_update.py` | 6 | update 路径修正、missing 标记、dry-run |
+| `test_add.py` | 10 | add 注册、去重、vault 内移动检测 |
+| `test_clone.py` | 8 | clone 导出、过滤、审计事件 |
+| `test_sync.py` | 9 | sync 双 vault 同步 |
+| `test_media_formats.py` | 16 | 格式矩阵（base/别名/大小写）、过滤、路径模板 |
+| `test_binding.py` | 6 | 复合媒体绑定 |
+| `test_raw_id.py` | 10 | RAW 唯一 ID |
+| `test_path_compatibility.py` | 4 | 跨平台路径格式 |
+| `test_property.py` | 4 | Hypothesis 属性测试 |
 
 ### 其他核心场景
 
-| 类别 | 数量 | 描述 |
-|------|------|------|
-| Recheck | 6 | 基于 manifest 的源/vault 一致性校验 |
-| Add/Reconcile | 6 | 注册已有文件、恢复移动的文件 |
-| Verify | 12 | 完整性验证、bit flip 检测、hardlink 升级 |
-| 媒体格式 | 19 | JPG/PNG/TIFF/HEIC/DNG/MP4/MOV/MTS |
-| Live Photo/RAW+JPEG | 6 | 复合媒体绑定检测与导入 |
-| 视频元数据 | 6 | creation_time 提取、设备信息 |
-| 磁盘空间 | 4 | ENOSPC 处理、事务一致性 |
-| 配置/策略 | 13 | 传输策略 fallback 链验证 |
-| 跨文件系统 | 4 | ext4/btrfs 不同组合 |
-| 并发/锁 | 4 | 进程锁、并发导入 |
-| Scan + Filter + Import | 10 | 扫描过滤导入流水线 |
+| 类别 | 描述 |
+|------|------|
+| Recheck | 基于 manifest 的源/vault 一致性校验（含 recheck 版恢复流程） |
+| Verify | 损坏检测（bit flip/截断/missing/批量）、算法选择、摘要、恢复 |
+| 配置/策略 | 配置创建与错误处理、策略链、hardlink inode 验证、升级 |
 
 ---
 
@@ -221,7 +228,7 @@
 | fs | 80% | 🟢 已达成 (5 tests) |
 | import | 85% | 🟢 已达成 (14 tests) |
 | pipeline | 80% | 🟡 待补充 |
-| **E2E 测试** | N/A | 🟢 208 passed |
+| **E2E 测试** | N/A | 🟢 167 passed (2026-08-06 重设计后) |
 
 ---
 

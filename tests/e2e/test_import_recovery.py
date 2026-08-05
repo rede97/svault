@@ -96,27 +96,6 @@ class TestImportIdempotency:
         # 应该还是5个文件
         assert len(vault.db_files()) == 5
 
-    def test_multiple_reimports(self, vault: VaultEnv) -> None:
-        """多次重复导入
-
-        场景：
-        1. 创建文件
-        2. 导入5次
-        3. 验证始终只有一份
-        """
-        # 创建文件
-        for i in range(8):
-            f = vault.source_dir / f"file_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"UNIQUE_{i}")
-
-        # 导入多次
-        for attempt in range(5):
-            result = vault.import_dir(vault.source_dir)
-            assert result.returncode == 0
-
-            count = len(vault.db_files())
-            assert count == 8, f"Attempt {attempt + 1}: expected 8, got {count}"
-
 
 class TestIncrementalImport:
     """测试增量导入"""
@@ -153,28 +132,6 @@ class TestIncrementalImport:
         batch2_count = sum(1 for p in paths if "batch2" in p)
         assert batch1_count == 5
         assert batch2_count == 5
-
-    def test_incremental_import_large_batches(self, vault: VaultEnv) -> None:
-        """大批量增量导入
-
-        场景：
-        1. 分3批导入，每批20个文件
-        2. 验证最终有60个文件
-        """
-        for batch in range(3):
-            # 添加新文件
-            for i in range(20):
-                f = vault.source_dir / f"batch{batch}_{i:03d}.jpg"
-                create_minimal_jpeg(f, f"BATCH{batch}_{i}")
-
-            # 导入
-            result = vault.import_dir(vault.source_dir)
-            assert result.returncode == 0
-
-            expected_count = (batch + 1) * 20
-            actual_count = len(vault.db_files())
-            assert actual_count == expected_count, \
-                f"Batch {batch}: expected {expected_count}, got {actual_count}"
 
     def test_mixed_new_and_existing_files(self, vault: VaultEnv) -> None:
         """混合新旧文件导入
@@ -298,33 +255,6 @@ class TestPartialFailureRecovery:
 class TestConcurrentSourceModification:
     """测试源目录并发修改场景（不使用信号）"""
 
-    def test_files_added_during_import_window(self, vault: VaultEnv) -> None:
-        """模拟导入窗口期间添加文件
-
-        场景：
-        1. 创建第一批文件
-        2. 开始导入
-        3. 在导入完成前添加第二批文件（模拟相机持续拍摄）
-        4. 第二批文件在下次导入时被处理
-        """
-        # 第一批
-        for i in range(10):
-            f = vault.source_dir / f"first_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"FIRST_{i}")
-
-        # 导入第一批
-        vault.import_dir(vault.source_dir)
-        assert len(vault.db_files()) == 10
-
-        # 添加第二批（模拟导入期间新增）
-        for i in range(5):
-            f = vault.source_dir / f"second_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"SECOND_{i}")
-
-        # 导入第二批
-        vault.import_dir(vault.source_dir)
-        assert len(vault.db_files()) == 15
-
     def test_files_modified_between_imports(self, vault: VaultEnv) -> None:
         """文件在两次导入之间被修改
 
@@ -356,109 +286,9 @@ class TestConcurrentSourceModification:
 class TestLargeScaleRecovery:
     """大规模恢复测试"""
 
-    def test_large_batch_incremental_import(self, vault: VaultEnv) -> None:
-        """大批量增量导入
-
-        场景：
-        1. 分多批导入大量文件
-        2. 验证每批都正确累加
-        """
-        total_files = 0
-        batch_size = 20
-        num_batches = 5
-
-        for batch in range(num_batches):
-            # 添加新文件
-            for i in range(batch_size):
-                f = vault.source_dir / f"batch{batch:02d}_file{i:03d}.jpg"
-                create_minimal_jpeg(f, f"BATCH{batch}_FILE{i}")
-
-            # 导入
-            result = vault.import_dir(vault.source_dir)
-            assert result.returncode == 0
-
-            total_files += batch_size
-            actual_count = len(vault.db_files())
-            assert actual_count == total_files, \
-                f"Batch {batch}: expected {total_files}, got {actual_count}"
-
-        # 最终验证
-        assert len(vault.db_files()) == num_batches * batch_size
-
-    def test_reimport_after_vault_file_deletion(self, vault: VaultEnv) -> None:
-        """Vault 文件被删除后重新导入
-
-        场景：
-        1. 导入文件
-        2. 删除 vault 中的某些文件
-        3. 使用 --force 重新导入
-        4. 验证文件被恢复
-        """
-        # 创建并导入
-        for i in range(10):
-            f = vault.source_dir / f"file_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"CONTENT_{i}")
-
-        vault.import_dir(vault.source_dir)
-        files_before = vault.db_files()
-        assert len(files_before) == 10
-
-        # 删除 vault 中的某些文件
-        for i in [2, 5, 8]:
-            file_info = [f for f in files_before if f"file_{i:03d}" in f["path"]][0]
-            vault_path = vault.vault_dir / file_info["path"]
-            if vault_path.exists():
-                vault_path.unlink()
-
-        # 使用 --force 重新导入
-        result = vault.import_dir(vault.source_dir, force=True)
-        assert result.returncode == 0
-
-        # 验证文件数量（可能有重复，因为 --force）
-        files_after = vault.db_files()
-        assert len(files_after) >= 10
-
 
 class TestEdgeCases:
     """边界情况测试"""
-
-    def test_empty_source_reimport(self, vault: VaultEnv) -> None:
-        """空源目录重复导入
-
-        场景：
-        1. 导入空目录
-        2. 再次导入
-        3. 验证不会出错
-        """
-        # 第一次导入空目录
-        result1 = vault.import_dir(vault.source_dir)
-        assert result1.returncode == 0
-        assert len(vault.db_files()) == 0
-
-        # 第二次导入空目录
-        result2 = vault.import_dir(vault.source_dir)
-        assert result2.returncode == 0
-        assert len(vault.db_files()) == 0
-
-    def test_single_file_multiple_imports(self, vault: VaultEnv) -> None:
-        """单个文件多次导入
-
-        场景：
-        1. 创建单个文件
-        2. 导入10次
-        3. 验证只有一份
-        """
-        f = vault.source_dir / "single.jpg"
-        create_minimal_jpeg(f, "SINGLE_FILE")
-
-        # 导入多次
-        for _ in range(10):
-            result = vault.import_dir(vault.source_dir)
-            assert result.returncode == 0
-
-        # 应该只有1个文件
-        files = vault.db_files()
-        assert len(files) == 1
 
     def test_reimport_after_vault_file_moved_detects_duplicate(self, vault: VaultEnv) -> None:
         """Vault 文件被移动到 vault 内部新位置后重新导入

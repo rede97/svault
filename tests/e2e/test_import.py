@@ -282,31 +282,6 @@ class TestImportIgnoresVault:
             finally:
                 conn.close()
 
-
-class TestExistingFixtures:
-    """Tests using pre-generated fixture files."""
-    
-    def test_fixture_apple_with_exif(self, vault: VaultEnv) -> None:
-        """Test with pre-generated apple_with_exif.jpg fixture."""
-        copy_fixture(vault, "apple_with_exif.jpg")
-        
-        vault.import_dir(vault.source_dir)
-        
-        row = assert_file_imported(vault, "apple_with_exif.jpg")
-        assert_path_contains(row["path"], "2024", "05-01", "Apple iPhone 15")
-    
-    def test_fixture_samsung(self, vault: VaultEnv) -> None:
-        """Test with pre-generated samsung_photo.jpg fixture."""
-        copy_fixture(vault, "samsung_photo.jpg")
-        
-        vault.import_dir(vault.source_dir)
-        
-        row = assert_file_imported(vault, "samsung_photo.jpg")
-        assert "Samsung" in row["path"]
-
-
-# ========== EXIF Fallback Tests (merged from test_exif_fallback.py) ==========
-
 class TestExifFallback:
     """Tests for EXIF fallback scenarios (missing or incomplete EXIF metadata).
     
@@ -315,38 +290,6 @@ class TestExifFallback:
     - 部分 EXIF：有设备信息但无日期，或反之
     - 无效 EXIF：日期格式错误，损坏的 EXIF 数据
     """
-    
-    def test_no_exif_uses_mtime_for_date(self, vault: VaultEnv) -> None:
-        """Photo without EXIF should use file mtime for path organization."""
-        import os
-        
-        # Set specific mtime
-        target_time = time.mktime(time.strptime("2024:06:15 14:30:00", "%Y:%m:%d %H:%M:%S"))
-        copy_fixture(vault, "no_exif.jpg")
-        
-        # Adjust mtime after copying
-        test_file = vault.source_dir / "no_exif.jpg"
-        test_file.touch()
-        os.utime(test_file, (target_time, target_time))
-        
-        vault.import_dir(vault.source_dir)
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
-        
-        # Path should contain date from mtime
-        assert "2024" in rows[0]["path"]
-        assert "Unknown" in rows[0]["path"]
-    
-    def test_no_exif_device_is_unknown(self, vault: VaultEnv) -> None:
-        """Photo without EXIF should have device = 'Unknown'."""
-        copy_fixture(vault, "no_exif.jpg")
-        
-        vault.import_dir(vault.source_dir)
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
-        assert "Unknown" in rows[0]["path"]
     
     def test_corrupted_exif_fallback_to_mtime(self, vault: VaultEnv) -> None:
         """Corrupted EXIF should fallback to mtime, not crash."""
@@ -648,3 +591,40 @@ class TestImportShowDup:
         # Vault should still have only 1 file (not duplicated)
         files = vault.get_vault_files("photo.jpg")
         assert len(files) == 1, "Vault should not have duplicate files"
+
+
+@pytest.mark.chaos
+@pytest.mark.slow
+class TestImportBoundaryCases:
+    """导入边界情况（合并自 test_chaos.py）。"""
+
+    def test_truncated_jpeg_handling(self, vault: VaultEnv) -> None:
+        """截断 JPEG：优雅处理不崩溃（元数据解析失败 → 仅 CRC 指纹路径）。"""
+        corrupt = vault.source_dir / "corrupt.jpg"
+        header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+        corrupt.write_bytes(header + b'some_data_but_no_end_marker')
+
+        result = vault.import_dir(vault.source_dir, check=False)
+        assert result.returncode == 0, (
+            f"截断文件不应导致整批失败（逐文件隔离 G3）: rc={result.returncode}"
+        )
+
+    def test_moved_subdirectory(self, vault: VaultEnv) -> None:
+        """导入前文件被整理进嵌套子目录：递归遍历发现全部文件。"""
+        copy_fixture(vault, "apple_with_exif.jpg")
+
+        nested = vault.source_dir / "2024" / "vacation" / "iphone"
+        nested.mkdir(parents=True)
+        (vault.source_dir / "apple_with_exif.jpg").rename(nested / "apple_with_exif.jpg")
+
+        vault.import_dir(vault.source_dir)
+
+        files = vault.db_files()
+        assert len(files) == 1
+        assert "apple_with_exif.jpg" in files[0]["path"]
+
+    def test_empty_directory(self, vault: VaultEnv) -> None:
+        """导入空目录：rc=0，零记录（空目录契约的唯一负责测试）。"""
+        result = vault.import_dir(vault.source_dir)
+        assert result.returncode == 0
+        assert len(vault.db_files()) == 0

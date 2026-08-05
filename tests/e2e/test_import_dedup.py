@@ -66,71 +66,6 @@ class TestDeduplication:
 
 
 @pytest.mark.dedup
-class TestDuplicateDetection:
-    """Canonical duplicate-detection scenarios."""
-
-    def test_renamed_file_detected_as_duplicate(self, vault: VaultEnv) -> None:
-        """File with different name but same content should be duplicate."""
-        # Create original
-        original = vault.source_dir / "original.jpg"
-        header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-        content = header + b'same_content_across_files'
-        original.write_bytes(content)
-        
-        # Import original
-        vault.import_dir(vault.source_dir)
-        assert_file_imported(vault, "original.jpg")
-        
-        # Create renamed copy
-        renamed = vault.source_dir / "renamed.jpg"
-        shutil.copy2(original, renamed)
-        original.unlink()  # Remove original from source
-        
-        # Import renamed
-        vault.import_dir(vault.source_dir)
-        
-        # Should be detected as duplicate
-        assert_file_duplicate(vault, "renamed.jpg")
-    
-    def test_same_name_same_content_is_duplicate_not_conflict(self, vault: VaultEnv) -> None:
-        """Same filename AND same content should be treated as duplicate, not conflict.
-        
-        Authority: This is the canonical test for "same name + same content = duplicate".
-        Moved from test_import_conflict.py to consolidate deduplication tests.
-        """
-        # Create same file in two different subdirs (same content, same name)
-        for subdir in ["cam1", "cam2"]:
-            (vault.source_dir / subdir).mkdir(exist_ok=True)
-            f = vault.source_dir / subdir / "DSC0001.jpg"
-            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-            f.write_bytes(header + b'same_content_in_both_cameras')
-        
-        vault.import_dir(vault.source_dir)
-        
-        # Only one should be imported (first), second is duplicate
-        files = vault.db_files()
-        assert len(files) == 1
-        assert Path(files[0]["path"]).name == "DSC0001.jpg"
-
-    def test_different_content_same_name(self, vault: VaultEnv) -> None:
-        """Files with same name but different content are conflicts, not duplicates."""
-        # Create two files with same name in different subdirs
-        for subdir in ["cam1", "cam2"]:
-            (vault.source_dir / subdir).mkdir(exist_ok=True)
-            f = vault.source_dir / subdir / "IMG_0001.jpg"
-            header = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-            # Different content for each
-            f.write_bytes(header + f"content_from_{subdir}".encode())
-        
-        vault.import_dir(vault.source_dir)
-        
-        # Both should be imported (one renamed)
-        files = vault.db_files()
-        assert len(files) == 2
-        
-        # Both should have status "imported"
-        for f in files:
-            assert f["status"] == "imported"
 
 
 # ========== Tests migrated from test_import_conflict.py ==========
@@ -182,32 +117,6 @@ class TestFilenameConflict:
 
         renamed = [f for f in filenames if re.match(r"DSC0001\.\d+\.jpg", f)]
         assert len(renamed) == camera_count - 1
-
-    def test_eight_camera_stress_test(self, vault: VaultEnv) -> None:
-        """Stress test with 8 cameras (maximum conflict scenario from fixtures)."""
-        for letter in "abcdefgh":
-            copy_fixture(vault, f"camera_{letter}/DSC0001.jpg", subdir=f"camera_{letter}")
-
-        vault.import_dir(vault.source_dir)
-
-        files = vault.db_files()
-        assert len(files) == 8
-
-        for f in files:
-            assert_path_contains(f["path"], "2024", "05-03", "Sony A7IV")
-
-        for cam in [
-            "camera_a",
-            "camera_b",
-            "camera_c",
-            "camera_d",
-            "camera_e",
-            "camera_f",
-            "camera_g",
-            "camera_h",
-        ]:
-            for f in files:
-                assert cam not in f["path"], f"Path should not contain {cam}"
 
 @pytest.mark.dedup
 class TestBatchDeduplication:

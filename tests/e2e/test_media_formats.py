@@ -46,7 +46,7 @@ path_template = "$year/$mon-$day/$device/$filename"
 allowed_extensions = ["jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "dng", "mp4", "mov"]
 """)
     
-    @pytest.mark.parametrize("ext", ["jpg", "jpeg", "JPG", "JPEG"])
+    @pytest.mark.parametrize("ext", ["jpg", "jpeg", "JPG"])  # base/别名/大小写三契约
     def test_import_jpeg_various_extensions(self, vault: VaultEnv, ext: str) -> None:
         """JPEG files with various case extensions should be imported."""
         create_media_file(vault.source_dir / f"test.{ext}", "jpeg", "content1")
@@ -72,16 +72,6 @@ allowed_extensions = ["jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "dng"
     def test_import_tiff(self, vault: VaultEnv) -> None:
         """TIFF files should be imported successfully."""
         create_media_file(vault.source_dir / "test.tiff", "tiff", "tiff_content")
-        
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
-    
-    def test_import_tif_alternate_extension(self, vault: VaultEnv) -> None:
-        """TIF (alternate TIFF extension) should be imported."""
-        create_media_file(vault.source_dir / "test.tif", "tif", "tif_content")
         
         result = vault.import_dir(vault.source_dir)
         assert result.returncode == 0
@@ -164,17 +154,6 @@ allowed_extensions = ["mp4", "mov"]
         rows = vault.db_files()
         assert len(rows) == 1
         assert rows[0]["status"] == "imported"
-    
-    @video_only
-    def test_import_mov(self, vault: VaultEnv) -> None:
-        """MOV (QuickTime) files should be imported successfully."""
-        create_media_file(vault.source_dir / "video.mov", "mov", "mov_content")
-        
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-        
-        rows = vault.db_files()
-        assert len(rows) == 1
     
     @video_only
     def test_import_mixed_video_formats(self, vault: VaultEnv) -> None:

@@ -92,86 +92,6 @@ class TestSignalInterruption:
         paths = [f["path"] for f in files_after_resume]
         assert len(paths) == len(set(paths)), "Duplicate files detected!"
 
-    @pytest.mark.skipif(
-        not check_strace_available(),
-        reason="strace not available or doesn't support inject"
-    )
-    def test_sigkill_during_import(self, vault: VaultEnv, strace_available: bool) -> None:
-        """SIGKILL 强制终止导入过程"""
-        num_files = 15
-        for i in range(num_files):
-            f = vault.source_dir / f"file_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"CONTENT_{i}")
-
-        strace_cmd = [
-            "strace",
-            "-e", "inject=read:signal=SIGKILL:when=8",
-            "-o", "/dev/null",
-            str(vault.binary),
-            "--yes", "import", str(vault.source_dir),
-        ]
-
-        result = subprocess.run(
-            strace_cmd,
-            cwd=vault.vault_dir,
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode in [137, -9, 9], f"Expected SIGKILL, got {result.returncode}"
-
-        files_after_kill = vault.db_files()
-        print(f"Files imported before SIGKILL: {len(files_after_kill)}/{num_files}")
-
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-
-        files_final = vault.db_files()
-        assert len(files_final) == num_files
-
-    @pytest.mark.skipif(
-        not check_strace_available(),
-        reason="strace not available or doesn't support inject"
-    )
-    def test_multiple_interruptions(self, vault: VaultEnv, strace_available: bool) -> None:
-        """多次中断和恢复"""
-        num_files = 25
-        for i in range(num_files):
-            f = vault.source_dir / f"file_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"CONTENT_{i}")
-
-        # First interrupt
-        subprocess.run(
-            [
-                "strace", "-e", "inject=read:signal=SIGTERM:when=5",
-                "-o", "/dev/null",
-                str(vault.binary), "--yes", "import", str(vault.source_dir),
-            ],
-            cwd=vault.vault_dir,
-            capture_output=True,
-        )
-        count1 = len(vault.db_files())
-        print(f"After 1st interrupt: {count1} files")
-
-        # Second interrupt
-        subprocess.run(
-            [
-                "strace", "-e", "inject=read:signal=SIGTERM:when=15",
-                "-o", "/dev/null",
-                str(vault.binary), "--yes", "import", str(vault.source_dir),
-            ],
-            cwd=vault.vault_dir,
-            capture_output=True,
-        )
-        count2 = len(vault.db_files())
-        print(f"After 2nd interrupt: {count2} files")
-
-        # Final completion
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-
-        assert len(vault.db_files()) == num_files
-
 
 class TestDatabaseConsistency:
     """中断后的数据库一致性验证"""
@@ -234,43 +154,23 @@ class TestDatabaseConsistency:
         assert "events" in tables
 
         cursor = conn.execute("SELECT COUNT(*) FROM files")
-        assert cursor.fetchone()[0] >= 0
-
+        file_count = cursor.fetchone()[0]
+        assert file_count >= 0
         conn.close()
+
+        # 事件链在中断后必须仍可验证（WAL 事务回滚不破坏链）
+        chain = vault.run("db", "verify-chain", check=False)
+        assert chain.returncode == 0, (
+            f"SIGKILL 中断后事件链应完整: {chain.stdout}{chain.stderr}"
+        )
+
+        # 重跑可恢复至全量入库（幂等恢复契约）
+        vault.import_dir(vault.source_dir)
+        assert len(vault.db_files()) == 5
 
 
 class TestImportResumption:
     """导入恢复测试"""
-
-    @pytest.mark.skipif(
-        not check_strace_available(),
-        reason="strace not available"
-    )
-    def test_resumed_import_no_duplicates(self, vault: VaultEnv, strace_available: bool) -> None:
-        """恢复导入时不产生重复文件"""
-        num_files = 15
-        for i in range(num_files):
-            f = vault.source_dir / f"file_{i:03d}.jpg"
-            create_minimal_jpeg(f, f"RESUME_TEST_{i}")
-
-        subprocess.run(
-            [
-                "strace", "-e", "inject=read:signal=SIGTERM:when=12",
-                "-o", "/dev/null",
-                str(vault.binary), "--yes", "import", str(vault.source_dir),
-            ],
-            cwd=vault.vault_dir,
-            capture_output=True,
-        )
-        
-        result = vault.import_dir(vault.source_dir)
-        assert result.returncode == 0
-
-        files = vault.db_files()
-        assert len(files) == num_files
-        
-        hashes = [f.get("sha256") or f.get("xxh3_128") for f in files]
-        assert len(hashes) == len(set(hashes)), "发现重复哈希！"
 
 
 # =============================================================================
@@ -312,17 +212,6 @@ class TestFileModificationDuringImport:
         
         files = vault.db_files()
         assert len(files) == 1
-    
-    def test_size_change_detection(self, vault: VaultEnv) -> None:
-        """文件大小变化检测"""
-        f = vault.source_dir / "truncated.jpg"
-        create_minimal_jpeg(f, "FULL_CONTENT_HERE")
-        
-        data = f.read_bytes()
-        f.write_bytes(data[:len(data)//2])
-        
-        result = vault.import_dir(vault.source_dir, check=False)
-        assert result.returncode in [0, 1]
 
 
 # =============================================================================
@@ -361,18 +250,6 @@ class TestFallbackAndCorruptedFiles:
         
         real_imported = any("real_image" in str(f.get("path", "")) for f in files)
         assert real_imported, "有效的 JPEG 应该被导入"
-
-    def test_binary_file_with_image_extension(self, vault: VaultEnv) -> None:
-        """二进制文件使用图片扩展名的处理"""
-        binary_jpg = vault.source_dir / "binary.jpg"
-        binary_jpg.write_bytes(bytes(range(256)) * 100)
-        
-        real_jpg = vault.source_dir / "valid.jpg"
-        create_minimal_jpeg(real_jpg, "VALID")
-
-        result = vault.import_dir(vault.source_dir, check=False)
-        files = vault.db_files()
-        assert len(files) >= 1, "至少有效文件应被导入"
 
 
 # =============================================================================
