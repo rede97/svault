@@ -74,12 +74,25 @@ class FaultRule:
     # action='corrupt' 时使用
     corrupt_data: bytes | None = None
     
+    # action='corrupt' 时使用：per-read 内容序列（优先于 corrupt_data/XOR 默认行为）
+    # 规则第 N 次触发（0 起）时若 N < len(sequence)，用 sequence[N] 做本次 corrupt
+    # （元素为 None 表示本次透传真实数据）；N 超出序列长度后固定使用最后一个元素。
+    # 用途：模拟不稳定存储（第一次读 A、第二次读 B）与 bit rot（前 N 次正常、之后翻转）
+    corrupt_sequence: list[bytes | None] | None = None
+    
     # 触发次数控制
     trigger_count: int = 0  # 0 表示无限次
     triggered: int = field(default=0, init=False)
     
+    # 运行时开关（可通过 enable_rule/disable_rule 切换）
+    enabled: bool = True
+    
     def should_trigger(self, offset: int, size: int) -> bool:
         """检查当前读取范围是否触发此规则"""
+        # 规则被禁用时不触发
+        if not self.enabled:
+            return False
+        
         # 检查是否还有触发次数
         if self.trigger_count > 0 and self.triggered >= self.trigger_count:
             return False
@@ -104,6 +117,7 @@ class IOStats:
     write_bytes: int = 0
     error_count: int = 0
     pause_count: int = 0
+    corrupt_count: int = 0
     last_offset: int = 0
 
 
@@ -178,6 +192,21 @@ class FaultInjectedFS(Operations):
         """清除所有故障规则"""
         with self._lock:
             self.rules.clear()
+    
+    def set_rules(self, rules: list[FaultRule]) -> None:
+        """原子替换全部故障规则"""
+        with self._lock:
+            self.rules = list(rules)
+    
+    def disable_rule(self, index: int) -> None:
+        """禁用指定下标的故障规则"""
+        with self._lock:
+            self.rules[index].enabled = False
+    
+    def enable_rule(self, index: int) -> None:
+        """启用指定下标的故障规则"""
+        with self._lock:
+            self.rules[index].enabled = True
     
     def is_paused(self, path: str) -> bool:
         """检查文件是否处于暂停状态"""
@@ -283,11 +312,21 @@ class FaultInjectedFS(Operations):
             self.stats.read_count += 1
             self.stats.last_offset = offset
         
-        # 检查故障规则
+        # 检查故障规则：按 action 分两类
+        # - pre-read（error/pause/delay）：真实读取前生效，维持原行为
+        # - post-read（corrupt）：真实读取完成后修改返回缓冲区
+        pre_rules: list[FaultRule] = []
+        corrupt_rules: list[FaultRule] = []
         for rule in self.rules:
             if rule.path == path or rule.path == '*':
                 if rule.should_trigger(offset, size):
-                    self._apply_rule(rule, path, offset)
+                    if rule.action == 'corrupt':
+                        corrupt_rules.append(rule)
+                    else:
+                        pre_rules.append(rule)
+        
+        for rule in pre_rules:
+            self._apply_rule(rule, path, offset)
         
         # 应用默认延迟
         if self.default_delay_ms > 0:
@@ -298,13 +337,17 @@ class FaultInjectedFS(Operations):
             with open(real_path, 'rb') as f:
                 f.seek(offset)
                 data = f.read(size)
-                
-                with self._lock:
-                    self.stats.read_bytes += len(data)
-                
-                return data
         except OSError as e:
             raise fuse.FuseOSError(e.errno)
+        
+        # post-read：corrupt 规则修改返回缓冲区
+        for rule in corrupt_rules:
+            data = self._apply_corrupt(rule, data, offset)
+        
+        with self._lock:
+            self.stats.read_bytes += len(data)
+        
+        return data
     
     def _apply_rule(self, rule: FaultRule, path: str, offset: int) -> None:
         """应用故障规则"""
@@ -330,10 +373,50 @@ class FaultInjectedFS(Operations):
         
         elif rule.action == 'delay':
             time.sleep(rule.delay_ms / 1000)
+    
+    def _apply_corrupt(self, rule: FaultRule, data: bytes, offset: int) -> bytes:
+        """应用数据损坏规则（post-read，在真实读取完成后修改返回缓冲区）
         
-        elif rule.action == 'corrupt':
-            # 数据损坏在 read 返回后处理，此处仅标记
-            pass
+        载荷选择优先级：corrupt_sequence > corrupt_data > XOR 0xFF 默认位翻转。
+        
+        Args:
+            rule: 已匹配触发的 corrupt 规则
+            data: 真实读取到的数据
+            offset: 本次读取的起始偏移量
+        
+        Returns:
+            修改后的返回数据（可能未修改）
+        """
+        rule.mark_triggered()
+        with self._lock:
+            self.stats.corrupt_count += 1
+        
+        # 规则触发偏移必须落在本次返回缓冲区内（读到 EOF 时可能不满足）
+        start = rule.offset - offset
+        if start < 0 or start >= len(data):
+            return data
+        
+        # corrupt_sequence 优先：第 N 次触发（0 起）取 sequence[N]，
+        # 越界后固定使用最后一个元素；元素为 None 表示本次透传真实数据
+        if rule.corrupt_sequence is not None:
+            index = min(rule.triggered - 1, len(rule.corrupt_sequence) - 1)
+            payload = rule.corrupt_sequence[index]
+            if payload is None:
+                return data
+        else:
+            payload = rule.corrupt_data
+        
+        buf = bytearray(data)
+        if payload is not None:
+            # 写入指定字节，越界部分截断
+            length = min(len(payload), len(buf) - start)
+            buf[start:start + length] = payload[:length]
+        else:
+            # 默认行为：单字节位翻转（模拟坏道）
+            buf[start] ^= 0xFF
+        
+        self._log('corrupt', rule.path, offset=rule.offset)
+        return bytes(buf)
     
     def write(self, path: str, data: bytes, offset: int, fh: int) -> int:
         """写入文件"""

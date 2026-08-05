@@ -13,61 +13,136 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
+# fuse_tests 是包（含 __init__.py），需手动把本目录加入 sys.path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from conftest import VaultEnv, create_minimal_jpeg
+from fault_inject_fs import FaultInjectedFS, FaultRule
+
 pytestmark = [pytest.mark.fuse, pytest.mark.slow, pytest.mark.corruption]
+
+
+def _create_padded_jpeg(source_dir: Path, name: str, size: int) -> Path:
+    """创建填充到指定字节的 JPEG"""
+    path = source_dir / name
+    create_minimal_jpeg(path, name)
+    current = path.stat().st_size
+    if current < size:
+        with open(path, "ab") as f:
+            f.write(b"\xff" * (size - current))
+    return path
+
+
+def _vault_data_files(vault: VaultEnv) -> list[Path]:
+    """vault 中的数据文件（排除 svault.toml 等配置文件）"""
+    return [f for f in vault.get_vault_files() if f.name != "svault.toml"]
+
+
+def _latest_recheck_report(vault: VaultEnv) -> dict:
+    """读取最新的 recheck 报告（JSON）"""
+    staging = vault.vault_dir / ".svault" / "staging"
+    reports = sorted(staging.glob("recheck_*.json"))
+    assert reports, "未找到 recheck 报告"
+    return json.loads(reports[-1].read_text())
 
 
 class TestFundamentalProblem:
     """演示哈希验证的根本限制
-    
+
     核心问题：如果哈希是基于损坏数据计算的，verify 无法发现问题。
     这些测试使用 FUSE 实际演示这个问题。
+
+    注意：本类测试是**局限性确认测试**（failure-handling.md §4）——
+    断言的是现行检测能力边界，不是缺陷。
     """
-    
+
     def test_corrupted_hash_undetectable_by_verify(
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """FUSE 演示：坏道导致哈希基于损坏数据计算
-        
-        场景：
-        1. 创建正常文件
-        2. FUSE 配置：在 offset=1024 处返回 0xFF（模拟坏道）
-        3. svault import 通过 FUSE 读取 → 得到损坏数据
-        4. svault 计算 sha256（基于损坏数据）→ 存入 DB
-        5. svault copy 损坏数据到 vault
-        6. svault verify 比较：
-           - vault 文件哈希 == DB 哈希 ✓（都基于损坏数据）
-           - 返回 "verified"（实际文件已损坏！）
-        
-        验证点：
-        - verify 返回成功（这是预期的， demonstrating the problem）
-        - 但 recheck --source 会发现源（实际）与 vault（损坏）不同
-        - 说明需要跨会话验证或外部参考
-        
-        FIXME: 需要完整实现 FaultInjectedFS 的 corrupt 模式
+        """局限性确认（§8.1 P0-5）：导入时源损坏 → verify 不可检出，recheck 可检出
+
+        场景与判据（failure-handling.md §4 检测能力边界）：
+        1. FUSE 在 offset=1024 注入 16 字节 0x00（模拟坏道返回错误数据）
+        2. import 读取损坏数据 → 哈希基于损坏数据入库（H_bad），exit 0
+        3. verify：vault 副本哈希 == DB H_bad → **exit 0（无法检测，这是被锁定的局限）**
+        4. 清除故障 + 失效页缓存后 recheck：源为原始数据 ≠ manifest H_bad
+           → 报告 SourceModified（recheck 是唯一兜底手段）
         """
-        pytest.skip("待实现：需要 FaultInjectedFS 支持 corrupt 模式")
-    
+        vault, fuse_mount, fs = vault_with_fuse_source
+        victim = _create_padded_jpeg(vault.source_dir, "victim.jpg", 8 * 1024)
+        original = victim.read_bytes()
+
+        fs.add_rule(
+            FaultRule(
+                path="/victim.jpg",
+                offset=1024,
+                action="corrupt",
+                # 填充区是 0xFF，用 0x00 载荷保证损坏可区分
+                corrupt_data=b"\x00" * 16,
+            )
+        )
+
+        # 1-2. 导入损坏数据：import 正常完成（无源-目标比对，§4）
+        result = vault.import_dir(fuse_mount)
+        assert result.returncode == 0, f"导入应完成: {result.stderr}"
+        assert len(vault.db_files()) == 1
+
+        # vault 副本确实是损坏数据（与原始源不同）
+        vault_files = _vault_data_files(vault)
+        assert len(vault_files) == 1
+        assert vault_files[0].read_bytes() != original, (
+            "vault 副本应包含被注入的损坏数据"
+        )
+
+        # 3. verify 无法检出（H_bad == H_bad）——局限性确认，非缺陷
+        verify = vault.run("verify", check=False)
+        assert verify.returncode == 0, (
+            f"局限性确认：verify 对导入期损坏不可检出，应 exit 0: {verify.stderr}"
+        )
+
+        # 4. 清除故障并失效页缓存（重写真实源文件使缓存页作废），
+        #    recheck 重读到的将是原始数据
+        fs.clear_rules()
+        victim.write_bytes(original)
+
+        recheck = vault.run("recheck", str(fuse_mount), check=False)
+        assert recheck.returncode == 0, (
+            f"recheck 恒 exit 0（不一致只写报告）: {recheck.stderr}"
+        )
+
+        report = _latest_recheck_report(vault)
+        victim_entries = [
+            f for f in report["files"] if Path(f["src_path"]).name == "victim.jpg"
+        ]
+        assert len(victim_entries) == 1, "报告应包含 victim.jpg"
+        assert victim_entries[0]["status"] == "SourceModified", (
+            f"源（原始数据）应与 manifest 的 H_bad 不符，实际: {victim_entries[0]['status']}"
+        )
+
     def test_bad_sector_during_import(
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
         """导入过程中遇到坏道
-        
+
         场景：
         1. FUSE 在特定偏移返回 EIO（模拟坏道）
         2. svault import 读取时遇到错误
         3. 验证：错误被报告，部分文件不导入
-        
+
         与静默损坏不同，这里显式返回错误。
         """
-        pytest.skip("待实现")
+        pytest.skip("待实现（P1）")
     
     def test_silent_corruption_at_specific_offset(
         self,

@@ -316,7 +316,7 @@ DB 查询 / 文件系统状态）。
 
 | 计划测试 | 处置 | 判据要点 |
 |----------|------|----------|
-| `test_import_enospc_simulation` | ✅ 实现（**需 vault 侧注入设施**，§8.4） | copy 路径 ENOSPC → 该文件 failed 继续、退出码 0、半成品残留；batch_insert/manifest 路径 ENOSPC → exit 1、事务回滚；解除后重跑幂等 |
+| `test_import_enospc_simulation` | ⏭ **不重复建设**（2026-08-05）：`test_import_disk_full.py` 已用 loopback ext4 覆盖等价场景（copy 路径 ENOSPC + DB 写失败 exit 1 + 清理后恢复）。判据以该文件实际断言为准（其"exit code 4"注释陈旧，实际断言 `[4, 1]` 兼容现行 exit 1） | — |
 | `test_import_pause_multiple_files` | ✅ 实现 | 暂停点前的文件已完成入库（如已过 Stage E）或未入库（未过）；重跑后全部一致 |
 | `test_recheck_source_modified_during_check` | ✅ 实现 | 源侧校验值与 manifest 不符 → 报告中对应状态；exit 0 |
 | `test_silent_corruption_at_specific_offset` | ✅ 实现（依赖 corrupt action） | 同 §4 局限性确认 |
@@ -341,7 +341,7 @@ DB 查询 / 文件系统状态）。
 |------|------|------|----------|
 | INFRA-1 | `corrupt` action 落地：read 返回后按 `corrupt_data` 改写字节 | `FaultRule` 已声明字段，`_apply_rule` 仅 `pass`，`read()` 无后处理（`fault_inject_fs.py:334-336`） | 全部 corruption 测试 |
 | INFRA-2 | 运行时规则变更 API（测试中途启用/停用/修改规则，线程安全） | `add_rule` 已有但无移除/替换；无"第 N 次读后变更" | bit_rot、unstable_read、aging |
-| INFRA-3 | vault 侧挂载 fixture（故障注入在 vault 写入/读取路径） | 现有 fixture 仅挂 source 侧 | ENOSPC、vault 文件 EIO/corrupt、Stage D 哈希失败（BUG-1 判据） |
+| INFRA-3 | ~~vault 侧挂载 fixture~~ **已评估取消**（2026-08-05）：ENOSPC 已被 `test_import_disk_full.py`（loopback ext4 真实满盘）覆盖；vault 侧 EIO/损坏在 P2 用 dm-flakey 或直接字节翻转实现。完整读写 FUSE 挂 vault（SQLite over FUSE）风险大于收益 | 现有 fixture 仅挂 source 侧 | （已覆盖，见 §8.2） |
 | INFRA-4 | "每次读返回不同数据"规则（per-read 内容序列） | 无 | unstable_read |
 
 ### 8.5 已覆盖、不重复建设
