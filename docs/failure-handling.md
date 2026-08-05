@@ -316,7 +316,7 @@ DB 查询 / 文件系统状态）。
 
 | 计划测试 | 处置 | 判据要点 |
 |----------|------|----------|
-| `test_import_enospc_simulation` | ⏭ **不重复建设**（2026-08-05）：`test_import_disk_full.py` 已用 loopback ext4 覆盖等价场景（copy 路径 ENOSPC + DB 写失败 exit 1 + 清理后恢复）。判据以该文件实际断言为准（其"exit code 4"注释陈旧，实际断言 `[4, 1]` 兼容现行 exit 1） | — |
+| `test_import_enospc_simulation` | ⏭ **不重复建设，占位已删除**（2026-08-05）：`test_import_disk_full.py` 已用 loopback ext4 覆盖等价场景（copy 路径 ENOSPC + DB 写失败 exit 1 + 清理后恢复）。判据以该文件实际断言为准（其"exit code 4"注释陈旧，实际断言 `[4, 1]` 兼容现行 exit 1） | — |
 | `test_import_pause_multiple_files` | ✅ 实现 | 暂停点前的文件已完成入库（如已过 Stage E）或未入库（未过）；重跑后全部一致 |
 | `test_recheck_source_modified_during_check` | ✅ 实现 | 源侧校验值与 manifest 不符 → 报告中对应状态；exit 0 |
 | `test_silent_corruption_at_specific_offset` | ✅ 实现（依赖 corrupt action） | 同 §4 局限性确认 |
@@ -324,31 +324,29 @@ DB 查询 / 文件系统状态）。
 | `test_import_eagain_retry` | ⚠️ **改写并按实测修正**（2026-08-05）：svault 无重试层（G2）结论不变，但实测 **FUSE 内核客户端对 EAGAIN 透明重试**——瞬态 EAGAIN 被内核吸收，导入正常完成。改名 `test_import_eagain_error`，判据：注入 3 次 EAGAIN（error_count==3）→ import exit 0 全入库 |
 | `test_import_slow_read_timeout` | ❌ **删除** | 无超时机制（G2），计划前提不成立。可改为 `test_import_slow_read_completes`：慢速读取只是慢，最终正常完成（归 P2 稳定性） |
 
-### 8.3 P2（深度验证）——实施状态（2026-08-05 已全部处置）
+### 8.3 P2（深度验证）——实施状态（2026-08-05 已全部处置；2026-08-06 冗余测试经评估删除）
 
-- ✅ `test_import_variable_delay`：已实现——10-100ms 变化延迟 × 20 文件，
-  断言完成 + 一致（exit 0、全入库、verify 通过），不断言时间。
-- ✅ `test_edge_cases_fuse.py`：已创建——空文件 × 故障规则 3 例
-  （corrupt/EIO 规则对空文件不触发；同扩展名空文件互判 duplicate，§3.1）。
-- ⏭ `test_bit_rot_detection`：**已覆盖**——vault 侧衰减 =
-  `test_verify.py::test_verify_detects_bit_flip`；源侧衰减 =
-  `test_recheck_source_modified_during_check` / `test_silent_corruption_at_specific_offset`。
-- ⏭ `test_intermittent_corruption`：**已覆盖**——间歇损坏是 corrupt_sequence
-  特例（`test_unstable_read_during_import`）。
-- ⏭ `test_verify_across_different_storage`：**不适用**——计划假设"带重试"
-  与 G2 冲突；慢存储已由 variable_delay 覆盖。
-- ⏭ `test_parity_verification_detects_corruption`：**不适用**——svault 无
-  parity/ECC 功能亦无立项。
-- ⏭ `test_multiple_hash_algorithms_detect_corruption`：**不适用**——三层哈希
-  是串联身份链（CRC→XXH3→SHA256），非并行冗余校验，无可操作判据。
-- ⏭ `test_verify_pause_resume`：**不适用**——verify 不读源目录，源侧 FUSE
-  无注入面；vault 侧设施已取消（INFRA-3）。
-- ⏭ `test_verify_partial_failure` / `test_recheck_vault_file_corrupt`：
-  **已覆盖**（`test_verify_multiple_corruptions` / `test_verify_detects_bit_flip`）。
+- ✅ `test_edge_cases_fuse.py`：已创建——空文件 × 故障规则 2 例
+  （corrupt 规则对空文件不触发；同扩展名空文件互判 duplicate，§3.1）。
 - 🔧 保留待实现（需新设施）：`test_corruption_during_copy_to_vault`、
   `test_recheck_vault_file_eio`（dm-flakey）；`test_import_corrupt_at_offset`；
   `test_import_truncated_file`（需 truncate action）。
-- 🔧 后续扩展（组件已被单项覆盖）：aging 硬盘模拟、网络存储中断模拟。
+- 🗑 **已删除——永不实现（前提证伪）**：`test_verify_pause_resume`（verify 不读源，
+  源侧 FUSE 无注入面）、`test_verify_across_different_storage`（"带重试"假设
+  违反 G2）、`test_parity_verification_detects_corruption`（无 parity 功能）、
+  `test_multiple_hash_algorithms_detect_corruption`（三层哈希是串联身份链，
+  非并行冗余）。
+- 🗑 **已删除——已有等价覆盖**：`test_import_enospc_simulation`（loopback 满盘）、
+  `test_verify_partial_failure` / `test_recheck_vault_file_corrupt` /
+  `test_bit_rot_detection`（test_verify.py 系列）、`test_intermittent_corruption` /
+  `test_post_import_source_recheck_detects_corruption`（P0-5/unstable 已含）、
+  `test_bad_sector_during_import`（= eio_at_offset）。
+- 🗑 **已删除——冗余通过项**：`test_silent_corruption_at_specific_offset`
+  （与 P0-5 同构，XOR 路径由设施自验 `test_corrupt_xor_flip` 锁定）、
+  `test_empty_file_eio_rule_never_fires`（与 corrupt 版同机制）、
+  `test_import_variable_delay`（无独有故障判据）、
+  `test_aging_hard_drive_simulation` / `test_network_storage_interruption`
+  （组合场景，组件已被单项覆盖）。
 
 ### 8.4 测试基础设施需求（先于测试实现）
 

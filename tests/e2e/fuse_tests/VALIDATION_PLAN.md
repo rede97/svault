@@ -351,14 +351,13 @@ cd tests/e2e/fuse_tests && ./run_fuse.sh
 
 ---
 
-## 实施状态（2026-08-05）
+## 实施状态（2026-08-05 落地；2026-08-06 精简）
 
 判据与处置以 [docs/failure-handling.md](../../docs/failure-handling.md) §8 为准。
-当前 `fuse_tests/` 套件：**20 passed / 17 skipped**（skip 全部带处置标注）。
+当前 `fuse_tests/` 套件：**17 passed / 4 skipped**。
 
-- ✅ P0×5、P1×5、P2（variable_delay + 空文件边界×3）已实现并全绿
+- ✅ P0×5、P1×5、P2（空文件边界×2）已实现并全绿
 - ✅ INFRA-1/2/4 已实现（corrupt action / 规则管理 / corrupt_sequence）+ 6 个设施自验
-- ⏭ ENOSPC 不重复建设（`test_import_disk_full.py` loopback ext4 已覆盖）
-- ⏭ `slow_read_timeout` 已删除（无超时机制）；`eagain_retry` 改名 `eagain_error`
-  并按实测修正（FUSE 内核客户端透明重试 EAGAIN）
-- 🔧 保留待实现：vault 侧注入 3 项（dm-flakey）、truncate action 1 项
+- 🗑 2026-08-06 经评估删除 16 个无必要测试（永不实现 4 / 已有等价覆盖 7 /
+  冗余通过项 5），删除理由见 failure-handling.md §8.3
+- 🔧 保留待实现：vault 侧注入 2 项（dm-flakey）、corrupt-at-offset、truncate action 各 1 项

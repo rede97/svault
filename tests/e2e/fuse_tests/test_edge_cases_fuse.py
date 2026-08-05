@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import errno
 import sys
 from pathlib import Path
 
@@ -16,8 +15,7 @@ import pytest
 # fuse_tests 是包（含 __init__.py），需手动把本目录加入 sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from conftest import VaultEnv
-from fault_inject_fs import FaultInjectedFS, FaultRule
+from fault_inject_fs import FaultRule
 
 pytestmark = [pytest.mark.fuse, pytest.mark.slow]
 
@@ -52,35 +50,6 @@ class TestEmptyFileFaultCombinations:
 
         verify = vault.run("verify", check=False)
         assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
-
-    def test_empty_file_eio_rule_never_fires(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """空文件 + EIO 规则：无内容读取，规则不触发，正常导入
-
-        判据：import exit 0，空文件入库，error_count == 0
-        """
-        vault, fuse_mount, fs = vault_with_fuse_source
-        (vault.source_dir / "empty_eio.jpg").write_bytes(b"")
-
-        fs.add_rule(
-            FaultRule(
-                path="/empty_eio.jpg",
-                offset=0,
-                action="error",
-                error_code=errno.EIO,
-            )
-        )
-
-        result = vault.import_dir(fuse_mount)
-        assert result.returncode == 0, (
-            f"空文件无读取可失败，导入应成功: {result.stderr}"
-        )
-        assert len(vault.db_files()) == 1
-        assert fs.get_stats().error_count == 0, (
-            "空文件无内容读取，EIO 规则不应触发"
-        )
 
     def test_empty_files_dedup(
         self,

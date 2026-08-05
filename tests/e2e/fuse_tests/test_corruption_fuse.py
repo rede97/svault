@@ -11,13 +11,8 @@
 
 from __future__ import annotations
 
-import errno
-import hashlib
 import json
-import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -26,7 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import VaultEnv, create_minimal_jpeg
-from fault_inject_fs import FaultInjectedFS, FaultRule
+from fault_inject_fs import FaultRule
 
 pytestmark = [pytest.mark.fuse, pytest.mark.slow, pytest.mark.corruption]
 
@@ -129,68 +124,6 @@ class TestFundamentalProblem:
             f"源（原始数据）应与 manifest 的 H_bad 不符，实际: {victim_entries[0]['status']}"
         )
 
-    def test_bad_sector_during_import(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """导入过程中遇到坏道
-
-        场景：
-        1. FUSE 在特定偏移返回 EIO（模拟坏道）
-        2. svault import 读取时遇到错误
-        3. 验证：错误被报告，部分文件不导入
-
-        与静默损坏不同，这里显式返回错误。
-        """
-        pytest.skip("待实现（P1）")
-    
-    def test_silent_corruption_at_specific_offset(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """局限性确认（§8.2 P1）：单字节静默位翻转同样不可被 verify 检出
-
-        与 P0-5 互补：走 corrupt 的默认 XOR 0xFF 位翻转路径（无 corrupt_data）。
-        判据（failure-handling.md §4）：
-        1. import 读取被翻转的数据 → H_bad 入库，exit 0
-        2. verify exit 0（无法检测，被锁定的局限）
-        3. 清除故障 + 失效页缓存后 recheck → SourceModified
-        """
-        vault, fuse_mount, fs = vault_with_fuse_source
-        victim = _create_padded_jpeg(vault.source_dir, "silent.jpg", 8 * 1024)
-        original = victim.read_bytes()
-
-        # 默认行为：offset=8 处单字节 XOR 0xFF（静默位翻转）
-        fs.add_rule(
-            FaultRule(path="/silent.jpg", offset=8, action="corrupt")
-        )
-
-        result = vault.import_dir(fuse_mount)
-        assert result.returncode == 0, f"导入应完成: {result.stderr}"
-        assert len(vault.db_files()) == 1
-
-        vault_files = _vault_data_files(vault)
-        assert len(vault_files) == 1
-        assert vault_files[0].read_bytes() != original, "vault 副本应含被翻转的字节"
-
-        verify = vault.run("verify", check=False)
-        assert verify.returncode == 0, (
-            f"局限性确认：verify 对静默损坏不可检出，应 exit 0: {verify.stderr}"
-        )
-
-        fs.clear_rules()
-        victim.write_bytes(original)  # 失效页缓存，recheck 读到原始数据
-
-        recheck = vault.run("recheck", str(fuse_mount), check=False)
-        assert recheck.returncode == 0
-
-        report = _latest_recheck_report(vault)
-        entries = [f for f in report["files"] if Path(f["src_path"]).name == "silent.jpg"]
-        assert len(entries) == 1
-        assert entries[0]["status"] == "SourceModified", (
-            f"recheck 应检出源与 H_bad 不符，实际: {entries[0]['status']}"
-        )
-
 
 class TestUnstableStorage:
     """不稳定存储测试
@@ -257,25 +190,6 @@ class TestUnstableStorage:
         assert entries[0]["status"] == "SourceModified", (
             f"recheck 应检出源与 H(B) 不符，实际: {entries[0]['status']}"
         )
-    
-    def test_bit_rot_detection(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """位翻转检测（Bit Rot）
-        
-        场景：
-        1. 正常导入文件
-        2. 时间推移（模拟），FUSE 返回略微不同的数据（1 bit 翻转）
-        3. recheck/verify 应检测到哈希不匹配
-        
-        验证 svault 能检测到随时间推移的数据衰减。
-        """
-        pytest.skip(
-            "已覆盖：vault 侧衰减 = test_verify.py::test_verify_detects_bit_flip；"
-            "源侧衰减 = test_recheck_source_modified_during_check / "
-            "test_silent_corruption_at_specific_offset（failure-handling.md §8.3）"
-        )
 
 
 class TestCorruptionDuringCopy:
@@ -297,134 +211,3 @@ class TestCorruptionDuringCopy:
         4. 验证写入后校验能检测到
         """
         pytest.skip("待实现（P2，vault 侧注入：dm-flakey，见 failure-handling.md §8.4 INFRA-3）")
-    
-    def test_intermittent_corruption(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """间歇性损坏
-        
-        场景：
-        1. FUSE 配置：随机 1% 概率返回损坏数据
-        2. 大量文件导入
-        3. 验证：损坏被检测到并报告
-        """
-        pytest.skip(
-            "已覆盖：间歇性损坏是 corrupt_sequence 的特例，见 "
-            "test_unstable_read_during_import（failure-handling.md §8.2）"
-        )
-
-
-class TestCrossDeviceVerification:
-    """跨设备验证
-    
-    验证数据在不同存储设备间的一致性。
-    """
-    
-    def test_verify_across_different_storage(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """跨不同存储设备的验证
-        
-        场景：
-        1. 源在 FUSE 挂载点（模拟慢/不可靠存储）
-        2. vault 在常规存储
-        3. FUSE 配置延迟和偶尔错误
-        4. 验证导入仍能完成（带重试）
-        """
-        pytest.skip(
-            "不适用：svault 无重试机制（G2），计划假设与现行行为冲突；"
-            "慢存储场景已由 test_import_variable_delay 覆盖"
-        )
-
-
-class TestDetectionStrategies:
-    """损坏检测策略验证
-    
-    验证各种检测策略的有效性。
-    """
-    
-    def test_post_import_source_recheck_detects_corruption(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """导入后重新检查源文件能发现损坏
-        
-        解决方案验证：
-        1. FUSE 第一次读取（导入）：返回正常数据
-        2. FUSE 后续读取（recheck）：返回损坏数据
-        3. recheck --source 对比发现不匹配
-        4. 报告潜在损坏
-        
-        这说明为什么需要导入后源验证。
-        """
-        pytest.skip(
-            "已覆盖：test_corrupted_hash_undetectable_by_verify / "
-            "test_silent_corruption_at_specific_offset / "
-            "test_unstable_read_during_import 均已断言 recheck 检出 SourceModified"
-        )
-    
-    def test_parity_verification_detects_corruption(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """奇偶校验检测损坏（如果 svault 支持）
-        
-        如果 svault 实现了奇偶校验或 ECC：
-        1. FUSE 注入单 bit 错误
-        2. 奇偶校验应能检测并纠正
-        """
-        pytest.skip("不适用：svault 无 parity/ECC 功能，亦无立项（docs/PARKED.md）")
-    
-    def test_multiple_hash_algorithms_detect_corruption(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """多种哈希算法提高检测率
-        
-        某些损坏可能逃过一种哈希但被另一种捕获。
-        验证使用多种哈希（CRC32C + XXH3 + SHA256）提高检测率。
-        """
-        pytest.skip(
-            "不适用：三层哈希是串联身份链（CRC→XXH3→SHA256），非并行冗余校验；"
-            "构造'逃过一种哈希'的损坏无可操作判据"
-        )
-
-
-class TestRealWorldScenarios:
-    """真实世界场景模拟"""
-    
-    def test_aging_hard_drive_simulation(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """老化硬盘模拟
-        
-        模拟老化硬盘的行为：
-        - 读取延迟逐渐增加
-        - 偶尔返回错误（需要重试）
-        - 特定区域（老化区域）返回损坏数据
-        
-        验证 svault 能优雅处理并在可能时恢复。
-        """
-        pytest.skip(
-            "后续扩展（VALIDATION_PLAN §后续扩展）：组合场景，组件已被 "
-            "variable_delay / unstable_read / bad_sector(EIO) 单项覆盖"
-        )
-    
-    def test_network_storage_interruption(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """网络存储中断
-        
-        模拟 NFS/SMB 中断：
-        - 读取时返回 EIO
-        - 超时后恢复
-        - 验证重试和恢复机制
-        """
-        pytest.skip(
-            "后续扩展（VALIDATION_PLAN §后续扩展）：网络存储模拟，"
-            "EIO/延迟组件已被单项覆盖"
-        )

@@ -187,10 +187,3 @@ class TestRecheckVaultErrors:
         """vault 文件 EIO"""
         pytest.skip("待实现（P2，vault 侧注入：dm-flakey，见 failure-handling.md §8.4 INFRA-3）")
 
-    def test_recheck_vault_file_corrupt(self) -> None:
-        """vault 文件损坏检测"""
-        pytest.skip(
-            "已覆盖：test_verify.py::test_verify_detects_bit_flip + "
-            "test_recheck_detects_corruption_and_reimport_succeeds"
-            "（vault 文件字节翻转 → verify exit 1 / recheck VaultCorrupted）"
-        )

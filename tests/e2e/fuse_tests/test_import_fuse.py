@@ -306,18 +306,6 @@ class TestImportErrorInjection:
         verify = vault.run("verify", check=False)
         assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
 
-    def test_import_enospc_simulation(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """模拟磁盘满（写入时返回 ENOSPC）
-
-        验证点：
-        1. 优雅处理，无崩溃
-        2. 清除限制后恢复
-        """
-        pytest.skip("已覆盖：test_import_disk_full.py（loopback ext4 真实满盘），见 failure-handling.md §8.2")
-
     def test_import_eagain_error(
         self,
         vault_with_fuse_source: tuple,
@@ -350,38 +338,6 @@ class TestImportErrorInjection:
         )
         assert fs.get_stats().error_count == 3, "3 次 EAGAIN 应确实被注入"
         assert len(vault.db_files()) == 2, "两个文件应全部入库"
-
-        verify = vault.run("verify", check=False)
-        assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
-
-
-class TestImportDelayScenarios:
-    """Import 延迟场景测试"""
-
-    def test_import_variable_delay(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """变化延迟模拟真实慢存储（P2 稳定性）
-
-        判据：每文件注入 10-100ms 读取延迟，20 个文件批量导入——
-        不断言时间，只断言完成与一致：exit 0、全部入库、verify 通过。
-        """
-        vault, fuse_mount, fs = vault_with_fuse_source
-        for i in range(20):
-            _create_padded_jpeg(vault.source_dir, f"slow_{i:02d}.jpg", 4 * 1024)
-            fs.add_rule(
-                FaultRule(
-                    path=f"/slow_{i:02d}.jpg",
-                    offset=0,
-                    action="delay",
-                    delay_ms=10 + (i % 10) * 10,  # 10-100ms 变化延迟
-                )
-            )
-
-        result = vault.import_dir(fuse_mount)
-        assert result.returncode == 0, f"慢存储下导入应完成: {result.stderr}"
-        assert len(vault.db_files()) == 20, "20 个文件应全部入库"
 
         verify = vault.run("verify", check=False)
         assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
