@@ -48,16 +48,21 @@ pub fn run(
 
             // Parse scan-output format: SCAN:<prefix> new:file1 dup:file2 …
             // Only "new:" entries are imported; relative paths are joined with source.
+            // Paths are escape-encoded by PipeSink (`\ `, `\:`, `\\`), so splitting
+            // must be escape-aware — a naive split_whitespace() would shred
+            // escaped spaces (e.g. "new:my\ photo.jpg" → "new:my\" + "photo.jpg").
             let source_normalized = normalize_path(&source);
             let source_canon = dunce::canonicalize(&source_normalized)
                 .unwrap_or_else(|_| source_normalized.clone());
             let mut paths: Vec<PathBuf> = Vec::new();
 
             for line in &lines {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                for part in parts {
+                for part in split_escaped_whitespace(line) {
                     if let Some(rel) = part.strip_prefix("new:") {
-                        let unescaped = rel.replace("\\ ", " ").replace("\\:", ":");
+                        let unescaped = rel
+                            .replace("\\ ", " ")
+                            .replace("\\:", ":")
+                            .replace("\\\\", "\\");
                         if !unescaped.is_empty() {
                             paths.push(source_canon.join(unescaped));
                         }
@@ -117,4 +122,68 @@ pub fn run(
 
     let _summary = opts.run_import(ctx.db(), sink.as_sink(), interactor)?;
     Ok(())
+}
+
+/// Split a scan-protocol line into tokens on **unescaped** whitespace.
+///
+/// `\X` is kept intact as an escape pair (decoded later by the caller), so
+/// escaped spaces (`\ `) inside paths do not split the token. Matches the
+/// encoding produced by `svault_ui::PipeSink`'s `escape`.
+fn split_escaped_whitespace(line: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                cur.push('\\');
+                // Keep the escaped char verbatim (may itself be whitespace).
+                if let Some(next) = chars.next() {
+                    cur.push(next);
+                }
+            }
+            c if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    parts.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_escaped_whitespace;
+
+    /// Unescape helper mirroring the caller's decode order.
+    fn unescape(s: &str) -> String {
+        s.replace("\\ ", " ").replace("\\:", ":").replace("\\\\", "\\")
+    }
+
+    #[test]
+    fn split_respects_escaped_space() {
+        let parts = split_escaped_whitespace("SCAN:/src new:my\\ photo\\ 01.jpg dup:x.jpg");
+        assert_eq!(parts, ["SCAN:/src", "new:my\\ photo\\ 01.jpg", "dup:x.jpg"]);
+        assert_eq!(unescape(parts[1].strip_prefix("new:").unwrap()), "my photo 01.jpg");
+    }
+
+    #[test]
+    fn split_handles_escaped_backslash_and_colon() {
+        // Path `a\b:c` → escaped as `a\\b\:c`
+        let parts = split_escaped_whitespace("new:a\\\\b\\:c new:z.jpg");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(unescape(parts[0].strip_prefix("new:").unwrap()), "a\\b:c");
+    }
+
+    #[test]
+    fn split_roundtrips_trailing_escape_chars() {
+        // Trailing lone backslash must not panic and stays verbatim.
+        let parts = split_escaped_whitespace("new:end\\");
+        assert_eq!(parts, ["new:end\\"]);
+    }
 }

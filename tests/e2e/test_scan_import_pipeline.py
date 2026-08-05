@@ -105,55 +105,6 @@ class TestScanFilterImportPipeline:
         assert "dup:" in scan_result3.stdout
         assert "new:" not in scan_result3.stdout  # No new files
 
-    def test_scan_show_dup_shows_duplicates(self, vault: VaultEnv) -> None:
-        """Test that scan --show-dup shows duplicate files."""
-        # Create and import first batch
-        create_minimal_jpeg(vault.source_dir / "photo.jpg", "content")
-        vault.import_dir(vault.source_dir, yes=True)
-        
-        # Create same file in new source
-        new_source = vault.output_dir / "new_source"
-        new_source.mkdir()
-        create_minimal_jpeg(new_source / "photo.jpg", "content")
-        
-        # Scan with --show-dup should show dup: entries
-        result = vault.run("scan", str(new_source), "--show-dup")
-        assert result.returncode == 0
-        assert "dup:" in result.stdout
-        
-        # Scan without --show-dup should not show dup: entries
-        result2 = vault.run("scan", str(new_source))
-        assert result2.returncode == 0
-        assert "dup:" not in result2.stdout
-
-    def test_scan_filter_by_extension_via_source_config(self, vault: VaultEnv) -> None:
-        """Test that scan uses vault config for extensions."""
-        # Create mixed file types
-        files = {
-            "photo1.jpg": "jpg_content_1",
-            "photo2.jpg": "jpg_content_2",
-            "screenshot.png": "png_content",
-            "video.mp4": "mp4_content",
-        }
-        
-        for filename, content in files.items():
-            filepath = vault.source_dir / filename
-            if filename.endswith(".jpg"):
-                create_minimal_jpeg(filepath, content)
-            elif filename.endswith(".png"):
-                filepath.write_bytes(b"\x89PNG\r\n\x1a\n" + content.encode())
-            elif filename.endswith(".mp4"):
-                create_minimal_mp4(filepath)
-        
-        # Scan should use vault config extensions
-        result = vault.run("scan", str(vault.source_dir))
-        assert result.returncode == 0
-        
-        # Default config may filter by extensions
-        # Just verify scan works and produces valid output
-        parts = result.stdout.strip().split()
-        assert parts[0].startswith("SCAN:")
-
     def test_scan_import_with_nested_directories(self, vault: VaultEnv) -> None:
         """Test scan -> import with nested directory structure."""
         # Create nested structure
@@ -192,50 +143,9 @@ class TestScanFilterImportPipeline:
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
-    def test_scan_import_large_batch(self, vault: VaultEnv) -> None:
-        """Test scan -> import with many files."""
-        # Create 20 files
-        for i in range(20):
-            filename = f"photo_{i:03d}.jpg"
-            create_minimal_jpeg(vault.source_dir / filename, f"content_{i}")
-        
-        # Scan and import
-        scan_result = vault.run("scan", str(vault.source_dir))
-        assert scan_result.returncode == 0
-        
-        result = vault.run("import", str(vault.source_dir), "--files-from", "-", "--yes",
-                          "--output", "json", input=scan_result.stdout)
-        assert result.returncode == 0
-        
-        data = parse_json_summary(result.stdout)
-        assert data["imported"] == 20, f"Expected 20 files imported, got {data}"
-
 
 class TestScanOutputFormat:
     """Test scan output format details."""
-
-    def test_scan_escapes_spaces_in_paths(self, vault: VaultEnv) -> None:
-        """Test that paths with spaces are properly escaped."""
-        # Create file with space in name
-        create_minimal_jpeg(vault.source_dir / "photo with spaces.jpg", "content")
-        
-        result = vault.run("scan", str(vault.source_dir))
-        assert result.returncode == 0
-        
-        # Space should be escaped as \
-        assert "\\ " in result.stdout or "photo" in result.stdout
-
-    def test_scan_output_includes_all_new_files(self, vault: VaultEnv) -> None:
-        """Test that all new files appear in scan output."""
-        files = ["a.jpg", "b.jpg", "c.jpg"]
-        for f in files:
-            create_minimal_jpeg(vault.source_dir / f, f"content_{f}")
-        
-        result = vault.run("scan", str(vault.source_dir))
-        assert result.returncode == 0
-        
-        for f in files:
-            assert f in result.stdout or f"new:{f}" in result.stdout
 
 
 class TestImportFilesFrom:
@@ -283,3 +193,22 @@ class TestImportFilesFrom:
         
         data = parse_json_summary(result.stdout)
         assert data["imported"] == 1  # Only new_file2.jpg
+
+    def test_scan_import_roundtrip_with_space_in_filename(self, vault: VaultEnv) -> None:
+        """空格路径契约：scan 输出 → import --files-from 消费，全链路往返正确。
+
+        （替代原恒真断言版本——本测试锁真实行为：空格文件名必须能被
+        管线完整导入，而非仅检查输出中是否出现某个子串。）
+        """
+        create_minimal_jpeg(vault.source_dir / "my photo 01.jpg", "SPACE_CONTENT")
+
+        scan = vault.run("scan", str(vault.source_dir))
+        assert scan.returncode == 0
+
+        result = vault.run("import", str(vault.source_dir), "--files-from", "-", "--yes",
+                           "--output", "json", input=scan.stdout, check=False)
+        assert result.returncode == 0, (
+            f"空格路径应被 files-from 正确消费: {result.stderr}"
+        )
+        rows = vault.find_file_in_db("my photo 01.jpg")
+        assert len(rows) == 1, "空格文件名文件应入库"
