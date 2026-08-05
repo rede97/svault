@@ -148,21 +148,48 @@ class TestFundamentalProblem:
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """特定偏移量的静默损坏
-        
-        场景：
-        1. 文件内容 "ORIGINAL_DATA"
-        2. FUSE 在 offset=8 将 'D' 改为 'X'
-        3. svault 读取损坏版本，计算哈希 H_bad
-        4. DB 存储 H_bad，vault 存储损坏文件
-        5. verify 通过（H_bad == H_bad）
-        6. 但文件实际内容已损坏！
-        
-        解决方案验证：
-        - 之后绕过 FUSE 直接读取源文件
-        - recheck --source 应发现不匹配
+        """局限性确认（§8.2 P1）：单字节静默位翻转同样不可被 verify 检出
+
+        与 P0-5 互补：走 corrupt 的默认 XOR 0xFF 位翻转路径（无 corrupt_data）。
+        判据（failure-handling.md §4）：
+        1. import 读取被翻转的数据 → H_bad 入库，exit 0
+        2. verify exit 0（无法检测，被锁定的局限）
+        3. 清除故障 + 失效页缓存后 recheck → SourceModified
         """
-        pytest.skip("待实现")
+        vault, fuse_mount, fs = vault_with_fuse_source
+        victim = _create_padded_jpeg(vault.source_dir, "silent.jpg", 8 * 1024)
+        original = victim.read_bytes()
+
+        # 默认行为：offset=8 处单字节 XOR 0xFF（静默位翻转）
+        fs.add_rule(
+            FaultRule(path="/silent.jpg", offset=8, action="corrupt")
+        )
+
+        result = vault.import_dir(fuse_mount)
+        assert result.returncode == 0, f"导入应完成: {result.stderr}"
+        assert len(vault.db_files()) == 1
+
+        vault_files = _vault_data_files(vault)
+        assert len(vault_files) == 1
+        assert vault_files[0].read_bytes() != original, "vault 副本应含被翻转的字节"
+
+        verify = vault.run("verify", check=False)
+        assert verify.returncode == 0, (
+            f"局限性确认：verify 对静默损坏不可检出，应 exit 0: {verify.stderr}"
+        )
+
+        fs.clear_rules()
+        victim.write_bytes(original)  # 失效页缓存，recheck 读到原始数据
+
+        recheck = vault.run("recheck", str(fuse_mount), check=False)
+        assert recheck.returncode == 0
+
+        report = _latest_recheck_report(vault)
+        entries = [f for f in report["files"] if Path(f["src_path"]).name == "silent.jpg"]
+        assert len(entries) == 1
+        assert entries[0]["status"] == "SourceModified", (
+            f"recheck 应检出源与 H_bad 不符，实际: {entries[0]['status']}"
+        )
 
 
 class TestUnstableStorage:
@@ -175,19 +202,61 @@ class TestUnstableStorage:
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """导入时读取不稳定
-        
-        场景：
-        1. FUSE 配置：第 1 次读取返回数据 A，第 2 次返回数据 B
-        2. svault 第一次读取计算哈希
-        3. svault 第二次读取（复制）得到不同数据
-        4. 验证：写入后校验应发现不匹配
-        
-        或如果 svault 使用单次读取：
-        - 数据 A 计算哈希，数据 A 复制（一致但错误）
-        - 说明需要跨会话验证
+        """局限性确认（§8.2 P1）：多次读取返回不同数据，导入期无法检测
+
+        机制：corrupt_sequence=[A, B]——首次内容读取（Stage B CRC）得到 A
+        （0x00 注入），其后所有读取（EXIF/复制）得到 B（0x11 注入）。
+        vault 副本 = B 损坏版，DB 强哈希 = H(B)（Stage D 哈希 vault 副本），
+        导入路径无源-目标哈希比对（§4）。
+
+        判据：
+        1. import exit 0——不稳定读取**无法检测**（被锁定的局限）
+        2. vault 副本含 B 载荷；verify exit 0（自洽）
+        3. 清除故障 + 失效页缓存后 recheck → SourceModified（唯一兜底）
         """
-        pytest.skip("待实现")
+        vault, fuse_mount, fs = vault_with_fuse_source
+        victim = _create_padded_jpeg(vault.source_dir, "unstable.jpg", 8 * 1024)
+        original = victim.read_bytes()
+
+        payload_b = b"\x11" * 16
+        fs.add_rule(
+            FaultRule(
+                path="/unstable.jpg",
+                offset=1024,
+                action="corrupt",
+                corrupt_sequence=[b"\x00" * 16, payload_b],
+            )
+        )
+
+        result = vault.import_dir(fuse_mount)
+        assert result.returncode == 0, (
+            f"局限性确认：不稳定读取在导入期无法检测，import 应 exit 0: {result.stderr}"
+        )
+        assert len(vault.db_files()) == 1
+
+        vault_files = _vault_data_files(vault)
+        assert len(vault_files) == 1
+        content = vault_files[0].read_bytes()
+        assert content != original, "vault 副本应与原始源不同"
+        assert content[1024:1040] == payload_b, "vault 副本应含序列载荷 B"
+
+        verify = vault.run("verify", check=False)
+        assert verify.returncode == 0, (
+            f"verify 只校验 vault 副本自洽，应 exit 0: {verify.stderr}"
+        )
+
+        fs.clear_rules()
+        victim.write_bytes(original)  # 失效页缓存
+
+        recheck = vault.run("recheck", str(fuse_mount), check=False)
+        assert recheck.returncode == 0
+
+        report = _latest_recheck_report(vault)
+        entries = [f for f in report["files"] if Path(f["src_path"]).name == "unstable.jpg"]
+        assert len(entries) == 1
+        assert entries[0]["status"] == "SourceModified", (
+            f"recheck 应检出源与 H(B) 不符，实际: {entries[0]['status']}"
+        )
     
     def test_bit_rot_detection(
         self,

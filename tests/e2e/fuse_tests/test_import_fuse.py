@@ -196,13 +196,57 @@ class TestImportPauseScenarios:
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """多文件场景下的精确暂停
+        """多文件场景下暂停 + SIGTERM：部分文件已复制未入库，重跑幂等
 
-        验证点：
-        1. 前 N 个文件已完成
-        2. 目标文件部分完成
+        判据（failure-handling.md §8.2 P1、§5 恢复矩阵、OPEN-3 现行行为）：
+        1. 暂停在第 5 个文件时：进程存活；DB 无记录（Stage E 是整批单事务，
+           未到达即为空）；vault 可能已有部分已复制文件
+        2. SIGTERM 后重跑：10 个文件全部入库，verify 通过
+        3. vault 数据文件数 >= 10（已复制未入库的孤儿文件重跑时改名重复制，
+           这是 OPEN-3 锁定的现行行为）
         """
-        pytest.skip("待实现（P1）")
+        vault, fuse_mount, fs = vault_with_fuse_source
+        for i in range(10):
+            _create_padded_jpeg(vault.source_dir, f"multi_{i}.jpg", 4 * 1024)
+
+        fs.add_rule(
+            FaultRule(
+                path="/multi_4.jpg",
+                offset=2048,  # 第 5 个文件的 50%
+                action="pause",
+                pause_event=threading.Event(),
+                trigger_count=1,
+            )
+        )
+
+        proc = _start_import(vault, fuse_mount)
+        assert _wait_paused(fs, "/multi_4.jpg"), "导入未在 multi_4.jpg 处触发暂停"
+        assert proc.poll() is None, "暂停期间导入进程应存活"
+        copied_before_kill = len(_vault_data_files(vault))
+
+        proc.terminate()  # SIGTERM
+        proc.wait(timeout=15)
+        assert proc.returncode != 0
+        fs.resume()
+
+        # Stage E 整批单事务未到达 → DB 为空（§5 恢复矩阵）
+        assert vault.db_files() == [], "整批事务未提交，DB 应为空"
+
+        # 幂等重跑：全部入库
+        result = vault.import_dir(fuse_mount)
+        assert result.returncode == 0, f"重跑失败: {result.stderr}"
+        assert len(vault.db_files()) == 10, "重跑后 10 个文件应全部入库"
+
+        verify = vault.run("verify", check=False)
+        assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
+
+        # OPEN-3 现行行为：中断前已复制的文件无法被去重识别，
+        # 重跑改名重复制 → vault 数据文件数 >= 10 + 中断前已复制数
+        assert len(_vault_data_files(vault)) >= 10
+        if copied_before_kill > 0:
+            assert len(_vault_data_files(vault)) >= 10 + copied_before_kill, (
+                "孤儿文件重跑改名重复制（OPEN-3 锁定行为）"
+            )
 
 
 class TestImportErrorInjection:
@@ -274,31 +318,45 @@ class TestImportErrorInjection:
         """
         pytest.skip("已覆盖：test_import_disk_full.py（loopback ext4 真实满盘），见 failure-handling.md §8.2")
 
-    def test_import_eagain_retry(
+    def test_import_eagain_error(
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """EAGAIN 重试机制
+        """EAGAIN 瞬态故障：被内核 FUSE 客户端透明重试吸收，导入成功
 
-        验证点：
-        1. 前 N 次 EAGAIN 后成功
+        判据（failure-handling.md §8.2，由 eagain_retry 改写并按实测修正）：
+        svault 自身无重试层（G2），但 FUSE 内核客户端对 EAGAIN 会透明重试
+        请求——前 3 次注入的 EAGAIN 被内核吸收，第 4 次（规则耗尽）成功：
+        1. 注入 3 次 EAGAIN（fs.stats.error_count == 3 证明故障确实发生）
+        2. import exit 0，全部文件入库，verify 通过
         """
-        pytest.skip("待实现（P1，改写为 eagain_error：无重试机制，判据=报错+幂等重跑，见 failure-handling.md §8.2）")
+        vault, fuse_mount, fs = vault_with_fuse_source
+        _create_padded_jpeg(vault.source_dir, "ok.jpg", 10 * 1024)
+        _create_padded_jpeg(vault.source_dir, "flaky.jpg", 10 * 1024)
+
+        fs.add_rule(
+            FaultRule(
+                path="/flaky.jpg",
+                offset=5120,
+                action="error",
+                error_code=errno.EAGAIN,
+                trigger_count=3,
+            )
+        )
+
+        result = vault.import_dir(fuse_mount, check=False)
+        assert result.returncode == 0, (
+            f"瞬态 EAGAIN 应被内核重试吸收: rc={result.returncode} stderr={result.stderr}"
+        )
+        assert fs.get_stats().error_count == 3, "3 次 EAGAIN 应确实被注入"
+        assert len(vault.db_files()) == 2, "两个文件应全部入库"
+
+        verify = vault.run("verify", check=False)
+        assert verify.returncode == 0, f"verify 应通过: {verify.stderr}"
 
 
 class TestImportDelayScenarios:
     """Import 延迟场景测试"""
-
-    def test_import_slow_read(
-        self,
-        vault_with_fuse_source: tuple,
-    ) -> None:
-        """慢速读取
-
-        验证点：
-        1. 超时行为（无超时机制——本判据已删除，见 failure-handling.md §8.2）
-        """
-        pytest.skip("已删除：svault 无 read 超时机制（G2），计划前提不成立，见 failure-handling.md §8.2")
 
     def test_import_variable_delay(
         self,

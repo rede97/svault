@@ -321,7 +321,7 @@ DB 查询 / 文件系统状态）。
 | `test_recheck_source_modified_during_check` | ✅ 实现 | 源侧校验值与 manifest 不符 → 报告中对应状态；exit 0 |
 | `test_silent_corruption_at_specific_offset` | ✅ 实现（依赖 corrupt action） | 同 §4 局限性确认 |
 | `test_unstable_read_during_import` | ✅ 实现（依赖动态规则，§8.4） | **局限性确认**：断言现行行为=无法检测（导入成功，crc32c 与 vault 内容可能不一致）；recheck 可发现 |
-| `test_import_eagain_retry` | ⚠️ **改写** | 无重试机制（G2）。判据改为：EAGAIN → 该文件明确报错跳过、exit 0；解除后重跑成功。测试改名 `test_import_eagain_error` |
+| `test_import_eagain_retry` | ⚠️ **改写并按实测修正**（2026-08-05）：svault 无重试层（G2）结论不变，但实测 **FUSE 内核客户端对 EAGAIN 透明重试**——瞬态 EAGAIN 被内核吸收，导入正常完成。改名 `test_import_eagain_error`，判据：注入 3 次 EAGAIN（error_count==3）→ import exit 0 全入库 |
 | `test_import_slow_read_timeout` | ❌ **删除** | 无超时机制（G2），计划前提不成立。可改为 `test_import_slow_read_completes`：慢速读取只是慢，最终正常完成（归 P2 稳定性） |
 
 ### 8.3 P2（深度验证）

@@ -123,14 +123,61 @@ class TestRecheckPauseScenarios:
         statuses = {f["status"] for f in report["files"]}
         assert statuses == {"Ok"}, f"未修改的文件应全部 Ok，实际: {statuses}"
 
-    def test_recheck_source_modified_during_check(self) -> None:
-        """校验过程中源文件被修改
+    def test_recheck_source_modified_during_check(
+        self,
+        vault_with_fuse_source: tuple,
+    ) -> None:
+        """校验过程中源文件被修改：检测到变化并正确报告
 
-        验证点：
-        1. 检测到变化
-        2. 正确报告
+        判据（failure-handling.md §8.2 P1、§3.3）：
+        1. recheck 读取源文件期间该文件被改写（写操作使缓存页作废，
+           后续读取得到新内容）
+        2. recheck 恒 exit 0；报告中该文件 status=SourceModified
         """
-        pytest.skip("待实现（P1）")
+        vault, fuse_mount, fs = vault_with_fuse_source
+        victim = _create_padded_jpeg(vault.source_dir, "victim.jpg", 8 * 1024)
+
+        result = vault.import_dir(fuse_mount)
+        assert result.returncode == 0, f"导入失败: {result.stderr}"
+
+        # 在 recheck 读取 victim.jpg 时暂停
+        fs.add_rule(
+            FaultRule(
+                path="/victim.jpg",
+                offset=100,
+                action="pause",
+                pause_event=threading.Event(),
+                trigger_count=1,
+            )
+        )
+
+        proc = subprocess.Popen(
+            [str(vault.binary), "recheck", str(fuse_mount)],
+            cwd=vault.vault_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert _wait_paused(fs, "/victim.jpg"), "recheck 未在 victim.jpg 处触发暂停"
+
+        # 校验中途修改源文件（重写使页缓存作废，后续读取得到新内容）
+        modified = bytearray(victim.read_bytes())
+        modified[2048:2064] = b"\x00" * 16
+        victim.write_bytes(bytes(modified))
+
+        fs.resume()
+        proc.wait(timeout=60)
+        assert proc.returncode == 0, (
+            f"recheck 恒 exit 0（不一致只写报告）: rc={proc.returncode}"
+        )
+
+        reports = _recheck_reports(vault)
+        assert len(reports) == 1
+        report = json.loads(reports[0].read_text())
+        assert len(report["files"]) == 1
+        assert report["files"][0]["status"] == "SourceModified", (
+            f"校验中途修改源文件应被检出，实际: {report['files'][0]['status']}"
+        )
 
 
 class TestRecheckVaultErrors:
