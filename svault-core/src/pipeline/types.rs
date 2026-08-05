@@ -141,7 +141,14 @@ pub struct HashResult {
     /// Hash identity - either fast (xxh3 only) or full (xxh3 + sha256)
     pub hash: FileHash,
     pub is_duplicate: bool,
+    /// Duplicate detection reason (e.g. "db (xxh3_128)", "batch (sha256)").
     pub dup_reason: Option<String>,
+    /// Hash computation error (e.g. IO error while reading the vault copy).
+    ///
+    /// Kept separate from `dup_reason` so error classification does not rely
+    /// on fragile string prefix matching (formerly hash IO errors were
+    /// misclassified as duplicates — BUG-1).
+    pub hash_error: Option<String>,
 }
 
 /// File hash identity.

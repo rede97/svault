@@ -116,42 +116,44 @@ pub fn batch_insert(
             continue;
         }
 
-        // Handle errors (hash errors etc.)
-        if let Some(ref reason) = r.dup_reason {
-            if reason.starts_with("hash error") {
-                summary.failed += 1;
-                // Record failed file to manifest
-                if let Some(ref mut m) = manifest {
-                    m.files.push(ImportRecord {
-                        src_path,
-                        dest_path: None,
-                        size: r.size,
-                        mtime_ms: r.mtime_ms,
-                        crc32c: r.crc32c,
-                        xxh3_128: xxh3_hex,
-                        sha256: sha256_hex,
-                        imported_at: now_ms,
-                        status: ItemStatus::Failed,
-                        error: Some(reason.clone()),
-                    });
-                }
-            } else {
-                summary.duplicate += 1;
-                // Record duplicate file to manifest
-                if let Some(ref mut m) = manifest {
-                    m.files.push(ImportRecord {
-                        src_path,
-                        dest_path: None,
-                        size: r.size,
-                        mtime_ms: r.mtime_ms,
-                        crc32c: r.crc32c,
-                        xxh3_128: xxh3_hex,
-                        sha256: sha256_hex,
-                        imported_at: now_ms,
-                        status: ItemStatus::Duplicate,
-                        error: Some(reason.clone()),
-                    });
-                }
+        // Handle hash computation errors (IO errors while reading the vault copy)
+        if let Some(reason) = &r.hash_error {
+            summary.failed += 1;
+            // Record failed file to manifest
+            if let Some(ref mut m) = manifest {
+                m.files.push(ImportRecord {
+                    src_path,
+                    dest_path: None,
+                    size: r.size,
+                    mtime_ms: r.mtime_ms,
+                    crc32c: r.crc32c,
+                    xxh3_128: xxh3_hex,
+                    sha256: sha256_hex,
+                    imported_at: now_ms,
+                    status: ItemStatus::Failed,
+                    error: Some(reason.clone()),
+                });
+            }
+            continue;
+        }
+
+        // Handle duplicates (by CRC/lookup stage reason, e.g. "db (...)"/"batch (...)")
+        if let Some(reason) = &r.dup_reason {
+            summary.duplicate += 1;
+            // Record duplicate file to manifest
+            if let Some(ref mut m) = manifest {
+                m.files.push(ImportRecord {
+                    src_path,
+                    dest_path: None,
+                    size: r.size,
+                    mtime_ms: r.mtime_ms,
+                    crc32c: r.crc32c,
+                    xxh3_128: xxh3_hex,
+                    sha256: sha256_hex,
+                    imported_at: now_ms,
+                    status: ItemStatus::Duplicate,
+                    error: Some(reason.clone()),
+                });
             }
             continue;
         }
@@ -361,5 +363,71 @@ mod tests {
         assert_eq!(unix_result, "2024/03/photo.jpg");
         assert_eq!(windows_result, "2024/03/photo.jpg");
         assert_eq!(unix_result, windows_result);
+    }
+
+    /// Regression test for BUG-1: hash IO errors were misclassified as
+    /// duplicates because classification relied on a "hash error" string
+    /// prefix that never matched the actual messages ("xxh3_128 error: …").
+    /// The `hash_error` field now carries errors structurally.
+    #[test]
+    fn batch_insert_classifies_hash_error_as_failed_not_duplicate() {
+        use std::path::PathBuf;
+
+        let db = Db::open_in_memory().unwrap();
+        let mk = |path: &str,
+                  hash: FileHash,
+                  dup_reason: Option<String>,
+                  hash_error: Option<String>| HashResult {
+            path: PathBuf::from(format!("/vault/2024/{path}")),
+            src_path: Some(PathBuf::from(format!("/src/{path}"))),
+            size: 10,
+            mtime_ms: 0,
+            crc32c: 42,
+            raw_unique_id: None,
+            hash,
+            is_duplicate: false,
+            dup_reason,
+            hash_error,
+        };
+
+        let results = vec![
+            // Hash IO error on the vault copy — must count as failed
+            mk(
+                "eio.jpg",
+                FileHash::Fast(vec![]),
+                None,
+                Some("xxh3_128 error: EIO".to_string()),
+            ),
+            // Genuine duplicate found by the dedup stage
+            mk(
+                "dup.jpg",
+                FileHash::Fast(vec![9, 9, 9]),
+                Some("db (xxh3_128)".to_string()),
+                None,
+            ),
+            // Normal new file
+            mk("new.jpg", FileHash::Fast(vec![1, 2, 3]), None, None),
+        ];
+
+        let opts = InsertOptions {
+            vault_root: Path::new("/vault"),
+            session_id: "s1",
+            write_manifest: false,
+            source_root: None,
+            force: false,
+            session_type: SessionType::Import,
+        };
+        let summary = batch_insert(results, &db, opts, None).unwrap();
+
+        assert_eq!(summary.failed, 1, "hash IO error must count as failed");
+        assert_eq!(
+            summary.duplicate, 1,
+            "dedup-stage hit must count as duplicate"
+        );
+        assert_eq!(summary.added, 1, "new file must be inserted");
+
+        // The failed file must not be tracked in the DB; the new file must be.
+        assert!(db.get_file_by_path("2024/eio.jpg").unwrap().is_none());
+        assert!(db.get_file_by_path("2024/new.jpg").unwrap().is_some());
     }
 }

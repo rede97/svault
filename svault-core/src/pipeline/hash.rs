@@ -61,7 +61,8 @@ pub fn compute_hashes(
                         raw_unique_id: entry.raw_unique_id.clone(),
                         hash: FileHash::Fast(vec![]), // Empty hash indicates error
                         is_duplicate: false,
-                        dup_reason: Some(err_msg),
+                        dup_reason: None,
+                        hash_error: Some(err_msg),
                     };
                 }
             };
@@ -98,7 +99,8 @@ pub fn compute_hashes(
                     raw_unique_id: entry.raw_unique_id.clone(),
                     hash,
                     is_duplicate: false,
-                    dup_reason: Some(err_msg),
+                    dup_reason: None,
+                    hash_error: Some(err_msg),
                 };
             }
 
@@ -112,6 +114,7 @@ pub fn compute_hashes(
                 hash,
                 is_duplicate: false,
                 dup_reason: None,
+                hash_error: None,
             }
         })
         .collect()
@@ -138,7 +141,7 @@ pub fn check_duplicates(
     let seen: DashMap<Vec<u8>, std::path::PathBuf> = DashMap::new();
 
     for r in &mut results {
-        if r.dup_reason.is_some() {
+        if r.dup_reason.is_some() || r.hash_error.is_some() {
             continue;
         }
 

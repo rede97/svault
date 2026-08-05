@@ -219,6 +219,7 @@ pub fn run_sync(
                     hash,
                     is_duplicate: false,
                     dup_reason: None,
+                    hash_error: None,
                 });
             }
             Err(_) => {
