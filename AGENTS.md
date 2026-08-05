@@ -62,6 +62,7 @@ cargo run -p svault -- import <source-dir>
 | 文档 | 说明 |
 |------|------|
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | **架构规则与分层边界（单一事实源）** |
+| [docs/failure-handling.md](./docs/failure-handling.md) | **故障处理决策矩阵（故障注入测试判据单一事实源）** |
 | [docs/REFACTOR-2026-04.md](./docs/REFACTOR-2026-04.md) | **本轮重构决策记录**（问题→决策→修改→结果） |
 | [docs/PARKED.md](./docs/PARKED.md) | 已移除/暂缓功能及原因 |
 | [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) | 测试跟踪文档 |
@@ -165,3 +166,4 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 | 2026-04-12 | Reporting typed reporters 重构（后被证明接口面过大） |
 | 2026-04-16 | **架构重构**：三 crate 分层（core/ui/cli）；12 reporter trait → 单一 `Event`+`EventSink`；core 移除 clap/rich_rust；裁减 history/update --delete（见 docs/PARKED.md）；`import/` → `ops/` |
 | 2026-04-16 | **Clone/Sync 实现**：Beyond Compare 风格（ARCHITECTURE.md §6）；纯函数 diff 引擎（11 单测）；turso 降至最低优先级 |
+| 2026-08-05 | 新增 `docs/failure-handling.md`：故障处理决策矩阵（三轮代码核查生成），作为故障注入测试判据单一事实源；含缺陷登记（BUG-1~4）与待拍板项（OPEN-1~7） |

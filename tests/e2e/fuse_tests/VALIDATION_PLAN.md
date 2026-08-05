@@ -1,5 +1,9 @@
 # FUSE 故障注入测试验证计划
 
+> **判据权威声明**：本文件是测试场景清单；每项测试的**判据以
+> [docs/failure-handling.md](../../docs/failure-handling.md) §8 为准**。
+> 两者冲突时以 failure-handling.md 为准并回改本文件。
+
 ## 目标
 
 验证 svault 在精确控制的 IO 故障场景下的健壮性，包括：
