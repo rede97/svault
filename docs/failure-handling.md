@@ -324,25 +324,40 @@ DB 查询 / 文件系统状态）。
 | `test_import_eagain_retry` | ⚠️ **改写并按实测修正**（2026-08-05）：svault 无重试层（G2）结论不变，但实测 **FUSE 内核客户端对 EAGAIN 透明重试**——瞬态 EAGAIN 被内核吸收，导入正常完成。改名 `test_import_eagain_error`，判据：注入 3 次 EAGAIN（error_count==3）→ import exit 0 全入库 |
 | `test_import_slow_read_timeout` | ❌ **删除** | 无超时机制（G2），计划前提不成立。可改为 `test_import_slow_read_completes`：慢速读取只是慢，最终正常完成（归 P2 稳定性） |
 
-### 8.3 P2（深度验证）
+### 8.3 P2（深度验证）——实施状态（2026-08-05 已全部处置）
 
-- 延迟/抖动稳定性（改写后的 slow_read、variable_delay）：断言完成 + 一致，不断言时间。
-- `test_bit_rot_detection`：导入后注入 vault 侧 bit flip → verify exit 1。
-  （注：无需 FUSE，直接改文件字节即可，已有 E2E 类似覆盖，评估去重。）
-- `test_multiple_hash_algorithms_detect_corruption`：三层哈希交叉检出率。
-- `test_corruption_during_copy_to_vault` / `test_intermittent_corruption`：
-  依赖 vault 侧 corrupt 注入（§8.4）。
-- 极端边界：0 字节文件故障组合（§3.1 已锁口径）；大文件边界按需。
-- `test_edge_cases_fuse.py` 文件尚未创建，随 P2 实施一并落地。
+- ✅ `test_import_variable_delay`：已实现——10-100ms 变化延迟 × 20 文件，
+  断言完成 + 一致（exit 0、全入库、verify 通过），不断言时间。
+- ✅ `test_edge_cases_fuse.py`：已创建——空文件 × 故障规则 3 例
+  （corrupt/EIO 规则对空文件不触发；同扩展名空文件互判 duplicate，§3.1）。
+- ⏭ `test_bit_rot_detection`：**已覆盖**——vault 侧衰减 =
+  `test_verify.py::test_verify_detects_bit_flip`；源侧衰减 =
+  `test_recheck_source_modified_during_check` / `test_silent_corruption_at_specific_offset`。
+- ⏭ `test_intermittent_corruption`：**已覆盖**——间歇损坏是 corrupt_sequence
+  特例（`test_unstable_read_during_import`）。
+- ⏭ `test_verify_across_different_storage`：**不适用**——计划假设"带重试"
+  与 G2 冲突；慢存储已由 variable_delay 覆盖。
+- ⏭ `test_parity_verification_detects_corruption`：**不适用**——svault 无
+  parity/ECC 功能亦无立项。
+- ⏭ `test_multiple_hash_algorithms_detect_corruption`：**不适用**——三层哈希
+  是串联身份链（CRC→XXH3→SHA256），非并行冗余校验，无可操作判据。
+- ⏭ `test_verify_pause_resume`：**不适用**——verify 不读源目录，源侧 FUSE
+  无注入面；vault 侧设施已取消（INFRA-3）。
+- ⏭ `test_verify_partial_failure` / `test_recheck_vault_file_corrupt`：
+  **已覆盖**（`test_verify_multiple_corruptions` / `test_verify_detects_bit_flip`）。
+- 🔧 保留待实现（需新设施）：`test_corruption_during_copy_to_vault`、
+  `test_recheck_vault_file_eio`（dm-flakey）；`test_import_corrupt_at_offset`；
+  `test_import_truncated_file`（需 truncate action）。
+- 🔧 后续扩展（组件已被单项覆盖）：aging 硬盘模拟、网络存储中断模拟。
 
 ### 8.4 测试基础设施需求（先于测试实现）
 
 | 编号 | 需求 | 现状 | 服务测试 |
 |------|------|------|----------|
-| INFRA-1 | `corrupt` action 落地：read 返回后按 `corrupt_data` 改写字节 | `FaultRule` 已声明字段，`_apply_rule` 仅 `pass`，`read()` 无后处理（`fault_inject_fs.py:334-336`） | 全部 corruption 测试 |
-| INFRA-2 | 运行时规则变更 API（测试中途启用/停用/修改规则，线程安全） | `add_rule` 已有但无移除/替换；无"第 N 次读后变更" | bit_rot、unstable_read、aging |
+| INFRA-1 | `corrupt` action 落地：read 返回后按 `corrupt_data` 改写字节 | ✅ **已实现**（2026-08-05）：post-read 缓冲区改写 + XOR 0xFF 默认路径 | 全部 corruption 测试 |
+| INFRA-2 | 运行时规则变更 API（测试中途启用/停用/修改规则，线程安全） | ✅ **已实现**：`enabled` 字段 + `set_rules`/`clear_rules`/`enable_rule`/`disable_rule` | bit_rot、unstable_read、aging |
 | INFRA-3 | ~~vault 侧挂载 fixture~~ **已评估取消**（2026-08-05）：ENOSPC 已被 `test_import_disk_full.py`（loopback ext4 真实满盘）覆盖；vault 侧 EIO/损坏在 P2 用 dm-flakey 或直接字节翻转实现。完整读写 FUSE 挂 vault（SQLite over FUSE）风险大于收益 | 现有 fixture 仅挂 source 侧 | （已覆盖，见 §8.2） |
-| INFRA-4 | "每次读返回不同数据"规则（per-read 内容序列） | 无 | unstable_read |
+| INFRA-4 | "每次读返回不同数据"规则（per-read 内容序列） | ✅ **已实现**：`corrupt_sequence` 字段 | unstable_read |
 
 ### 8.5 已覆盖、不重复建设
 
@@ -358,7 +373,7 @@ DB 查询 / 文件系统状态）。
 
 | 编号 | 问题 | 选项 |
 |------|------|------|
-| OPEN-1 | BUG-1：哈希 IO 错误误计 duplicate | A. 修代码（改前缀匹配），判据按修正后行为；B. 本期锁定现行行为入判据，另开 issue |
+| OPEN-1 | ~~BUG-1：哈希 IO 错误误计 duplicate~~ **已决策执行（2026-08-05）**：选 A——修代码（`HashResult.hash_error` 结构化字段替代字符串前缀匹配），+1 回归单测 `batch_insert_classifies_hash_error_as_failed_not_duplicate` | — |
 | OPEN-2 | BUG-2：update 绕过事件溯源写协议 | A. 修代码走 append_event；B. 接受现状并更新 database-schema.md |
 | OPEN-3 | 半成品/孤儿文件不清理 + 重跑改名重复制 | A. 接受为设计（本文档已锁定）；B. 立项"导入后孤儿清理/识别" |
 | OPEN-4 | manifest 非原子 + session_id 秒冲突 | A. 接受；B. tmp+rename + 纳秒/UUID session_id |

@@ -2,7 +2,7 @@
 
 > 本文档跟踪所有单元测试和集成测试的状态，随时更新。
 >
-> 最后更新：2026-04-16（架构重构后）
+> 最后更新：2026-08-05（FUSE 故障注入 P0–P2 落地）
 
 ---
 
@@ -13,9 +13,19 @@
 | 单元测试 (svault-core) | 153 | 153 | 0 | 0 |
 | 单元测试 (svault-ui / svault-cli) | 3 | 3 | 0 | 2 ignored |
 | Python E2E 测试 (Windows) | 249 | 206 | 1* | 39 skipped |
+| FUSE 故障注入 (Linux, `fuse_tests/`) | 37 | 20 | 0 | 17（均有处置标注） |
 
 > \* 剩余 1 failed + 4 errors 均为 Linux 专属测试（ext4/btrfs/strace），
 > 重构前基线完全相同（零回归），需在 Linux CI 验证。
+
+> **2026-08-05 FUSE 故障注入落地：**
+> - 判据单一事实源：[docs/failure-handling.md](./failure-handling.md) §8
+> - 基础设施：corrupt action / 运行时规则管理 / corrupt_sequence（INFRA-1/2/4）+ 6 个自验测试
+> - 已实现 14 个场景测试：P0×5（暂停中断、EIO 隔离、recheck 中断、损坏不可检出演示）、
+>   P1×5（多文件暂停、源中途修改、静默损坏、不稳定读取、EAGAIN 内核重试）、
+>   P2×4（变化延迟稳定性、空文件边界×3）
+> - 17 个 skip 全部带处置标注（已覆盖 / 不适用 / P2 待定及所需设施）
+> - 修复 BUG-1：哈希 IO 错误误计 duplicate（`insert.rs`），+1 回归单测
 
 > **2026-04-16 架构重构变更：**
 > - 移除 `test_history.py`（history 命令已移除，见 docs/PARKED.md）

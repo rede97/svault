@@ -167,3 +167,4 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 | 2026-04-16 | **架构重构**：三 crate 分层（core/ui/cli）；12 reporter trait → 单一 `Event`+`EventSink`；core 移除 clap/rich_rust；裁减 history/update --delete（见 docs/PARKED.md）；`import/` → `ops/` |
 | 2026-04-16 | **Clone/Sync 实现**：Beyond Compare 风格（ARCHITECTURE.md §6）；纯函数 diff 引擎（11 单测）；turso 降至最低优先级 |
 | 2026-08-05 | 新增 `docs/failure-handling.md`：故障处理决策矩阵（三轮代码核查生成），作为故障注入测试判据单一事实源；含缺陷登记（BUG-1~4）与待拍板项（OPEN-1~7） |
+| 2026-08-05 | 文档清理：删除 CLAUDE.md 陈旧内容/testing-plan/HANDOFF-LINUX/sync-design（recover 设计抢救入 PARKED §6）；FUSE 故障注入落地：INFRA-1/2/4 + P0/P1/P2 共 20 例全绿；修复 BUG-1（哈希错误误分类） |

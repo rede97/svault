@@ -271,7 +271,11 @@ class TestUnstableStorage:
         
         验证 svault 能检测到随时间推移的数据衰减。
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "已覆盖：vault 侧衰减 = test_verify.py::test_verify_detects_bit_flip；"
+            "源侧衰减 = test_recheck_source_modified_during_check / "
+            "test_silent_corruption_at_specific_offset（failure-handling.md §8.3）"
+        )
 
 
 class TestCorruptionDuringCopy:
@@ -292,7 +296,7 @@ class TestCorruptionDuringCopy:
         3. 或：FUSE 在读取源文件时（如果是 FUSE 挂载的源）注入损坏
         4. 验证写入后校验能检测到
         """
-        pytest.skip("待实现")
+        pytest.skip("待实现（P2，vault 侧注入：dm-flakey，见 failure-handling.md §8.4 INFRA-3）")
     
     def test_intermittent_corruption(
         self,
@@ -305,7 +309,10 @@ class TestCorruptionDuringCopy:
         2. 大量文件导入
         3. 验证：损坏被检测到并报告
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "已覆盖：间歇性损坏是 corrupt_sequence 的特例，见 "
+            "test_unstable_read_during_import（failure-handling.md §8.2）"
+        )
 
 
 class TestCrossDeviceVerification:
@@ -326,7 +333,10 @@ class TestCrossDeviceVerification:
         3. FUSE 配置延迟和偶尔错误
         4. 验证导入仍能完成（带重试）
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "不适用：svault 无重试机制（G2），计划假设与现行行为冲突；"
+            "慢存储场景已由 test_import_variable_delay 覆盖"
+        )
 
 
 class TestDetectionStrategies:
@@ -349,7 +359,11 @@ class TestDetectionStrategies:
         
         这说明为什么需要导入后源验证。
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "已覆盖：test_corrupted_hash_undetectable_by_verify / "
+            "test_silent_corruption_at_specific_offset / "
+            "test_unstable_read_during_import 均已断言 recheck 检出 SourceModified"
+        )
     
     def test_parity_verification_detects_corruption(
         self,
@@ -361,7 +375,7 @@ class TestDetectionStrategies:
         1. FUSE 注入单 bit 错误
         2. 奇偶校验应能检测并纠正
         """
-        pytest.skip("待实现：需要 svault 支持 parity")
+        pytest.skip("不适用：svault 无 parity/ECC 功能，亦无立项（docs/PARKED.md）")
     
     def test_multiple_hash_algorithms_detect_corruption(
         self,
@@ -372,7 +386,10 @@ class TestDetectionStrategies:
         某些损坏可能逃过一种哈希但被另一种捕获。
         验证使用多种哈希（CRC32C + XXH3 + SHA256）提高检测率。
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "不适用：三层哈希是串联身份链（CRC→XXH3→SHA256），非并行冗余校验；"
+            "构造'逃过一种哈希'的损坏无可操作判据"
+        )
 
 
 class TestRealWorldScenarios:
@@ -391,7 +408,10 @@ class TestRealWorldScenarios:
         
         验证 svault 能优雅处理并在可能时恢复。
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "后续扩展（VALIDATION_PLAN §后续扩展）：组合场景，组件已被 "
+            "variable_delay / unstable_read / bad_sector(EIO) 单项覆盖"
+        )
     
     def test_network_storage_interruption(
         self,
@@ -404,4 +424,7 @@ class TestRealWorldScenarios:
         - 超时后恢复
         - 验证重试和恢复机制
         """
-        pytest.skip("待实现")
+        pytest.skip(
+            "后续扩展（VALIDATION_PLAN §后续扩展）：网络存储模拟，"
+            "EIO/延迟组件已被单项覆盖"
+        )

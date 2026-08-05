@@ -348,3 +348,17 @@ cd tests/e2e/fuse_tests && ./run_fuse.sh
 - [ ] NFS 行为模拟（属性缓存、弱一致性）
 - [ ] SMB 锁冲突模拟
 - [ ] 网络存储延迟抖动模拟
+
+---
+
+## 实施状态（2026-08-05）
+
+判据与处置以 [docs/failure-handling.md](../../docs/failure-handling.md) §8 为准。
+当前 `fuse_tests/` 套件：**20 passed / 17 skipped**（skip 全部带处置标注）。
+
+- ✅ P0×5、P1×5、P2（variable_delay + 空文件边界×3）已实现并全绿
+- ✅ INFRA-1/2/4 已实现（corrupt action / 规则管理 / corrupt_sequence）+ 6 个设施自验
+- ⏭ ENOSPC 不重复建设（`test_import_disk_full.py` loopback ext4 已覆盖）
+- ⏭ `slow_read_timeout` 已删除（无超时机制）；`eagain_retry` 改名 `eagain_error`
+  并按实测修正（FUSE 内核客户端透明重试 EAGAIN）
+- 🔧 保留待实现：vault 侧注入 3 项（dm-flakey）、truncate action 1 项
