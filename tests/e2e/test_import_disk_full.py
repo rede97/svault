@@ -22,7 +22,6 @@ from conftest import PROJECT_ROOT, create_minimal_jpeg
 
 # Exit code definitions from CLI
 EXIT_SUCCESS = 0
-EXIT_DISK_FULL = 4
 
 
 class SmallLoopbackFs:
@@ -242,19 +241,19 @@ def check_loopback_support():
 class TestDiskFullHandling:
     """Test disk full scenarios with small loopback filesystem."""
 
-    def test_import_fails_with_exit_code_4_on_disk_full(
+    def test_disk_full_copy_failure_is_per_file(
         self, small_disk: tuple[Path, Path], svault_binary: Path, check_loopback_support
     ):
-        """D1: Import large JPEG should fail with exit code 4 when disk is full.
-        
-        Steps:
-        1. Create 32MB loopback ext4 filesystem (vault 目录)
-        2. Initialize vault
-        3. Create large JPEG files (>40MB total) in external source
-        4. Import should fail with exit code 4
+        """D1: 复制阶段 ENOSPC 是逐文件失败（G4）→ exit 0，DB 无记录。
+
+        新契约（2026-08-09 staging 模型 + events 移除后锁定）：
+        - 复制失败逐文件隔离，不致命 → rc == 0（失败计数体现在摘要）
+        - 致命 ENOSPC（plan 写失败 / DB 插入失败 / manifest 写失败）才是 rc == 1
+        - 半成品绝不落在最终路径；本次会话的 staging 子树由本进程清理，
+          会话目录只剩 plan.json（无 manifest）
         """
         vault_dir, source_dir = small_disk
-        
+
         # Initialize vault first (takes some space)
         vault_dir.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
@@ -264,47 +263,59 @@ class TestDiskFullHandling:
             text=True,
         )
         assert result.returncode == 0, f"Failed to init vault: {result.stderr}"
-        
-        # Create large JPEG files (total > 40MB to exceed 32MB disk)
+
+        # 单个 40MB 文件必然超过 32MB 盘——确定性复制失败
         source_dir.mkdir(parents=True, exist_ok=True)
-        for i in range(5):
-            jpeg_file = source_dir / f"large_photo_{i}.jpg"
-            # Create base JPEG then append padding to make it ~10MB each
-            create_minimal_jpeg(jpeg_file, f"LARGE_PHOTO_{i}")
-            current_size = jpeg_file.stat().st_size
-            target_size = 10 * 1024 * 1024  # 10MB each
-            with open(jpeg_file, 'ab') as f:
-                f.write(b"\xff" * (target_size - current_size))
-        
-        # Try to import - should fail due to disk full
-        # Exit code 4 = disk full detected during copy (graceful)
-        # Exit code 1 = disk full at other stage (e.g., staging list)
+        big = source_dir / "too_big.jpg"
+        create_minimal_jpeg(big, "TOO_BIG")
+        with open(big, 'ab') as f:
+            f.write(b"\xff" * (40 * 1024 * 1024 - big.stat().st_size))
+
         result = subprocess.run(
             [str(svault_binary), "--yes", "import", str(source_dir)],
             cwd=vault_dir,
             capture_output=True,
             text=True,
         )
-        
-        # Accept either exit code as long as it's a disk full error
-        assert result.returncode in [EXIT_DISK_FULL, 1], (
-            f"Expected exit code {EXIT_DISK_FULL} or 1 (disk full), "
-            f"got {result.returncode}. stderr: {result.stderr}"
+
+        assert result.returncode == 0, (
+            f"复制 ENOSPC 是逐文件失败（G4），应为 exit 0，got {result.returncode}. "
+            f"stderr: {result.stderr}"
         )
         assert "No space" in result.stderr or "disk full" in result.stderr.lower(), (
             f"Expected disk full error message, got: {result.stderr}"
         )
 
+        # DB 无记录；最终路径无半成品；会话目录只有 plan.json
+        import sqlite3
+        conn = sqlite3.connect(str(vault_dir / ".svault" / "vault.db"))
+        count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        conn.close()
+        assert count == 0, f"复制失败的文件不得入库: {count}"
+
+        visible = [
+            p for p in vault_dir.rglob("*.jpg") if ".svault" not in p.parts
+        ]
+        assert visible == [], f"最终路径不得出现半成品: {visible}"
+
+        sessions = list((vault_dir / ".svault" / "sessions" / "import").glob("*"))
+        assert len(sessions) == 1
+        assert (sessions[0] / "plan.json").exists()
+        assert not (sessions[0] / "manifest.json").exists()
+        assert not (sessions[0] / "staging").exists(), (
+            "本次会话的 staging 子树应由本进程清理"
+        )
+
     def test_no_partial_files_after_disk_full(
         self, small_disk: tuple[Path, Path], svault_binary: Path, check_loopback_support
     ):
-        """D2: ENOSPC 后 DB 不含失败文件；半成品残留受控（OPEN-3 锁定行为）
+        """D2: ENOSPC 后 DB 不含失败文件；最终路径绝无半成品（staging 模型）
 
-        判据（failure-handling.md §3.1/G7/OPEN-3）：
-        1. 已满盘上的导入必须失败（rc != 0），本条件不再是可空转的 if
-        2. DB 只含首个成功文件（事务回滚 / 失败文件不入库）
-        3. 失败文件的 vault 残留（若存在）必须是截断/空文件——
-           绝不许出现"静默完整副本"
+        判据（failure-handling.md §3.1/G7，2026-08-09 更新）：
+        1. 复制 ENOSPC 是逐文件失败 → rc == 0（G4）
+        2. DB 只含首个成功文件
+        3. 失败文件绝不出现在最终路径——staging 模型下半成品只可能
+           存在于会话目录，且本次会话的 staging 子树已由本进程清理
         """
         vault_dir, source_dir = small_disk
 
@@ -342,8 +353,8 @@ class TestDiskFullHandling:
             capture_output=True,
             text=True,
         )
-        assert result.returncode != 0, (
-            f"满盘导入必须失败（原条件断言会空转）: rc={result.returncode}"
+        assert result.returncode == 0, (
+            f"复制 ENOSPC 是逐文件失败（G4），应为 exit 0: rc={result.returncode}"
         )
 
         # DB 只含 photo1（photo2 未入库）
@@ -355,15 +366,14 @@ class TestDiskFullHandling:
             f"DB 应只含首个成功文件: {rows}"
         )
 
-        # OPEN-3：半成品不清理是锁定行为，但残留必须是截断/空文件
+        # staging 模型契约：photo2 绝不可见于最终路径
         residue = [
             p for p in vault_dir.rglob("photo2*.jpg")
             if ".svault" not in p.parts
         ]
-        for p in residue:
-            assert p.stat().st_size < full_size, (
-                f"绝不允许静默完整副本: {p} ({p.stat().st_size} bytes)"
-            )
+        assert residue == [], (
+            f"最终路径不得出现失败文件的任何副本: {residue}"
+        )
 
     def test_can_import_after_cleanup(
         self, small_disk: tuple[Path, Path], svault_binary: Path, check_loopback_support

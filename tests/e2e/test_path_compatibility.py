@@ -22,6 +22,16 @@ def db_file_rows(vault: VaultEnv) -> list[dict]:
     return files[0]["rows"] if files else []
 
 
+def _load_manifests(vault: VaultEnv) -> list[dict]:
+    """Load all session manifests (.svault/sessions/<kind>/<id>/manifest.json)."""
+    root = vault.vault_dir / ".svault" / "sessions"
+    manifests = [
+        json.loads(p.read_text()) for p in sorted(root.glob("*/*/manifest.json"))
+    ]
+    assert manifests, f"No session manifests found under {root}"
+    return manifests
+
+
 class TestCrossPlatformPathCompatibility:
     """Cross-platform path compatibility tests."""
 
@@ -52,20 +62,8 @@ class TestCrossPlatformPathCompatibility:
         copy_fixture(vault, "no_exif.jpg")
         vault.import_dir(vault.source_dir)
         
-        # Find manifest file
-        manifests_dir = vault.vault_dir / ".svault" / "manifests"
-        if not manifests_dir.exists():
-            pytest.skip("No manifests directory found")
-        
-        manifest_files = list(manifests_dir.glob("*.json"))
-        if not manifest_files:
-            pytest.skip("No manifest files found")
-        
-        # Read and verify manifest
-        for manifest_file in manifest_files:
-            with open(manifest_file, 'r') as f:
-                manifest = json.load(f)
-            
+        # Read and verify manifests
+        for manifest in _load_manifests(vault):
             for file_record in manifest.get("files", []):
                 # Check dest_path (relative, should be Unix format)
                 dest_path = file_record.get("dest_path", "")
@@ -91,16 +89,7 @@ class TestCrossPlatformPathCompatibility:
             pytest.skip("No file records found")
         
         # Read manifest
-        manifests_dir = vault.vault_dir / ".svault" / "manifests"
-        if not manifests_dir.exists():
-            pytest.skip("No manifests directory found")
-        
-        manifest_files = list(manifests_dir.glob("*.json"))
-        if not manifest_files:
-            pytest.skip("No manifest files found")
-        
-        with open(manifest_files[0], 'r') as f:
-            manifest = json.load(f)
+        manifest = _load_manifests(vault)[0]
         
         # Compare paths
         manifest_dest_paths = {

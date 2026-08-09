@@ -4,7 +4,7 @@
 
 判据来源：docs/failure-handling.md §8。关键行为契约：
 - recheck 只读 DB、不改文件，恒退出码 0（不一致只写报告，§3.3）
-- 报告写 .svault/staging/recheck_<新时间戳>.json，status 为 Debug 格式
+- 报告写 .svault/sessions/recheck/<ts-id>/report.json，status 为 Debug 格式
 - recheck 无断点状态：中断后重跑生成完整新报告（§8.1 P0-4）
 """
 
@@ -50,11 +50,11 @@ def _wait_paused(fs: FaultInjectedFS, path: str, timeout: float = 20.0) -> bool:
 
 
 def _recheck_reports(vault: VaultEnv) -> list[Path]:
-    """列出全部 recheck 报告"""
-    staging = vault.vault_dir / ".svault" / "staging"
-    if not staging.exists():
+    """列出全部 recheck 报告（sessions/recheck/<ts-id>/report.json）"""
+    root = vault.vault_dir / ".svault" / "sessions" / "recheck"
+    if not root.exists():
         return []
-    return sorted(staging.glob("recheck_*.json"))
+    return sorted(root.glob("*/report.json"))
 
 
 class TestRecheckPauseScenarios:

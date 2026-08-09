@@ -38,10 +38,10 @@ def compute_file_hash(path: Path) -> str:
 
 
 def load_latest_recheck_report(vault: VaultEnv) -> dict:
-    """Load the latest recheck JSON report from .svault/staging."""
-    staging = vault.vault_dir / ".svault" / "staging"
-    reports = sorted(staging.glob("recheck_*.json"), key=lambda p: p.stat().st_mtime)
-    assert reports, f"No recheck report found in {staging}"
+    """Load the latest recheck report from .svault/sessions/recheck/<ts-id>/."""
+    root = vault.vault_dir / ".svault" / "sessions" / "recheck"
+    reports = sorted(root.glob("*/report.json"), key=lambda p: p.stat().st_mtime)
+    assert reports, f"No recheck report found in {root}"
     return json.loads(reports[-1].read_text())
 
 

@@ -263,29 +263,42 @@ class TestFallbackAndCorruptedFiles:
 # =============================================================================
 
 class TestStagingReconcile:
-    """staging 模型契约：半成品不进入最终路径；启动对账补 rename / 清残留"""
+    """会话日志模型契约（failure-handling G7，2026-08-09 起）：
+
+    - 半成品不进入最终路径（staging/ 子目录承载 payload）
+    - 成功导入后会话目录只剩 plan.json + manifest.json
+    - 中断会话：有 DB 记录的补 rename；其余残留只报告、绝不删除
+    """
 
     @staticmethod
-    def staging_root(vault: VaultEnv) -> Path:
-        return vault.vault_dir / ".svault" / "staging" / "import"
+    def sessions_root(vault: VaultEnv) -> Path:
+        return vault.vault_dir / ".svault" / "sessions" / "import"
 
-    def test_successful_import_leaves_no_staging_residue(self, vault: VaultEnv) -> None:
-        """成功导入后 staging 目录整体消失，文件在最终路径"""
+    def test_successful_import_leaves_only_plan_and_manifest(
+        self, vault: VaultEnv
+    ) -> None:
+        """成功导入后 staging 子树清空，plan/manifest 作为审计记录保留"""
         create_minimal_jpeg(vault.source_dir / "a.jpg", "STAGED_OK")
 
         result = vault.import_dir(vault.source_dir)
         assert result.returncode == 0
 
-        assert not self.staging_root(vault).exists(), "staging 目录必须被清理"
+        sessions = [p for p in self.sessions_root(vault).glob("*") if p.is_dir()]
+        assert len(sessions) == 1, "恰好一个会话目录"
+        session = sessions[0]
+        assert (session / "plan.json").exists()
+        assert (session / "manifest.json").exists()
+        assert not (session / "staging").exists(), "staging 子树必须被清理"
+
         visible = [
             p for p in vault.vault_dir.rglob("*.jpg") if ".svault" not in p.parts
         ]
         assert len(visible) == 1
 
-    def test_reconcile_completes_rename_and_purges_residue(
+    def test_reconcile_completes_rename_and_reports_residue(
         self, vault: VaultEnv
     ) -> None:
-        """对账两类残留：有 DB 记录的补 rename；无记录的半成品清除"""
+        """对账两类残留：有 DB 记录的补 rename；无记录的只报告不删除"""
         src = vault.source_dir / "a.jpg"
         create_minimal_jpeg(src, "STAGED_RECOVER")
         assert vault.import_dir(vault.source_dir).returncode == 0
@@ -295,7 +308,7 @@ class TestStagingReconcile:
         )
         original_bytes = final.read_bytes()
 
-        staging = self.staging_root(vault) / "999"
+        staging = self.sessions_root(vault) / "interrupt01" / "staging"
         # 情形 1：DB commit 后、rename 前被杀——文件回到 staging，DB 有记录
         staged_recorded = staging / final.relative_to(vault.vault_dir)
         staged_recorded.parent.mkdir(parents=True)
@@ -310,8 +323,12 @@ class TestStagingReconcile:
 
         assert final.exists(), "有 DB 记录的暂存文件必须被补 rename"
         assert final.read_bytes() == original_bytes
-        assert not partial.exists(), "无记录的半成品必须被清除"
-        assert not self.staging_root(vault).exists(), "staging 目录必须被清理"
+        assert partial.exists(), "无记录的残留只报告、绝不删除"
+        combined = result.stdout + result.stderr
+        assert "leftover" in combined or "session_residue" in combined, (
+            "中断残留必须向用户报告"
+        )
+
 
 
 
