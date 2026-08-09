@@ -115,7 +115,8 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
   缓存则跳过传输；不参与最终身份判定（区域盲区由 `--compare-level mid/high`
   覆盖）。全部命中时早退（`all_cache_hit`）。
 - **Lookup（查重）**：串行内联 `ops::check_duplicate`（size+指纹+扩展名），
-  在复制前分流重复，避免不必要传输。
+  在复制前分流重复，避免不必要传输。**例外**：`add` 用全量 XXH3-128
+  （`check_duplicate_by_hash`）——vault 内文件可能原地被改，指纹不可信。
 - **Stage C（复制，仅 import）**：先原子写 `plan.json`（复制意图，
   **fail-fast**），再复制到会话 staging 子树并 fsync。传输策略链：
   reflink → hardlink → stream copy 无条件兜底（`fs::try_transfer`）。

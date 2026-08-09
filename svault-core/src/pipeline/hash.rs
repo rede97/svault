@@ -43,32 +43,38 @@ pub fn compute_hashes(
                 });
             }
 
-            // Always compute XXH3-128 for deduplication
-            let xxh3_128 = match xxh3_128_file(read_path) {
-                Ok(h) => h.to_bytes().to_vec(),
-                Err(e) => {
-                    let err_msg = format!("xxh3_128 error: {e}");
-                    if let Some(s) = sink {
-                        s.emit(&Event::HashFinished {
+            // Always have XXH3-128 for deduplication: reuse the precomputed
+            // one when an earlier stage already hashed this exact file
+            // (`add` hashes at lookup time; import never sets it — staged
+            // copies MUST be hashed from the staged bytes).
+            let xxh3_128 = match &entry.precomputed_hash {
+                Some(pre) if !pre.is_empty() && entry.staged_path.is_none() => pre.clone(),
+                _ => match xxh3_128_file(read_path) {
+                    Ok(h) => h.to_bytes().to_vec(),
+                    Err(e) => {
+                        let err_msg = format!("xxh3_128 error: {e}");
+                        if let Some(s) = sink {
+                            s.emit(&Event::HashFinished {
+                                path: abs_path.clone(),
+                                bytes: size,
+                                error: Some(err_msg.clone()),
+                            });
+                        }
+                        return HashResult {
                             path: abs_path.clone(),
-                            bytes: size,
-                            error: Some(err_msg.clone()),
-                        });
+                            src_path: entry.src_path.clone(),
+                            staged_path: entry.staged_path.clone(),
+                            size,
+                            mtime_ms: entry.file.mtime_ms,
+                            fingerprint: entry.fingerprint.clone(),
+                            raw_unique_id: entry.raw_unique_id.clone(),
+                            hash: FileHash::Fast(vec![]), // Empty hash indicates error
+                            is_duplicate: false,
+                            dup_reason: None,
+                            hash_error: Some(err_msg),
+                        };
                     }
-                    return HashResult {
-                        path: abs_path.clone(),
-                        src_path: entry.src_path.clone(),
-                        staged_path: entry.staged_path.clone(),
-                        size,
-                        mtime_ms: entry.file.mtime_ms,
-                        fingerprint: entry.fingerprint.clone(),
-                        raw_unique_id: entry.raw_unique_id.clone(),
-                        hash: FileHash::Fast(vec![]), // Empty hash indicates error
-                        is_duplicate: false,
-                        dup_reason: None,
-                        hash_error: Some(err_msg),
-                    };
-                }
+                },
             };
 
             // Optionally compute SHA-256 for definitive identity

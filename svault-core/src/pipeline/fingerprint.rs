@@ -42,6 +42,31 @@ pub struct FingerprintResult {
 pub fn compute_fingerprints_stream(
     rx: mpsc::Receiver<anyhow::Result<FileEntry>>,
 ) -> mpsc::Receiver<FingerprintResult> {
+    stream_with_probe(rx, Probe::RegionFingerprint)
+}
+
+/// Like [`compute_fingerprints_stream`], but computes the full-file XXH3-128
+/// (used by `add`: vault-internal files may be edited in place, so the
+/// region fingerprint is not trusted for dedup).
+pub fn compute_full_hashes_stream(
+    rx: mpsc::Receiver<anyhow::Result<FileEntry>>,
+) -> mpsc::Receiver<FingerprintResult> {
+    stream_with_probe(rx, Probe::FullFileHash)
+}
+
+/// Which content probe the stream computes per file.
+#[derive(Debug, Clone, Copy)]
+enum Probe {
+    /// Head/tail 64KB regions (fast triage fingerprint).
+    RegionFingerprint,
+    /// Whole file (definitive for dedup).
+    FullFileHash,
+}
+
+fn stream_with_probe(
+    rx: mpsc::Receiver<anyhow::Result<FileEntry>>,
+    probe: Probe,
+) -> mpsc::Receiver<FingerprintResult> {
     let (tx, output_rx) = mpsc::channel();
 
     thread::spawn(move || {
@@ -54,7 +79,7 @@ pub fn compute_fingerprints_stream(
 
                     // Process batch when full
                     if batch.len() >= FINGERPRINT_BATCH_SIZE {
-                        process_fingerprint_batch(&mut batch, &tx);
+                        process_fingerprint_batch(&mut batch, &tx, probe);
                     }
                 }
                 Err(e) => {
@@ -77,7 +102,7 @@ pub fn compute_fingerprints_stream(
 
         // Process remaining entries
         if !batch.is_empty() {
-            process_fingerprint_batch(&mut batch, &tx);
+            process_fingerprint_batch(&mut batch, &tx, probe);
         }
     });
 
@@ -85,10 +110,14 @@ pub fn compute_fingerprints_stream(
 }
 
 /// Process a batch of entries in parallel.
-fn process_fingerprint_batch(batch: &mut Vec<FileEntry>, tx: &mpsc::Sender<FingerprintResult>) {
+fn process_fingerprint_batch(
+    batch: &mut Vec<FileEntry>,
+    tx: &mpsc::Sender<FingerprintResult>,
+    probe: Probe,
+) {
     let results: Vec<FingerprintResult> = batch
         .par_drain(..)
-        .map(|e| compute_fingerprint_for_entry(&e))
+        .map(|e| compute_fingerprint_for_entry(&e, probe))
         .collect();
 
     for result in results {
@@ -98,13 +127,19 @@ fn process_fingerprint_batch(batch: &mut Vec<FileEntry>, tx: &mpsc::Sender<Finge
     }
 }
 
-/// Compute CRC for a single file entry.
-fn compute_fingerprint_for_entry(e: &FileEntry) -> FingerprintResult {
-    // Compute format-specific CRC32C
-    let format = MediaFormat::from_path(&e.path).unwrap_or(MediaFormat::Unknown(""));
-    let fingerprint = compute_fingerprint(&e.path, &format)
-        .map(|d| d.to_vec())
-        .map_err(|err| err.to_string());
+/// Compute the selected probe for a single file entry.
+fn compute_fingerprint_for_entry(e: &FileEntry, probe: Probe) -> FingerprintResult {
+    let fingerprint = match probe {
+        Probe::RegionFingerprint => {
+            let format = MediaFormat::from_path(&e.path).unwrap_or(MediaFormat::Unknown(""));
+            compute_fingerprint(&e.path, &format)
+                .map(|d| d.to_vec())
+                .map_err(|err| err.to_string())
+        }
+        Probe::FullFileHash => crate::hash::xxh3_128_file(&e.path)
+            .map(|d| d.to_bytes().to_vec())
+            .map_err(|err| err.to_string()),
+    };
 
     // Extract RAW ID for RAW files
     let ext = e.path.extension().and_then(|ex| ex.to_str()).unwrap_or("");

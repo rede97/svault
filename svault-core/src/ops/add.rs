@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::db::Db;
 use crate::event::{Event, EventSink, Hint, ItemStatus, Phase, PhaseContext, Summary};
-use crate::ops::check_duplicate;
+use crate::ops::check_duplicate_by_hash;
 use crate::pipeline;
 
 /// Summary of an `add` operation.
@@ -46,7 +46,9 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
         .collect();
 
     // ------------------------------------------------------------------
-    // Stage A+B+C: Scan + CRC + Lookup
+    // Stage A+B: Scan + full XXH3-128 (no region fingerprint for dedup —
+    // vault-internal files may be edited in place, and the fingerprint's
+    // blind zone would silently absorb middle edits as duplicates)
     // ------------------------------------------------------------------
     sink.emit(&Event::PhaseStarted {
         phase: Phase::Scan,
@@ -56,24 +58,24 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
 
     let scan_rx =
         pipeline::scan::scan_stream(&opts.path, &exts, &crate::fs::ScanFilter::default())?;
-    let crc_rx = pipeline::fingerprint::compute_fingerprints_stream(scan_rx);
+    let hash_rx = pipeline::fingerprint::compute_full_hashes_stream(scan_rx);
 
     let mut lookup_results = Vec::new();
     let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new();
     let mut total_files = 0usize;
 
-    for result in crc_rx {
+    for result in hash_rx {
         total_files += 1;
 
-        let crc = match result.fingerprint {
-            Ok(c) => c,
+        let full_hash = match result.fingerprint {
+            Ok(h) => h,
             Err(e) => {
                 sink.emit(&Event::ScanItem {
                     path: result.file.path.clone(),
                     size: result.file.size,
                     mtime_ms: result.file.mtime_ms,
                     status: ItemStatus::Failed,
-                    error: Some(format!("fingerprint computation failed: {}", e)),
+                    error: Some(format!("hash computation failed: {}", e)),
                 });
                 continue;
             }
@@ -100,12 +102,14 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
             },
             src_path: None,
             staged_path: None,
-            fingerprint: crc,
+            // Region fingerprint is not computed for add (dedup uses the
+            // full hash); Stage D reuses the precomputed full XXH3-128.
+            fingerprint: Vec::new(),
             raw_unique_id,
-            precomputed_hash: None,
+            precomputed_hash: Some(full_hash.clone()),
         };
 
-        let check_result = check_duplicate(&entry, db, &opts.vault_root, None);
+        let check_result = check_duplicate_by_hash(&entry, db, &opts.vault_root, &full_hash);
         let item_status = match &check_result {
             pipeline::CheckResult::New | pipeline::CheckResult::Recover { .. } => ItemStatus::New,
             pipeline::CheckResult::Duplicate => ItemStatus::Duplicate,

@@ -104,6 +104,50 @@ pub fn check_duplicate(
     pipeline::CheckResult::New
 }
 
+/// Hash-keyed duplicate check (used by `add`).
+///
+/// `add` registers files already inside the vault, where in-place edits are
+/// possible — a region fingerprint would silently absorb blind-zone edits as
+/// duplicates. So `add` skips the fingerprint entirely and looks up by the
+/// full XXH3-128 computed at scan time. Verdicts mirror [`check_duplicate`]:
+/// `missing` record → `Recover`; hash hit with file present → `Duplicate`;
+/// hash hit but file gone from the recorded path → `Moved`.
+pub fn check_duplicate_by_hash(
+    entry: &pipeline::types::FingerprintEntry,
+    db: &Db,
+    vault_root: &Path,
+    hash_bytes: &[u8],
+) -> pipeline::CheckResult {
+    let row = db
+        .lookup_by_hash(hash_bytes, &HashAlgorithm::Xxh3_128)
+        .ok()
+        .flatten();
+    let Some(row) = row else {
+        return pipeline::CheckResult::New;
+    };
+
+    let is_same_raw_id = match (&entry.raw_unique_id, &row.raw_unique_id) {
+        (Some(new_id), Some(existing_id)) => new_id == existing_id,
+        _ => true,
+    };
+
+    if row.status == "missing" {
+        return pipeline::CheckResult::Recover {
+            old_path: row.path,
+            file_id: row.id,
+        };
+    }
+
+    let vault_path = vault_root.join(&row.path);
+    if vault_path.exists() && is_same_raw_id {
+        pipeline::CheckResult::Duplicate
+    } else if is_same_raw_id {
+        pipeline::CheckResult::Moved { old_path: row.path }
+    } else {
+        pipeline::CheckResult::New
+    }
+}
+
 /// Fingerprint-suspected duplicates re-verified per [`types::CompareLevel`].
 ///
 /// `Fast` returns the CRC-only verdict unchanged. `Mid`/`High` re-hash the

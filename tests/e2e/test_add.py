@@ -18,6 +18,55 @@ from conftest import (
 )
 
 
+class TestAddFullHashDedup:
+    """add 用全量 XXH3-128 查重（跳过区域指纹），原地中段编辑不被误判
+
+    契约（2026-08-09）：vault 内文件可能被原地编辑；add 的查重必须基于
+    全量哈希而非头尾 64KB 指纹——盲区编辑不得静默判 duplicate。
+    """
+
+    def test_middle_edit_is_not_absorbed_as_duplicate(self, vault: VaultEnv) -> None:
+        # 200KB 文件：区域指纹只读头尾 64KB，中段是盲区
+        target = vault.vault_dir / "tracked" / "big.jpg"
+        target.parent.mkdir(parents=True)
+        create_minimal_jpeg(target, "TRACKED_BIG")
+        with open(target, "ab") as f:
+            f.write(b"\xff" * (200 * 1024 - target.stat().st_size))
+
+        assert vault.run("add", str(target.parent)).returncode == 0
+        assert len(vault.db_files()) == 1
+
+        # 中段编辑（大小不变，区域指纹不变）
+        data = bytearray(target.read_bytes())
+        data[100 * 1024] ^= 0xFF
+        target.write_bytes(bytes(data))
+
+        result = vault.run("--output=json", "add", str(target.parent))
+        assert result.returncode == 0
+        # 全量哈希不同 → 不得判 duplicate（同路径被 insert 按路径跳过，
+        # 不产生第二条记录，但必须不是"duplicate 静默吸收"）
+        summary = [
+            line for line in result.stdout.strip().split("\n")
+            if '"event":"summary"' in line
+        ]
+        assert summary, "应输出 summary 事件"
+        assert '"duplicate":0' in summary[0].replace(" ", ""), (
+            f"盲区编辑不得判 duplicate: {summary[0]}"
+        )
+        assert len(vault.db_files()) == 1, "同路径不产生第二条记录"
+
+    def test_unchanged_readd_still_duplicate(self, vault: VaultEnv) -> None:
+        target = vault.vault_dir / "tracked" / "a.jpg"
+        target.parent.mkdir(parents=True)
+        create_minimal_jpeg(target, "STABLE")
+
+        assert vault.run("add", str(target.parent)).returncode == 0
+        result = vault.run("--output=json", "add", str(target.parent))
+        assert '"duplicate":1' in result.stdout.replace(" ", ""), (
+            "未改动文件重跑 add 应判 duplicate（全量哈希命中）"
+        )
+
+
 class TestAddCommand:
     """End-to-end tests for `svault add` basic functionality."""
 
