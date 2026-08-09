@@ -1,49 +1,16 @@
 //! Hash utilities used throughout Svault.
 //!
-//! - **CRC32C**: Hardware-accelerated (SSE4.2 / ARM CRC32). Used for the
-//!   64 KB fingerprint probe in Stage 3 of the comparison pipeline.
-//! - **XXH3-128**: High-throughput non-cryptographic hash. Used for fast
-//!   full-file integrity verification (`svault verify --fast`).
-//! - **SHA-256**: Cryptographic hash. The permanent content identity of every
-//!   file. Computed lazily — only when a Stage 3 fingerprint collision occurs
-//!   or during background-hash.
+//! - **XXH3-128**: High-throughput non-cryptographic hash. Both the fast
+//!   fingerprint (head/tail regions, see `media/fingerprint.rs`) and the
+//!   full-file identity use it.
+//! - **SHA-256**: Cryptographic hash. The definitive content identity,
+//!   computed with `--full-id`/`--force` or via background-hash.
 
 use std::{
     fs,
     io::{self, Read},
     path::Path,
 };
-
-// ---------------------------------------------------------------------------
-// CRC32C
-// ---------------------------------------------------------------------------
-
-/// Computes CRC32C over `data`.
-/// Uses the `crc32c` crate which selects SSE4.2 / ARM CRC32 at runtime.
-pub fn crc32c(data: &[u8]) -> u32 {
-    crc32c::crc32c(data)
-}
-
-/// Reads up to `max_bytes` from `path` starting at `offset` and computes
-/// CRC32C over that region. Used for the Stage 3 fingerprint probe.
-pub fn crc32c_region(path: &Path, offset: u64, max_bytes: usize) -> io::Result<u32> {
-    let mut f = fs::File::open(path)?;
-    if offset > 0 {
-        io::Seek::seek(&mut f, io::SeekFrom::Start(offset))?;
-    }
-    let mut buf = vec![0u8; max_bytes];
-    let n = f.read(&mut buf)?;
-    Ok(crc32c::crc32c(&buf[..n]))
-}
-
-/// Reads the last `max_bytes` of `path` and computes CRC32C.
-/// Used for formats like PNG where metadata lives at the end of the file.
-pub fn crc32c_tail(path: &Path, max_bytes: usize) -> io::Result<u32> {
-    let meta = fs::metadata(path)?;
-    let size = meta.len();
-    let offset = size.saturating_sub(max_bytes as u64);
-    crc32c_region(path, offset, max_bytes)
-}
 
 // ---------------------------------------------------------------------------
 // XXH3-128
@@ -69,6 +36,15 @@ impl Xxh3Digest {
 impl std::fmt::LowerHex for Xxh3Digest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:016x}{:016x}", self.high, self.low)
+    }
+}
+
+/// Computes XXH3-128 over an in-memory buffer (fingerprint regions).
+pub fn xxh3_128_bytes(data: &[u8]) -> Xxh3Digest {
+    let digest = xxhash_rust::xxh3::xxh3_128(data);
+    Xxh3Digest {
+        low: digest as u64,
+        high: (digest >> 64) as u64,
     }
 }
 
@@ -158,61 +134,6 @@ mod tests {
     // -------------------------------------------------------------------------
     // CRC32C: Focus on our wrapper logic, not the library
     // -------------------------------------------------------------------------
-
-    #[test]
-    fn crc32c_region_reads_from_offset() {
-        let content = b"0123456789abcdef";
-        let (_dir, path) = temp_file_with(content);
-
-        // Offset 10 should read "abcdef"
-        let hash = crc32c_region(&path, 10, 1024).unwrap();
-        assert_eq!(hash, crc32c(b"abcdef"));
-    }
-
-    #[test]
-    fn crc32c_region_handles_larger_buf_than_file() {
-        let (_dir, path) = temp_file_with(b"short");
-        // Request more than file size
-        let hash = crc32c_region(&path, 0, 1024).unwrap();
-        assert_eq!(hash, crc32c(b"short"));
-    }
-
-    #[test]
-    fn crc32c_region_zero_offset_reads_full() {
-        let (_dir, path) = temp_file_with(b"hello");
-        let hash = crc32c_region(&path, 0, 1024).unwrap();
-        assert_eq!(hash, crc32c(b"hello"));
-    }
-
-    #[test]
-    fn crc32c_tail_reads_last_bytes() {
-        let content = b"0123456789abcdef";
-        let (_dir, path) = temp_file_with(content);
-
-        // Last 6 bytes: "abcdef"
-        let hash = crc32c_tail(&path, 6).unwrap();
-        assert_eq!(hash, crc32c(b"abcdef"));
-    }
-
-    #[test]
-    fn crc32c_tail_handles_larger_buf_than_file() {
-        let (_dir, path) = temp_file_with(b"tiny");
-        let hash = crc32c_tail(&path, 1024).unwrap();
-        assert_eq!(hash, crc32c(b"tiny"));
-    }
-
-    #[test]
-    fn crc32c_region_returns_io_error_for_missing_file() {
-        let result = crc32c_region(Path::new("/nonexistent/file"), 0, 1024);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn crc32c_tail_returns_io_error_for_missing_file() {
-        let result = crc32c_tail(Path::new("/nonexistent/file"), 1024);
-        assert!(result.is_err());
-    }
 
     // -------------------------------------------------------------------------
     // XXH3-128: Focus on file I/O, chunking, and our type wrapper

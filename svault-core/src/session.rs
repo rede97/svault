@@ -38,7 +38,8 @@ pub struct PlanEntry {
     /// Vault-relative destination (Unix-style separators).
     pub dest_path: String,
     pub size: u64,
-    pub crc32c: u32,
+    /// Head/tail XXH3-128 fingerprint as hex (computed before the copy).
+    pub fingerprint: String,
 }
 
 /// Pre-copy intent of an import session, atomically written to `plan.json`
@@ -311,7 +312,7 @@ mod tests {
             staged_path: None,
             size: 3,
             mtime_ms: 0,
-            crc32c: 7,
+            fingerprint: vec![1, 2, 3],
             raw_unique_id: None,
             hash: FileHash::Fast(vec![1, 2, 3]),
             is_duplicate: false,

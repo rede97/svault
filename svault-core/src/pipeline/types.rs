@@ -1,7 +1,7 @@
 //! Pipeline shared types for import/add commands.
 //!
 //! These types represent the data flow through pipeline stages:
-//! FileEntry -> CrcEntry -> LookupResult -> HashResult -> InsertResult
+//! FileEntry -> FingerprintEntry -> LookupResult -> HashResult -> InsertResult
 //!
 //! # Path Semantics
 //!
@@ -11,7 +11,7 @@
 //!   (e.g., "2024/01-01/iPhone/photo.jpg"). For `import`, this is where the file is copied to;
 //!   for `add`, this is the same as the source path since files are already in the vault.
 //!
-//! - **`src_path`** (in `CrcEntry`, `HashResult`, `CopyResult`): The original source path
+//! - **`src_path`** (in `FingerprintEntry`, `HashResult`, `CopyResult`): The original source path
 //!   outside the vault (e.g., "/media/SDCARD/DCIM/photo.jpg"). Only populated during `import`
 //!   command. Used for:
 //!   - Writing accurate import manifests (recording where file came from)
@@ -22,7 +22,7 @@
 //! ```text
 //! Stage A (scan):     path = source path (e.g., /media/SDCARD/DCIM/photo.jpg)
 //!                     
-//! Stage B (crc):      file.path = source path
+//! Stage B (fingerprint):      file.path = source path
 //!                     src_path = None (not needed yet)
 //!                     
 //! Stage C (copy):     src_path = source path
@@ -59,36 +59,38 @@ pub struct FileEntry {
     pub mtime_ms: i64,
 }
 
-/// Stage B output: File entry with fingerprint (CRC32C or strong hash).
+/// Stage B output: File entry with its XXH3-128 head/tail fingerprint.
 #[derive(Debug, Clone)]
-pub struct CrcEntry {
+pub struct FingerprintEntry {
     /// File metadata (path is vault destination for import)
     pub file: FileEntry,
     /// Original source path (outside vault). Populated during import,
     /// None for add command since source equals destination.
     pub src_path: Option<PathBuf>,
-    /// Staged copy location under `.svault/staging/import/<session>/`.
+    /// Staged copy location under the session staging dir.
     ///
     /// Set by Stage C (import only): the file is copied there first and
     /// only renamed to `file.path` after the DB transaction commits, so a
     /// partially copied file never appears at its final path. Stage D reads
     /// from this path. `None` for `add` (file is already in the vault).
     pub staged_path: Option<PathBuf>,
-    pub crc32c: u32,
+    /// XXH3-128 over format-specific head/tail regions (16 bytes).
+    /// Fast duplicate triage only — NOT a full-file identity.
+    pub fingerprint: Vec<u8>,
     pub raw_unique_id: Option<String>,
     /// Pre-computed strong hash (if --hash fast mode enabled).
     /// When present, Stage D can skip re-computing the hash.
     pub precomputed_hash: Option<Vec<u8>>,
 }
 
-impl CrcEntry {
-    /// Create a new CrcEntry with precomputed_hash defaulting to None.
-    pub fn new(file: FileEntry, crc32c: u32) -> Self {
+impl FingerprintEntry {
+    /// Create a new FingerprintEntry with precomputed_hash defaulting to None.
+    pub fn new(file: FileEntry, fingerprint: Vec<u8>) -> Self {
         Self {
             file,
             src_path: None,
             staged_path: None,
-            crc32c,
+            fingerprint,
             raw_unique_id: None,
             precomputed_hash: None,
         }
@@ -125,7 +127,7 @@ pub enum CheckResult {
 /// Stage B2 output: Entry with duplicate lookup result.
 #[derive(Debug, Clone)]
 pub struct LookupResult {
-    pub entry: CrcEntry,
+    pub entry: FingerprintEntry,
     pub status: FileStatus,
 }
 
@@ -143,12 +145,13 @@ pub struct HashResult {
     /// Only populated for import command; None for add command.
     /// Used for manifest recording.
     pub src_path: Option<PathBuf>,
-    /// Staged copy location (import only), carried through from `CrcEntry`.
+    /// Staged copy location (import only), carried through from `FingerprintEntry`.
     /// Stage E renames it to `path` only after the DB transaction commits.
     pub staged_path: Option<PathBuf>,
     pub size: u64,
     pub mtime_ms: i64,
-    pub crc32c: u32,
+    /// Head/tail XXH3-128 fingerprint carried from Stage B (16 bytes).
+    pub fingerprint: Vec<u8>,
     pub raw_unique_id: Option<String>,
     /// Hash identity - either fast (xxh3 only) or full (xxh3 + sha256)
     pub hash: FileHash,
@@ -220,7 +223,8 @@ pub struct CopyResult {
     pub dest_path: PathBuf,
     pub size: u64,
     pub mtime_ms: i64,
-    pub crc32c: u32,
+    /// Head/tail XXH3-128 fingerprint (16 bytes).
+    pub fingerprint: Vec<u8>,
     pub raw_unique_id: Option<String>,
 }
 

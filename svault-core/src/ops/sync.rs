@@ -243,7 +243,7 @@ pub fn run_sync(
                     staged_path: None,
                     size: record.size as u64,
                     mtime_ms: record.mtime,
-                    crc32c: record.crc32c.map(|v| v as u32).unwrap_or(0),
+                    fingerprint: record.fingerprint.clone().unwrap_or_default(),
                     raw_unique_id: record.raw_unique_id.clone(),
                     hash,
                     is_duplicate: false,

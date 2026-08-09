@@ -92,7 +92,7 @@ impl ImportState {
 }
 
 fn process_lookup_result(
-    entry: pipeline::types::CrcEntry,
+    entry: pipeline::types::FingerprintEntry,
     check_result: pipeline::CheckResult,
     state: &mut ImportState,
 ) {
@@ -119,8 +119,8 @@ fn process_lookup_result(
     }
 }
 
-/// Build a `CrcEntry` from a file path (reads metadata + computes CRC32C).
-fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
+/// Build a `FingerprintEntry` from a file path (reads metadata + computes CRC32C).
+fn build_fingerprint_entry(path: &Path) -> anyhow::Result<pipeline::types::FingerprintEntry> {
     let metadata = fs::metadata(path)?;
     let size = metadata.len();
     let mtime_ms = metadata
@@ -132,7 +132,7 @@ fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
 
     let format = crate::media::MediaFormat::from_path(path)
         .unwrap_or(crate::media::MediaFormat::Unknown(""));
-    let crc = crate::media::crc::compute_checksum(path, &format)?;
+    let fingerprint = crate::media::fingerprint::compute_fingerprint(path, &format)?;
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let raw_unique_id = if crate::media::raw_id::is_raw_file(ext) {
@@ -142,7 +142,7 @@ fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
         None
     };
 
-    Ok(pipeline::types::CrcEntry {
+    Ok(pipeline::types::FingerprintEntry {
         file: pipeline::types::FileEntry {
             path: path.to_path_buf(),
             size,
@@ -150,7 +150,7 @@ fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
         },
         src_path: None,
         staged_path: None,
-        crc32c: crc,
+        fingerprint: fingerprint.to_vec(),
         raw_unique_id,
         precomputed_hash: None,
     })
@@ -158,7 +158,7 @@ fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
 
 /// Classify a file, emit a [`Event::ScanItem`], and update state.
 fn classify_and_emit(
-    entry: pipeline::types::CrcEntry,
+    entry: pipeline::types::FingerprintEntry,
     check_result: pipeline::CheckResult,
     sink: &dyn EventSink,
     state: &mut ImportState,
@@ -230,7 +230,7 @@ struct PreparedCopy {
     staged: PathBuf,
     size: u64,
     mtime_ms: i64,
-    crc32c: u32,
+    fingerprint: Vec<u8>,
     raw_unique_id: Option<String>,
 }
 
@@ -341,7 +341,7 @@ impl ImportOptions {
         let exts: Vec<&str> = allowed_extensions.iter().map(|s| s.as_str()).collect();
 
         let scan_rx = pipeline::scan::scan_stream(source_canon, &exts, filter)?;
-        let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
+        let crc_rx = pipeline::fingerprint::compute_fingerprints_stream(scan_rx);
 
         let mut state = ImportState::new();
 
@@ -353,22 +353,22 @@ impl ImportOptions {
 
             state.total_files += 1;
 
-            let crc = match result.crc {
-                Ok(c) => c,
+            let fingerprint = match result.fingerprint {
+                Ok(f) => f,
                 Err(e) => {
                     sink.emit(&Event::ScanItem {
                         path: result.file.path.clone(),
                         size: result.file.size,
                         mtime_ms: result.file.mtime_ms,
                         status: ItemStatus::Failed,
-                        error: Some(format!("CRC computation failed: {}", e)),
+                        error: Some(format!("fingerprint computation failed: {}", e)),
                     });
                     state.failed_files += 1;
                     continue;
                 }
             };
 
-            let entry = pipeline::types::CrcEntry {
+            let entry = pipeline::types::FingerprintEntry {
                 file: pipeline::types::FileEntry {
                     path: result.file.path.clone(),
                     size: result.file.size,
@@ -376,7 +376,7 @@ impl ImportOptions {
                 },
                 src_path: None,
                 staged_path: None,
-                crc32c: crc,
+                fingerprint: fingerprint.to_vec(),
                 raw_unique_id: result.raw_unique_id,
                 precomputed_hash: None,
             };
@@ -426,7 +426,7 @@ impl ImportOptions {
 
             state.total_files += 1;
 
-            let entry = match build_crc_entry(path) {
+            let entry = match build_fingerprint_entry(path) {
                 Ok(e) => e,
                 Err(e) => {
                     sink.emit(&Event::ScanItem {
@@ -619,11 +619,11 @@ impl ImportOptions {
     /// destination after the Stage-E DB commit, so an interrupted copy never
     /// pollutes the user-visible vault tree.
     ///
-    /// Returns the successfully copied entries (as `CrcEntry` with `src_path`
+    /// Returns the successfully copied entries (as `FingerprintEntry` with `src_path`
     /// and `staged_path` set) and the number of copy errors.
     #[allow(clippy::too_many_arguments)]
     fn stage_copy(
-        new_files: Vec<pipeline::types::CrcEntry>,
+        new_files: Vec<pipeline::types::FingerprintEntry>,
         source_canon: &Path,
         vault_root: &Path,
         session_id: &str,
@@ -631,7 +631,7 @@ impl ImportOptions {
         strategy: &SyncStrategy,
         import_config: &ImportConfig,
         sink: &dyn EventSink,
-    ) -> anyhow::Result<(Vec<pipeline::types::CrcEntry>, usize)> {
+    ) -> anyhow::Result<(Vec<pipeline::types::FingerprintEntry>, usize)> {
         // Resolve destination paths up-front (serial, EXIF-aware)
         let mut prepared: Vec<PreparedCopy> = Vec::new();
         let mut assigned = std::collections::HashSet::new();
@@ -656,7 +656,7 @@ impl ImportOptions {
                 staged,
                 size: entry.file.size,
                 mtime_ms: entry.file.mtime_ms,
-                crc32c: entry.crc32c,
+                fingerprint: entry.fingerprint.clone(),
                 raw_unique_id: entry.raw_unique_id.clone(),
             });
         }
@@ -681,7 +681,7 @@ impl ImportOptions {
                         .to_string_lossy()
                         .replace('\\', "/"),
                     size: p.size,
-                    crc32c: p.crc32c,
+                    fingerprint: p.fingerprint.iter().map(|b| format!("{b:02x}")).collect(),
                 })
                 .collect(),
         };
@@ -703,7 +703,7 @@ impl ImportOptions {
             context: PhaseContext::both(source_canon.to_path_buf(), vault_root.to_path_buf()),
         });
 
-        let copied: Vec<pipeline::types::CrcEntry> = prepared
+        let copied: Vec<pipeline::types::FingerprintEntry> = prepared
             .into_par_iter()
             .filter_map(|item| {
                 let PreparedCopy {
@@ -712,7 +712,7 @@ impl ImportOptions {
                     staged,
                     size,
                     mtime_ms,
-                    crc32c,
+                    fingerprint,
                     raw_unique_id,
                 } = item;
                 let src_rel = src.strip_prefix(source_canon).unwrap_or(&src);
@@ -747,7 +747,7 @@ impl ImportOptions {
                 if !ok {
                     return None;
                 }
-                Some(pipeline::types::CrcEntry {
+                Some(pipeline::types::FingerprintEntry {
                     file: pipeline::types::FileEntry {
                         path: dest,
                         size,
@@ -755,7 +755,7 @@ impl ImportOptions {
                     },
                     src_path: Some(src),
                     staged_path: Some(staged),
-                    crc32c,
+                    fingerprint,
                     raw_unique_id,
                     precomputed_hash: None,
                 })
@@ -773,7 +773,7 @@ impl ImportOptions {
     /// Also performs a post-hash dedup check unless `force` is set.
     #[allow(clippy::too_many_arguments)]
     fn stage_hash(
-        copied: Vec<pipeline::types::CrcEntry>,
+        copied: Vec<pipeline::types::FingerprintEntry>,
         source_canon: &Path,
         vault_root: &Path,
         force: bool,

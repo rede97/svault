@@ -10,7 +10,7 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (svault-core) | 168 | 168 | 0 | 0 |
+| 单元测试 (svault-core) | 161 | 161 | 0 | 0 |
 | 单元测试 (svault-ui / svault-cli) | 6 | 6 | 0 | 2 ignored |
 | Python E2E 测试 (Linux) | 181 执行 | 181 | 0 | 环境性 skip |
 | FUSE 故障注入 (Linux, `fuse_tests/`) | 23 | 19 | 0 | 4（P2 待设施） |

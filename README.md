@@ -64,7 +64,7 @@ Files are stored by their cryptographic hash (SHA-256), ensuring absolute integr
 
 ### 🚀 **High-Performance Pipeline**
 Three-tier hashing for speed and accuracy:
-1. **CRC32C** — Fast fingerprinting (hardware-accelerated)
+1. **XXH3-128 fingerprint** — Fast head/tail-region fingerprinting
 2. **XXH3-128** — Collision-resistant identification
 3. **SHA-256** — Cryptographic content identity
 
@@ -98,7 +98,7 @@ svault db dump files --format json | jq '.[0].rows | length'
 ## 🏎️ Performance
 
 - **10,000 photos** imported in ~45 seconds (NVMe SSD, reflink)
-- **CRC32C** at 8 GB/s (hardware-accelerated)
+- **XXH3-128** region fingerprint (memory-bandwidth speed)
 - **Parallel processing** scales with CPU cores
 - **Zero-copy** on CoW filesystems (Btrfs, XFS, APFS)
 
@@ -197,7 +197,7 @@ style, not git style (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §6).
 │  ┌──────────────────────────────────────────────────┐   │
 │  │  Config  (TOML-based, per-vault settings)        │   │
 │  ├──────────────────────────────────────────────────┤   │
-│  │  Hash    CRC32C → XXH3-128 → SHA-256 (lazy)     │   │
+│  │  Hash    XXH3-128 fingerprint → XXH3-128 → SHA-256 │
 │  ├──────────────────────────────────────────────────┤   │
 │  │  FS      reflink/hardlink/copy with fallback    │   │
 │  ├──────────────────────────────────────────────────┤   │
@@ -214,15 +214,15 @@ style, not git style (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §6).
 ### Import Pipeline Flow
 
 ```
-Source → [A] Scan → [B] CRC32C → Lookup → [D] Hash → [E] Insert → Vault
+Source → [A] Scan → [B] Fingerprint → Lookup → [D] Hash → [E] Insert → Vault
           ↓          ↓            ↓         ↓          ↓
         Files    Fingerprint   Dedup     Identity    DB+Events
          (FS)    (parallel)    (cache)   (parallel)  (atomic)
 ```
 
 **Stage A (Scan)**: Parallel directory traversal via local filesystem
-**Stage B (CRC32C)**: Hardware-accelerated fingerprinting for fast cache lookup
-**Lookup**: Check CRC cache to skip known duplicates (early exit)
+**Stage B (Fingerprint)**: XXH3-128 over head/tail regions for fast cache lookup
+**Lookup**: Check fingerprint cache to skip known duplicates (early exit)
 **Stage D (Hash)**: Compute strong hash (XXH3-128/SHA-256) for new files only
 **Stage E (Insert)**: Atomic DB insertion with event logging and manifest generation
 
@@ -232,7 +232,7 @@ Source → [A] Scan → [B] CRC32C → Lookup → [D] Hash → [E] Insert → Va
 - **Lazy SHA-256** — Computed only when needed for collision resolution
 - **Pipeline architecture** — Shared 5-stage pipeline used by `import` and `add` commands
 - **Filesystem module** — Local filesystem primitives with transfer fallback chain
-- **Early deduplication** — CRC32C cache eliminates 90%+ of duplicate work before hashing
+- **Early deduplication** — fingerprint cache eliminates 90%+ of duplicate work before hashing
 
 ---
 

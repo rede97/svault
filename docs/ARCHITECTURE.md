@@ -110,10 +110,11 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 
 ### 3.1 阶段职责与关键决策
 
-- **Stage A/B（扫描 + CRC 预筛）**：CRC 只读源文件头/尾各 64KB（格式相关，
-  见 `media/crc.rs`），是**快速过滤器**——命中 DB 缓存则跳过传输；不参与
-  最终身份判定，不作为身份入库。全部命中时早退（`all_cache_hit`）。
-- **Lookup（查重）**：串行内联 `ops::check_duplicate`（size+CRC+扩展名），
+- **Stage A/B（扫描 + 指纹预筛）**：对源文件格式相关的头/尾各 64KB 区域算
+  XXH3-128 指纹（见 `media/fingerprint.rs`），是**快速过滤器**——命中 DB
+  缓存则跳过传输；不参与最终身份判定（区域盲区由 `--compare-level mid/high`
+  覆盖）。全部命中时早退（`all_cache_hit`）。
+- **Lookup（查重）**：串行内联 `ops::check_duplicate`（size+指纹+扩展名），
   在复制前分流重复，避免不必要传输。
 - **Stage C（复制，仅 import）**：先原子写 `plan.json`（复制意图，
   **fail-fast**），再复制到会话 staging 子树并 fsync。传输策略链：
@@ -171,7 +172,7 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 
 1. **永不删除用户文件** — 任何命令不得提供删除磁盘文件的路径（svault 只清理本次会话自建的 staging 子树）
 2. **会话日志** — import/sync 的意图与结果写入 `.svault/sessions/<kind>/<ts-id>/`（plan/manifest，原子写入）
-3. **三层哈希** — CRC32C（预筛）→ XXH3-128（快速身份）→ SHA-256（确定身份）
+3. **两层哈希** — XXH3-128（区域指纹预筛 + 全量快速身份）→ SHA-256（确定身份）
 4. **进程锁** — 写操作必须持有 `.svault/lock`
 5. **core 可测试** — 所有用例可用 `NoopSink` 在无终端环境运行
 

@@ -58,8 +58,8 @@ pub struct ImportRecord {
     pub size: u64,
     /// Modification time (Unix timestamp ms)
     pub mtime_ms: i64,
-    /// CRC32C hash (first 64KB)
-    pub crc32c: u32,
+    /// Head/tail XXH3-128 fingerprint as hex (format-specific regions)
+    pub fingerprint: String,
     /// XXH3-128 hash (if computed)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xxh3_128: Option<String>,

@@ -105,7 +105,7 @@ pub fn batch_insert(
                     dest_path: Some(rel_path.to_path_buf()),
                     size: r.size,
                     mtime_ms: r.mtime_ms,
-                    crc32c: r.crc32c,
+                    fingerprint: crate::pipeline::insert::bytes_to_hex(&r.fingerprint),
                     xxh3_128: xxh3_hex,
                     sha256: sha256_hex,
                     imported_at: now_ms,
@@ -126,7 +126,7 @@ pub fn batch_insert(
                     dest_path: None,
                     size: r.size,
                     mtime_ms: r.mtime_ms,
-                    crc32c: r.crc32c,
+                    fingerprint: crate::pipeline::insert::bytes_to_hex(&r.fingerprint),
                     xxh3_128: xxh3_hex,
                     sha256: sha256_hex,
                     imported_at: now_ms,
@@ -147,7 +147,7 @@ pub fn batch_insert(
                     dest_path: None,
                     size: r.size,
                     mtime_ms: r.mtime_ms,
-                    crc32c: r.crc32c,
+                    fingerprint: crate::pipeline::insert::bytes_to_hex(&r.fingerprint),
                     xxh3_128: xxh3_hex,
                     sha256: sha256_hex,
                     imported_at: now_ms,
@@ -168,7 +168,7 @@ pub fn batch_insert(
                     dest_path: None,
                     size: r.size,
                     mtime_ms: r.mtime_ms,
-                    crc32c: r.crc32c,
+                    fingerprint: crate::pipeline::insert::bytes_to_hex(&r.fingerprint),
                     xxh3_128: xxh3_hex,
                     sha256: sha256_hex,
                     imported_at: now_ms,
@@ -186,7 +186,7 @@ pub fn batch_insert(
                 dest_path: Some(rel_path.to_path_buf()),
                 size: r.size,
                 mtime_ms: r.mtime_ms,
-                crc32c: r.crc32c,
+                fingerprint: crate::pipeline::insert::bytes_to_hex(&r.fingerprint),
                 xxh3_128: xxh3_hex,
                 sha256: sha256_hex,
                 imported_at: now_ms,
@@ -214,7 +214,7 @@ pub fn batch_insert(
         db.with_transaction(|conn| {
             let mut insert_stmt = conn.prepare(
                 "INSERT OR IGNORE INTO files \
-                 (path, size, mtime, crc32c, raw_unique_id, xxh3_128, sha256, status, imported_at) \
+                 (path, size, mtime, fingerprint, raw_unique_id, xxh3_128, sha256, status, imported_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'imported', ?8)"
             )?;
 
@@ -256,7 +256,7 @@ pub fn batch_insert(
                         rel_str,
                         r.size as i64,
                         r.mtime_ms,
-                        r.crc32c as i64,
+                        r.fingerprint.clone(),
                         r.raw_unique_id.as_deref(),
                         xxh3_bytes,
                         sha256_bytes,
@@ -370,7 +370,7 @@ mod tests {
             staged_path: None,
             size: 10,
             mtime_ms: 0,
-            crc32c: 42,
+            fingerprint: vec![1, 2, 3],
             raw_unique_id: None,
             hash,
             is_duplicate: false,
@@ -435,7 +435,7 @@ mod tests {
             staged_path: None,
             size: 10,
             mtime_ms: 0,
-            crc32c: 42,
+            fingerprint: vec![1, 2, 3],
             raw_unique_id: None,
             hash: FileHash::Fast(vec![]),
             is_duplicate: false,

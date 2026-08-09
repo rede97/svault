@@ -25,7 +25,7 @@ pub struct FileRecord {
     /// SHA-256 as raw 32 bytes.
     pub sha256: Option<Vec<u8>>,
     /// Format-specific CRC32C (carried for cache fidelity on copy).
-    pub crc32c: Option<i64>,
+    pub fingerprint: Option<Vec<u8>>,
     /// RAW unique ID (carried for dedup fidelity on copy).
     pub raw_unique_id: Option<String>,
 }
@@ -47,7 +47,7 @@ impl From<&crate::db::FileRow> for FileRecord {
             mtime: row.mtime,
             xxh3_128: row.xxh3_128.clone(),
             sha256: row.sha256.clone(),
-            crc32c: row.crc32c,
+            fingerprint: row.fingerprint.clone(),
             raw_unique_id: row.raw_unique_id.clone(),
         }
     }
@@ -234,7 +234,7 @@ mod tests {
             mtime: 1000,
             xxh3_128: xxh3.map(|b| vec![b; 16]),
             sha256: sha.map(|b| vec![b; 32]),
-            crc32c: None,
+            fingerprint: None,
             raw_unique_id: None,
         }
     }

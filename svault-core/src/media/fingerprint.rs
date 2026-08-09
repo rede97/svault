@@ -1,6 +1,9 @@
-//! CRC32 checksum strategies for media files.
+//! XXH3-128 fingerprint strategies for media files.
 //!
-//! This module is internal - users interact with checksums through `MediaInfo::checksum`.
+//! Fingerprints read only format-specific regions (head/tail 64KB), never the
+//! whole file (except unknown formats) — they exist for fast duplicate triage,
+//! not as identity. This module is internal - users interact with fingerprints
+//! through `MediaInfo::fingerprint`.
 
 use crate::media::formats::MediaFormat;
 use crate::media::{CHECKSUM_BUFFER_SIZE, MediaReader, Result};
@@ -9,21 +12,21 @@ use std::io::SeekFrom;
 use std::path::Path;
 
 /// Compute checksum for a file based on its format.
-pub fn compute_checksum(path: &Path, format: &MediaFormat) -> Result<u32> {
+pub fn compute_fingerprint(path: &Path, format: &MediaFormat) -> Result<[u8; 16]> {
     let mut file = File::open(path)?;
-    let strategy = CrcStrategy::for_format(format);
-    compute_checksum_with_strategy(&mut file, strategy)
+    let strategy = FingerprintStrategy::for_format(format);
+    compute_fingerprint_with_strategy(&mut file, strategy)
 }
 
 /// Compute checksum with a specific strategy.
-pub(crate) fn compute_checksum_with_strategy(
+pub(crate) fn compute_fingerprint_with_strategy(
     reader: &mut dyn MediaReader,
-    strategy: CrcStrategy,
-) -> Result<u32> {
+    strategy: FingerprintStrategy,
+) -> Result<[u8; 16]> {
     match strategy {
-        CrcStrategy::Head(n) => compute_head(reader, n),
-        CrcStrategy::Tail(n) => compute_tail(reader, n),
-        CrcStrategy::HeadTail(head_n, tail_m) => {
+        FingerprintStrategy::Head(n) => compute_head(reader, n),
+        FingerprintStrategy::Tail(n) => compute_tail(reader, n),
+        FingerprintStrategy::HeadTail(head_n, tail_m) => {
             // Read head
             reader.seek(SeekFrom::Start(0))?;
             let mut head_buf = vec![0u8; head_n];
@@ -40,18 +43,18 @@ pub(crate) fn compute_checksum_with_strategy(
 
             // Combine and hash
             head_buf.extend_from_slice(&tail_buf);
-            Ok(crate::media::crc32_bytes(&head_buf))
+            Ok(crate::hash::xxh3_128_bytes(&head_buf).to_bytes())
         }
-        CrcStrategy::Full => compute_full(reader),
-        CrcStrategy::Range(start, len) => compute_range(reader, start, len),
-        CrcStrategy::Custom(func) => func(reader),
+        FingerprintStrategy::Full => compute_full(reader),
+        FingerprintStrategy::Range(start, len) => compute_range(reader, start, len),
+        FingerprintStrategy::Custom(func) => func(reader),
     }
 }
 
 /// Checksum strategy implementations.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-pub(crate) enum CrcStrategy {
+pub(crate) enum FingerprintStrategy {
     /// Read first N bytes from start of file.
     Head(usize),
     /// Read last N bytes from end of file.
@@ -64,10 +67,10 @@ pub(crate) enum CrcStrategy {
     /// Read a specific byte range.
     Range(usize, usize),
     /// Custom strategy for complex formats.
-    Custom(fn(&mut dyn MediaReader) -> Result<u32>),
+    Custom(fn(&mut dyn MediaReader) -> Result<[u8; 16]>),
 }
 
-impl CrcStrategy {
+impl FingerprintStrategy {
     /// Get the default strategy for a media format.
     ///
     /// CRC strategy is format-specific to handle different metadata locations:
@@ -80,41 +83,41 @@ impl CrcStrategy {
 
         match format {
             // Image formats: use head (64KB) - image data starts early
-            Jpeg => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
-            Heif | Heic | Avif | Webp => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
+            Jpeg => FingerprintStrategy::Head(CHECKSUM_BUFFER_SIZE),
+            Heif | Heic | Avif | Webp => FingerprintStrategy::Head(CHECKSUM_BUFFER_SIZE),
 
             // PNG: use tail (64KB) - image data at end, metadata at start
             // Metadata (text chunks) can be modified without changing image
-            Png => CrcStrategy::Tail(CHECKSUM_BUFFER_SIZE),
+            Png => FingerprintStrategy::Tail(CHECKSUM_BUFFER_SIZE),
 
             // Video formats: head + tail (128KB = 64KB head + 64KB tail)
             // MP4/MOV: moov atom (metadata) often at end, mdat (media) at start
-            Mov | Mp4 => CrcStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE),
-            Avi | Mkv => CrcStrategy::Head(CHECKSUM_BUFFER_SIZE),
+            Mov | Mp4 => FingerprintStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE),
+            Avi | Mkv => FingerprintStrategy::Head(CHECKSUM_BUFFER_SIZE),
 
             // RAW formats: head + tail (128KB total)
             // RAW files are large; head+tail captures embedded JPEG preview and metadata
             Dng | Arw | Cr2 | Cr3 | Nef | Raf | Rw2 => {
-                CrcStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE)
+                FingerprintStrategy::HeadTail(CHECKSUM_BUFFER_SIZE, CHECKSUM_BUFFER_SIZE)
             }
 
             // Unknown: full file to be safe
-            Unknown(_) => CrcStrategy::Full,
+            Unknown(_) => FingerprintStrategy::Full,
         }
     }
 }
 
 /// Compute CRC32 of first N bytes.
-fn compute_head(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
+fn compute_head(reader: &mut dyn MediaReader, n: usize) -> Result<[u8; 16]> {
     reader.seek(SeekFrom::Start(0))?;
     let mut buffer = vec![0u8; n];
     let read = reader.read(&mut buffer)?;
     buffer.truncate(read);
-    Ok(crate::media::crc32_bytes(&buffer))
+    Ok(crate::hash::xxh3_128_bytes(&buffer).to_bytes())
 }
 
 /// Compute CRC32 of last N bytes.
-fn compute_tail(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
+fn compute_tail(reader: &mut dyn MediaReader, n: usize) -> Result<[u8; 16]> {
     let len = reader.len()?;
     let start = len.saturating_sub(n as u64);
 
@@ -122,13 +125,13 @@ fn compute_tail(reader: &mut dyn MediaReader, n: usize) -> Result<u32> {
     let mut buffer = vec![0u8; n];
     let read = reader.read(&mut buffer)?;
     buffer.truncate(read);
-    Ok(crate::media::crc32_bytes(&buffer))
+    Ok(crate::hash::xxh3_128_bytes(&buffer).to_bytes())
 }
 
 /// Compute CRC32 of entire file.
-fn compute_full(reader: &mut dyn MediaReader) -> Result<u32> {
+fn compute_full(reader: &mut dyn MediaReader) -> Result<[u8; 16]> {
     reader.seek(SeekFrom::Start(0))?;
-    let mut hasher = crc32fast::Hasher::new();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     let mut buffer = [0u8; 8192];
 
     loop {
@@ -139,16 +142,21 @@ fn compute_full(reader: &mut dyn MediaReader) -> Result<u32> {
         hasher.update(&buffer[..read]);
     }
 
-    Ok(hasher.finalize())
+    let digest = hasher.digest128();
+    Ok(crate::hash::Xxh3Digest {
+        low: digest as u64,
+        high: (digest >> 64) as u64,
+    }
+    .to_bytes())
 }
 
 /// Compute CRC32 of a specific byte range.
-fn compute_range(reader: &mut dyn MediaReader, start: usize, len: usize) -> Result<u32> {
+fn compute_range(reader: &mut dyn MediaReader, start: usize, len: usize) -> Result<[u8; 16]> {
     reader.seek(SeekFrom::Start(start as u64))?;
     let mut buffer = vec![0u8; len];
     let read = reader.read(&mut buffer)?;
     buffer.truncate(read);
-    Ok(crate::media::crc32_bytes(&buffer))
+    Ok(crate::hash::xxh3_128_bytes(&buffer).to_bytes())
 }
 
 #[cfg(test)]
@@ -161,9 +169,9 @@ mod tests {
     }
 
     #[test]
-    fn test_head_checksum() {
+    fn test_head_fingerprint() {
         let data = test_data();
-        let expected = crate::media::crc32_bytes(&data[..CHECKSUM_BUFFER_SIZE]);
+        let expected = crate::hash::xxh3_128_bytes(&data[..CHECKSUM_BUFFER_SIZE]).to_bytes();
 
         let mut cursor = Cursor::new(data);
         let result = compute_head(&mut cursor, CHECKSUM_BUFFER_SIZE).unwrap();
@@ -172,9 +180,10 @@ mod tests {
     }
 
     #[test]
-    fn test_tail_checksum() {
+    fn test_tail_fingerprint() {
         let data = test_data();
-        let expected = crate::media::crc32_bytes(&data[data.len() - CHECKSUM_BUFFER_SIZE..]);
+        let expected =
+            crate::hash::xxh3_128_bytes(&data[data.len() - CHECKSUM_BUFFER_SIZE..]).to_bytes();
 
         let mut cursor = Cursor::new(data);
         let result = compute_tail(&mut cursor, CHECKSUM_BUFFER_SIZE).unwrap();
@@ -183,9 +192,9 @@ mod tests {
     }
 
     #[test]
-    fn test_full_checksum() {
+    fn test_full_fingerprint() {
         let data = test_data();
-        let expected = crate::media::crc32_bytes(&data);
+        let expected = crate::hash::xxh3_128_bytes(&data).to_bytes();
 
         let mut cursor = Cursor::new(data);
         let result = compute_full(&mut cursor).unwrap();

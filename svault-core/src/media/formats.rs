@@ -1,6 +1,6 @@
 //! Media format definitions and detection.
 
-use super::crc::CrcStrategy;
+use super::fingerprint::FingerprintStrategy;
 use super::{MediaError, Result};
 use std::ffi::OsStr;
 use std::fmt;
@@ -161,8 +161,8 @@ impl MediaFormat {
 
     /// Get the checksum strategy for this format.
     #[allow(dead_code)]
-    pub(crate) fn checksum_strategy(&self) -> CrcStrategy {
-        CrcStrategy::for_format(self)
+    pub(crate) fn checksum_strategy(&self) -> FingerprintStrategy {
+        FingerprintStrategy::for_format(self)
     }
 
     /// Get MIME type for this format.

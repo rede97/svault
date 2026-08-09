@@ -37,7 +37,7 @@ use crate::pipeline;
 /// the import and add orchestrators.
 ///
 /// # Arguments
-/// * `entry`      – `CrcEntry` with CRC32C and file metadata
+/// * `entry`      – `FingerprintEntry` with CRC32C and file metadata
 /// * `db`         – Database handle
 /// * `vault_root` – Vault root path for existence checks
 /// * `hash`       – Optional `(hash_bytes, algorithm)` for secondary
@@ -48,7 +48,7 @@ use crate::pipeline;
 /// - File exists at original path → returns `Duplicate`
 /// - CRC matches but file missing → returns `Moved` (vault-internal move)
 pub fn check_duplicate(
-    entry: &pipeline::types::CrcEntry,
+    entry: &pipeline::types::FingerprintEntry,
     db: &Db,
     vault_root: &Path,
     hash: Option<(&[u8], &HashAlgorithm)>,
@@ -60,9 +60,9 @@ pub fn check_duplicate(
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    let cached = match db.lookup_by_crc32c(
+    let cached = match db.lookup_by_fingerprint(
         entry.file.size as i64,
-        entry.crc32c,
+        entry.fingerprint.as_slice(),
         ext,
         entry.raw_unique_id.as_deref(),
     ) {
@@ -114,7 +114,7 @@ pub fn check_duplicate(
 /// unique-destination rule. A source-side hash error also flips to `New`,
 /// letting the copy stage surface the IO error per-file (G3).
 pub fn check_duplicate_with_level(
-    entry: &pipeline::types::CrcEntry,
+    entry: &pipeline::types::FingerprintEntry,
     db: &Db,
     vault_root: &Path,
     level: types::CompareLevel,
@@ -132,9 +132,9 @@ pub fn check_duplicate_with_level(
         .and_then(|e| e.to_str())
         .unwrap_or("");
     let row = db
-        .lookup_by_crc32c(
+        .lookup_by_fingerprint(
             entry.file.size as i64,
-            entry.crc32c,
+            entry.fingerprint.as_slice(),
             ext,
             entry.raw_unique_id.as_deref(),
         )

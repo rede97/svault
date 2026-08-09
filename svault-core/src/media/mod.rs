@@ -31,7 +31,7 @@ use std::path::Path;
 use thiserror::Error;
 
 mod binding;
-pub mod crc;
+pub mod fingerprint;
 pub mod formats;
 pub mod raw;
 pub mod raw_id;
@@ -65,8 +65,9 @@ pub struct MediaInfo {
     pub format: MediaFormat,
     /// File size in bytes
     pub size: u64,
-    /// Format-specific checksum (stable identifier)
-    pub checksum: u32,
+    /// Format-specific XXH3-128 fingerprint over head/tail regions
+    /// (fast triage identifier, NOT a full-file identity)
+    pub fingerprint: [u8; 16],
     /// Optional: capture timestamp from metadata
     pub capture_time: Option<chrono::DateTime<chrono::Utc>>,
     /// Optional: camera model
@@ -79,13 +80,13 @@ impl MediaInfo {
         let path = path.as_ref();
         let format = MediaFormat::from_path(path)?;
         let size = std::fs::metadata(path)?.len();
-        let checksum = crc::compute_checksum(path, &format)?;
+        let fingerprint = fingerprint::compute_fingerprint(path, &format)?;
 
         Ok(Self {
             path: path.to_path_buf(),
             format,
             size,
-            checksum,
+            fingerprint,
             capture_time: None,
             camera_model: None,
         })
@@ -122,8 +123,3 @@ impl<R: Read + Seek> MediaReader for R {
 
 /// Default 64KB buffer size for partial checksums.
 pub(crate) const CHECKSUM_BUFFER_SIZE: usize = 64 * 1024;
-
-/// Compute CRC32 of a byte slice.
-pub(crate) fn crc32_bytes(data: &[u8]) -> u32 {
-    crc32fast::hash(data)
-}

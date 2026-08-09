@@ -80,7 +80,20 @@ impl Db {
 
     /// Apply schema migrations idempotently.
     fn migrate(&self) -> Result<()> {
-        self.conn.execute_batch(SCHEMA)
+        self.conn.execute_batch(SCHEMA)?;
+        // 2026-08-09: `fingerprint` (XXH3-128 over head/tail regions) replaced
+        // the CRC32C column. CREATE TABLE IF NOT EXISTS does not add columns
+        // to pre-existing vaults, so add it explicitly where missing.
+        let has_fingerprint: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('files') WHERE name = 'fingerprint'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_fingerprint {
+            self.conn
+                .execute_batch("ALTER TABLE files ADD COLUMN fingerprint BLOB;")?;
+        }
+        Ok(())
     }
 
     /// Execute a function within a database transaction.
@@ -121,9 +134,9 @@ CREATE TABLE IF NOT EXISTS files (
     size                 INTEGER NOT NULL,  -- File size in bytes
     path                 TEXT    NOT NULL,  -- Current vault path (mutable)
     mtime                INTEGER NOT NULL,  -- Source file modification time
+    fingerprint          BLOB,              -- XXH3-128 over head/tail regions (see media/fingerprint.rs)
     group_id             INTEGER REFERENCES media_groups(id),
     role                 TEXT,              -- primary/motion/depth/auxiliary
-    crc32c               INTEGER,           -- Format-specific CRC32C (see media/crc.rs)
     raw_unique_id        TEXT,              -- Camera serial + image ID for RAW files (format: serial:image_id)
     exif_fp              TEXT,              -- EXIF fingerprint for grouping
     status               TEXT    NOT NULL DEFAULT 'imported',

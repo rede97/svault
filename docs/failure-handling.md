@@ -151,7 +151,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 ### 3.1 `import`（`add` 共享管线，差异注明）
 
-管线：Stage A 扫描（jwalk 线程→mpsc）→ Stage B CRC（100 条攒批 + rayon）
+管线：Stage A 扫描（jwalk 线程→mpsc）→ Stage B 指纹（头/尾 64KB XXH3，100 条攒批 + rayon）
 → Lookup 查重（串行内联 `ops::check_duplicate`）→ Preflight + 用户确认
 → **plan.json 落盘**（fail-fast）→ Stage C 复制到 **staging**（串行 EXIF
 路径解析 + rayon 并行传输 + fsync，目标
@@ -162,7 +162,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 | 故障场景 | 行为 [VERIFIED] | 可观测证据 |
 |----------|----------------|------------|
 | 源文件读取 EIO（Stage B） | 该文件 `ScanItem{Failed}`，跳过继续 | Preflight 事件 failed 计数；退出码 0 |
-| CRC 指纹命中但源内容已变 | fast（默认）：判 duplicate 跳过；`-c mid`：源端 XXH3 与 DB 比对，不符推翻为 New 重新导入；`-c high`：DB 有 sha256 用 sha256 否则回退 xxh3（`ops/mod.rs::check_duplicate_with_level`） | fast：退出码 0 全 duplicate；mid/high：改名 `.1` 重复制并入库 |
+| 指纹命中但源内容已变（区域盲区） | fast（默认）：判 duplicate 跳过；`-c mid`：源端 XXH3 与 DB 比对，不符推翻为 New 重新导入；`-c high`：DB 有 sha256 用 sha256 否则回退 xxh3（`ops/mod.rs::check_duplicate_with_level`） | fast：退出码 0 全 duplicate；mid/high：改名 `.1` 重复制并入库 |
 | plan.json 写失败（ENOSPC 等） | **fail-fast**：Err → exit 1，复制尚未开始 | stderr `cannot write import plan` |
 | 源文件读取 EIO（Stage C） | 该文件 `CopyFinished{error}`，跳过继续 | 退出码 0；manifest 无此文件（plan 有意图记录） |
 | vault 目标哈希 EIO（Stage D） | 计入 **failed**，跳过继续（BUG-1 已于 `d970fd0` 修复：结构化 `hash_error` 字段替代前缀匹配） | 退出码 0；manifest status=Failed |
@@ -257,9 +257,9 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 | import Stage A–D | DB 无记录；已复制部分在会话 staging 子树，最终路径不可见；plan.json 已存在 | 对账：补 rename（若有已入库项）+ 报告残留（**不删**）；全部重新处理 |
 | import Stage E 事务中 | 事务回滚 | 同上 |
 | import commit 后、rename 前 | DB 有记录；文件在 staging | 对账补 rename，零重复制 |
-| import 完成后 | DB + manifest 完整；本次会话 staging 子树已清空，plan/manifest 保留 | CRC32C 短路：秒级跳过，全部 duplicate |
-| 重跑时 CRC 命中 | — | 不复制、不入库（`db/files.rs` 查 size+CRC+扩展名） |
-| 重跑时 CRC 未命中但哈希相同 | — | 复制到 staging 后 Stage D 查 `files.xxh3_128` 判重复、**不入库**；暂存副本由本进程 Stage E 后清理，**不再在最终路径残留第二份物理副本**（2026-08-09 起） |
+| import 完成后 | DB + manifest 完整；本次会话 staging 子树已清空，plan/manifest 保留 | 指纹短路：秒级跳过，全部 duplicate |
+| 重跑时指纹命中 | — | 不复制、不入库（`db/files.rs` 查 size+fingerprint+扩展名） |
+| 重跑时指纹未命中但全量哈希相同 | — | 复制到 staging 后 Stage D 查 `files.xxh3_128` 判重复、**不入库**；暂存副本由本进程 Stage E 后清理，**不再在最终路径残留第二份物理副本**（2026-08-09 起） |
 | sync 复制中途 | 部分文件已复制，DB 无记录；plan.json 已存在 | diff 重算，重新复制覆盖 |
 | sync 入库后 | DB + manifest 完整 | diff 全 Identical，空计划 |
 
@@ -274,7 +274,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - ~~"已复制未入库"的孤儿文件无法被任何去重层识别，重跑改名重复制~~
   **已闭环（2026-08-09，[OPEN-3]）**：staging 模型下孤儿只存在于会话
   staging 子树，对账报告、用户处置，最终路径不再有不可识别副本。
-- `--force` 是有意破坏幂等的开关：跳过 CRC 短路 + 跳过二次去重 +
+- `--force` 是有意破坏幂等的开关：跳过指纹短路 + 跳过二次去重 +
   跳过按路径检查 → 重复内容会复制并插入第二条 DB 记录
   （`lookup.rs`、`import.rs`、`insert.rs`）。
 
@@ -282,9 +282,10 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 ## 6. 命名与统计口径（判据用词必须精确）
 
-- **"CRC32C" 实为 CRC-32/ISO-HDLC**：导入管线用 `crc32fast`
-  （`media/mod.rs:127-129`）；真正的 crc32c crate 仅用于 verify 的
-  Stage 3 probe（`hash/mod.rs:26-28`）。测试断言 CRC 值时注意。
+- **指纹算法（2026-08-09 起）为 XXH3-128**（头/尾 64KB 区域，
+  `media/fingerprint.rs`），替代 CRC32C——与全量身份同一哈希族；
+  `crc32fast`/`crc32c` 依赖已删除。旧库的 CRC32C 值不参与新查找，
+  重跑由 Stage D 全量 XXH3 兜底（一次性成本）。
 - **ImportSummary.failed = 复制失败 + 哈希失败**，不含扫描阶段失败
   （`ops/import.rs:721`）；扫描失败只见于 Preflight 事件。
 - **manifest 只覆盖进入 Stage E 的文件**；扫描失败、复制失败的文件
@@ -344,7 +345,7 @@ DB 查询 / 文件系统状态）。
 | `test_import_pause_multiple_files` | ✅ 实现 | 暂停点前的文件已完成入库（如已过 Stage E）或未入库（未过）；重跑后全部一致 |
 | ~~`test_recheck_source_modified_during_check`~~ | 🗑 **已删除（2026-08-09）**：随 recheck 移除；源中途修改的等价覆盖由 `-c mid` 重跑承接 | — |
 | `test_silent_corruption_at_specific_offset` | ✅ 实现（依赖 corrupt action） | 同 §4 局限性确认 |
-| `test_unstable_read_during_import` | ✅ 实现（依赖动态规则，§8.4） | **局限性确认**：断言现行行为=无法检测（导入成功，crc32c 与 vault 内容可能不一致）；`-c mid` 重跑可发现 |
+| `test_unstable_read_during_import` | ✅ 实现（依赖动态规则，§8.4） | **局限性确认**：断言现行行为=无法检测（导入成功，指纹/哈希与 vault 内容可能不一致）；`-c mid` 重跑可发现 |
 | `test_import_eagain_retry` | ⚠️ **改写并按实测修正**（2026-08-05）：svault 无重试层（G2）结论不变，但实测 **FUSE 内核客户端对 EAGAIN 透明重试**——瞬态 EAGAIN 被内核吸收，导入正常完成。改名 `test_import_eagain_error`，判据：注入 3 次 EAGAIN（error_count==3）→ import exit 0 全入库 |
 | `test_import_slow_read_timeout` | ❌ **删除** | 无超时机制（G2），计划前提不成立。可改为 `test_import_slow_read_completes`：慢速读取只是慢，最终正常完成（归 P2 稳定性） |
 

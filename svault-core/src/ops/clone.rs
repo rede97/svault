@@ -206,7 +206,7 @@ mod tests {
             "2024/01/a.jpg",
             9,
             1000,
-            Some(42),
+            Some(&[7u8; 16]),
             None,
             Some(&[1u8; 16]),
             None,

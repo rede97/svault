@@ -56,7 +56,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
 
     let scan_rx =
         pipeline::scan::scan_stream(&opts.path, &exts, &crate::fs::ScanFilter::default())?;
-    let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
+    let crc_rx = pipeline::fingerprint::compute_fingerprints_stream(scan_rx);
 
     let mut lookup_results = Vec::new();
     let mut moved_files: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -65,7 +65,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
     for result in crc_rx {
         total_files += 1;
 
-        let crc = match result.crc {
+        let crc = match result.fingerprint {
             Ok(c) => c,
             Err(e) => {
                 sink.emit(&Event::ScanItem {
@@ -73,7 +73,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
                     size: result.file.size,
                     mtime_ms: result.file.mtime_ms,
                     status: ItemStatus::Failed,
-                    error: Some(format!("CRC computation failed: {}", e)),
+                    error: Some(format!("fingerprint computation failed: {}", e)),
                 });
                 continue;
             }
@@ -92,7 +92,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
             None
         };
 
-        let entry = pipeline::types::CrcEntry {
+        let entry = pipeline::types::FingerprintEntry {
             file: pipeline::types::FileEntry {
                 path: result.file.path.clone(),
                 size: result.file.size,
@@ -100,7 +100,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
             },
             src_path: None,
             staged_path: None,
-            crc32c: crc,
+            fingerprint: crc,
             raw_unique_id,
             precomputed_hash: None,
         };

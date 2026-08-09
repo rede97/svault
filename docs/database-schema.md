@@ -20,7 +20,7 @@
 
 | 场景 | 表 | 读/写 |
 |------|----|------|
-| `import` / `add` 查重（Stage B CRC 短路、Stage D 哈希二次去重） | `files` | 读 |
+| `import` / `add` 查重（Stage B 指纹短路、Stage D 哈希二次去重） | `files` | 读 |
 | `import` / `add` / `sync` 入库（整批单事务） | `files` | 写 |
 | `verify` 完整性校验（定位磁盘文件 + 比对哈希） | `files` | 读（`--background-hash` 写 `sha256`） |
 | `update` 路径修正 / missing 标记 | `files` | 读写 |
@@ -40,7 +40,7 @@ SQL 读写者**——复合媒体绑定（`media/binding.rs`）现阶段只在�
 
 | 路径 | 用途 |
 |------|------|
-| `.svault/sessions/import/<ts-id>/plan.json` | import 复制前意图（src/dest/size/crc32c，原子写入） |
+| `.svault/sessions/import/<ts-id>/plan.json` | import 复制前意图（src/dest/size/fingerprint，原子写入） |
 | `.svault/sessions/import/<ts-id>/manifest.json` | import 结果清单（原子写入） |
 | `.svault/sessions/import/<ts-id>/staging/` | import 暂存 payload（入库 commit 后 rename 到最终路径） |
 | `.svault/sessions/sync/<ts-id>/{plan,manifest}.json` | sync 会话日志（diff 意图 + 结果） |
@@ -63,7 +63,7 @@ CREATE TABLE files (
     mtime                INTEGER NOT NULL,  -- 源文件 mtime（Unix 毫秒）
     group_id             INTEGER REFERENCES media_groups(id),
     role                 TEXT,              -- primary/motion/depth/auxiliary
-    crc32c               INTEGER,           -- 格式相关 CRC32C 指纹（导入快速预筛）
+    fingerprint          BLOB,              -- XXH3-128 头/尾区域指纹（导入快速预筛）
     raw_unique_id        TEXT,              -- RAW 唯一 ID（机身序列号:图像 ID）
     exif_fp              TEXT,              -- EXIF 指纹（分组用）
     status               TEXT    NOT NULL DEFAULT 'imported',  -- imported/duplicate/missing
@@ -153,7 +153,7 @@ CREATE TABLE media_groups (
 （tmp+fsync+rename 原子写入）：
 
 - `plan.json` — 复制**前**落盘的操作意图。import：`files[]` 含
-  `src_path` / `dest_path`（vault 相对，Unix 风格）/ `size` / `crc32c`；
+  `src_path` / `dest_path`（vault 相对，Unix 风格）/ `size` / `fingerprint`（hex）；
   sync：`files[]` 含 `path` / `size` / `xxh3_128` / `sha256`。
   plan 是事后剖析的 hint，DB 是唯一真值。
 - `manifest.json` — 复制**后**的结果清单：
@@ -169,7 +169,7 @@ CREATE TABLE media_groups (
     {
       "src_path": "/mnt/card/IMG_001.CR3",
       "dest_path": "2024/03-15/Canon/IMG_001.CR3",
-      "size": 52428800, "mtime_ms": 1710518400000, "crc32c": 123456789,
+      "size": 52428800, "mtime_ms": 1710518400000, "fingerprint": "ab…",
       "xxh3_128": "ab...", "sha256": null,
       "imported_at": 1710518400000, "status": "added", "error": null
     }

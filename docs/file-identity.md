@@ -40,11 +40,14 @@ files 表
 ├── size               INTEGER   字节数，普通索引（用于 Stage 2 快速过滤）
 ├── path               TEXT      当前文件路径（可变，路径不是身份）
 ├── mtime              INTEGER   最后修改时间戳（缓存失效键之一）
-├── crc32c             INTEGER   CRC32C 值（临时指纹，epoch 失效）
-└── import_session_id  INTEGER   导入会话 ID（关联 import_sessions 表）
+├── fingerprint          BLOB      XXH3-128 指纹（头/尾 64KB 区域，快速预筛）
+└── imported_at          INTEGER   入库时间（Unix 毫秒）
 ```
 
-**`crc32c` 字段**：纯数值（INTEGER），临时快速指纹。应用版本更新时，通过 `metadata.crc32c_epoch` 全局失效，执行 `UPDATE files SET crc32c = NULL`。
+**`fingerprint` 字段**：16 字节 BLOB，格式相关头/尾区域的 XXH3-128
+（2026-08-09 起替代 CRC32C——统一哈希族，删除 crc32fast/crc32c 依赖）。
+注意：**不是**全文件身份，中段内容不覆盖。旧库的 CRC32C 值不参与新算法
+查找，重跑时由 Stage D 全量 XXH3 兜底判重（一次性成本）。
 
 重复文件查找查询：
 ```sql
@@ -59,7 +62,7 @@ SELECT * FROM files WHERE size = ? AND sha256 = ?     -- id_hash = sha256 或 SH
 ```
 device_id + inode + mtime + size
 ```
-任意一项变化则重新计算所有哈希。CRC32C 额外受 `metadata.crc32c_epoch` 控制——应用升级时递增 epoch，所有 CRC32C 缓存批量失效。
+任意一项变化则重新计算所有哈希。
 
 ---
 
@@ -75,7 +78,7 @@ Stage 2: 文件大小比较（stat() syscall，无需打开文件）
         ↓ 相同 → 继续
 
 Stage 3: 前 64KB 快速比较
-        ├── CRC32C 校验和比较
+        ├── XXH3-128 区域指纹比较
         └── 二进制 EXIF 关键字段比较
         ↓ 任一不同 → 肯定不同，终止
         ↓ 全部一致 → 高置信度相同
@@ -120,7 +123,7 @@ fn fingerprint_regions(file_size: u64) -> Vec<ByteRange>
     → 返回需要读取的字节区间列表（可以是头部、尾部、或多个区间）
 
 fn extract_fingerprint(regions: &[u8]) -> Fingerprint
-    → 从读取到的字节中提取 CRC32C 和结构化元数据字段
+    → 从读取到的字节中计算 XXH3-128 并提取结构化元数据字段
 ```
 
 #### 内置格式策略
@@ -131,16 +134,17 @@ fn extract_fingerprint(regions: &[u8]) -> Fingerprint
 | HEIC / HEIF | 头部 64KB | `ftyp` + `meta` box | ISO BMFF 结构，元数据在头部 |
 | CR3 / NEF / ARW (RAW) | 头部 64KB | EXIF IFD | 与 TIFF 结构兼容，头部解析 |
 | **PNG** | **尾部 64KB** | **`tEXt` / `iTXt` / `eXIf` chunk** | PNG 元数据 chunk 可出现在文件末尾，优先读尾部 |
-| MP4 / MOV | 头部 64KB | `moov` box（若在头部） | 部分文件 `moov` 在尾部，此时降级为仅 CRC32C |
-| 未知 / fallback | 头部 64KB | 无结构化解析 | 仅计算 CRC32C，不提取元数据字段 |
+| MP4 / MOV | 头部+尾部各 64KB | `moov` box | moov 常在尾部，故头尾都读 |
+| 未知 / fallback | 全文件 | 无结构化解析 | 仅计算 XXH3-128，不提取元数据字段 |
 
-#### 3a. CRC32C 校验和
+#### 3a. XXH3-128 区域指纹
 
-- 对处理器声明的字节区间计算 CRC32C-32（SSE4.2 / ARM CRC32 硬件原生指令，单条指令完成）
-- 代价：最多 64KB 读取，约 0.1ms（本地）/ 1–5ms（网络）；64KB ÷ 20 GB/s ≈ 3µs，完全被 IO 延迟淹没
-- CRC32C 不同则指纹区域内容必然不同
-- **为什么用 CRC32C 而非 XXH3**：XXH3 没有 32 位变体，最小输出为 64 位；强行截断至 32 位会使碰撞概率升至 1/2³²，在生日悖论下约 5 万文件时碰撞概率 >50%，不适合作过滤器。CRC32C 在过滤器场景下碰撞由后续阶段兜底，32 位完全够用，且硬件代价更低
-- **XXH3 的适用场景**：大文件的快速完整性校验（Stage 4 预筛、`svault verify --fast`），此时使用 **XXH3-128**，吞吐量 30–60 GB/s，可触达内存带宽上限，且 128 位输出碰撞概率可忽略
+- 对处理器声明的字节区间计算 XXH3-128（128 位，碰撞概率 ~2⁻¹²⁸）
+- 代价：最多 128KB 读取，完全被 IO 延迟淹没（64KB 哈希为微秒级）
+- **2026-08-09 算法统一**：指纹从 CRC32C 换为 XXH3-128——与全量身份同属
+  一个哈希族，删除 crc32fast/crc32c 两个依赖。指纹与强哈希的唯一差异
+  只剩**覆盖范围**（区域 vs 全量）；区域盲区的验证手段是
+  `import --compare-level mid/high`
 
 #### 3b. 结构化元数据字段比较
 
@@ -158,8 +162,8 @@ fn extract_fingerprint(regions: &[u8]) -> Fingerprint
 
 **Fallback 规则（优先级从高到低）：**
 1. 格式处理器提供完整指纹策略 → 使用处理器声明的区域和字段
-2. 格式已知但元数据解析失败 → 仅依赖 CRC32C，记录警告
-3. 格式未知 / 无注册处理器 → 读头部 64KB，仅依赖 CRC32C
+2. 格式已知但元数据解析失败 → 仅依赖区域指纹，记录警告
+3. 格式未知 / 无注册处理器 → 全量读取计算 XXH3-128
 
 ### Stage 4 — SHA-256 全文件哈希
 
@@ -205,7 +209,7 @@ svault import --source /mnt/nas/photos --compare-level fast
 │
 ├─ 扩展名不同? ──→ 不同
 ├─ 大小不同? ──→ 不同
-├─ 格式指纹区域 CRC32C 不同? ──→ 不同  (PNG: 尾部64KB / 其他: 头部64KB / fallback: 头部64KB)
+├─ 格式指纹区域 XXH3 不同? ──→ 不同  (PNG: 尾部64KB / 其他: 头部64KB / fallback: 头部64KB)
 ├─ 结构化元数据字段不同? ──→ 不同  (无处理器时跳过)
 ├─ [网络存储默认止步] ──→ 视为相同（高置信度）
 ├─ SHA-256 不同? ──→ 不同

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::db::Db;
-use crate::pipeline::types::{CrcEntry, FileStatus, LookupResult};
+use crate::pipeline::types::{FileStatus, FingerprintEntry, LookupResult};
 
 /// Lookup files in DB to check for duplicates.
 ///
@@ -21,7 +21,7 @@ use crate::pipeline::types::{CrcEntry, FileStatus, LookupResult};
 /// # Returns
 /// List of lookup results with status (LikelyNew / LikelyCacheDuplicate / Failed)
 pub fn lookup_duplicates(
-    entries: Vec<CrcEntry>,
+    entries: Vec<FingerprintEntry>,
     db: &Db,
     vault_root: &Path,
 ) -> anyhow::Result<Vec<LookupResult>> {
@@ -36,11 +36,11 @@ pub fn lookup_duplicates(
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        // DB lookup with CRC32C + RAW ID
+        // DB lookup with fingerprint + RAW ID
         let cached = db
-            .lookup_by_crc32c(
+            .lookup_by_fingerprint(
                 entry.file.size as i64,
-                entry.crc32c,
+                &entry.fingerprint,
                 ext,
                 entry.raw_unique_id.as_deref(),
             )
@@ -50,7 +50,7 @@ pub fn lookup_duplicates(
             // For RAW files with unique IDs, check if IDs match
             let is_same_raw_id = match (&entry.raw_unique_id, &row.raw_unique_id) {
                 (Some(new_id), Some(existing_id)) => new_id == existing_id,
-                _ => true, // Can't compare, fall back to CRC-only
+                _ => true, // Can't compare, fall back to fingerprint-only
             };
 
             // Check if vault file still exists
@@ -71,7 +71,10 @@ pub fn lookup_duplicates(
 }
 
 /// Filter to likely new files (with optional force mode).
-pub fn filter_new(results: Vec<LookupResult>, force: bool) -> (Vec<CrcEntry>, Vec<CrcEntry>) {
+pub fn filter_new(
+    results: Vec<LookupResult>,
+    force: bool,
+) -> (Vec<FingerprintEntry>, Vec<FingerprintEntry>) {
     let mut new_files = Vec::new();
     let mut duplicates = Vec::new();
 

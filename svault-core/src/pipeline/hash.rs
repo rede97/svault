@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use crate::db::Db;
 use crate::event::{Event, EventSink};
 use crate::hash::{sha256_file, xxh3_128_file};
-use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
+use crate::pipeline::types::{FileHash, FingerprintEntry, HashResult};
 
 /// Compute strong hashes for all entries in parallel.
 ///
@@ -23,7 +23,7 @@ use crate::pipeline::types::{CrcEntry, FileHash, HashResult};
 /// # Returns
 /// List of hash results (errors preserved in result with dup_reason)
 pub fn compute_hashes(
-    entries: Vec<CrcEntry>,
+    entries: Vec<FingerprintEntry>,
     compute_sha256: bool,
     sink: Option<&dyn EventSink>,
 ) -> Vec<HashResult> {
@@ -61,7 +61,7 @@ pub fn compute_hashes(
                         staged_path: entry.staged_path.clone(),
                         size,
                         mtime_ms: entry.file.mtime_ms,
-                        crc32c: entry.crc32c,
+                        fingerprint: entry.fingerprint.clone(),
                         raw_unique_id: entry.raw_unique_id.clone(),
                         hash: FileHash::Fast(vec![]), // Empty hash indicates error
                         is_duplicate: false,
@@ -100,7 +100,7 @@ pub fn compute_hashes(
                     staged_path: entry.staged_path.clone(),
                     size,
                     mtime_ms: entry.file.mtime_ms,
-                    crc32c: entry.crc32c,
+                    fingerprint: entry.fingerprint.clone(),
                     raw_unique_id: entry.raw_unique_id.clone(),
                     hash,
                     is_duplicate: false,
@@ -115,7 +115,7 @@ pub fn compute_hashes(
                 staged_path: entry.staged_path,
                 size,
                 mtime_ms: entry.file.mtime_ms,
-                crc32c: entry.crc32c,
+                fingerprint: entry.fingerprint.clone(),
                 raw_unique_id: entry.raw_unique_id,
                 hash,
                 is_duplicate: false,
