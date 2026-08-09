@@ -12,8 +12,6 @@
 //! ├── sync/<ts-id>/
 //! │   ├── plan.json            # diff plan
 //! │   └── manifest.json
-//! └── recheck/<ts-id>/
-//!     └── report.json
 //! ```
 //!
 //! Directory content IS the state — no extra state machine:
@@ -86,8 +84,6 @@ pub const PLAN_FILE: &str = "plan.json";
 pub const MANIFEST_FILE: &str = "manifest.json";
 /// Staged payload subdirectory of an import session.
 pub const STAGING_DIR: &str = "staging";
-/// Recheck report file inside a recheck session directory.
-pub const REPORT_FILE: &str = "report.json";
 
 /// Root of all session journals inside a vault.
 pub fn sessions_root(vault_root: &Path) -> PathBuf {
@@ -245,8 +241,7 @@ pub struct IncompleteSession {
 }
 
 /// Find interrupted import/sync sessions (no `manifest.json` in the session
-/// directory). Recheck sessions are excluded: an interrupted recheck leaves
-/// no directory at all. Used by `status` and safe to call any time.
+/// directory). Used by `status` and safe to call any time.
 pub fn find_incomplete_sessions(vault_root: &Path) -> Vec<IncompleteSession> {
     let mut out = Vec::new();
     for kind in [SessionType::Import, SessionType::Sync] {

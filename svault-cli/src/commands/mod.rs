@@ -12,7 +12,6 @@ pub mod db;
 pub mod debug_reporter;
 pub mod import;
 pub mod init;
-pub mod recheck;
 #[cfg(debug_assertions)]
 pub mod scan;
 pub mod status;

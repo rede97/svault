@@ -17,10 +17,8 @@ use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use svault_core::event::{
-    Event, EventSink, Hint, ItemStatus, MatchConfidence, Phase, PhaseContext, RecheckSummary,
-    Summary,
+    Event, EventSink, Hint, ItemStatus, MatchConfidence, Phase, PhaseContext, Summary,
 };
-use svault_core::ops::RecheckStatus;
 use svault_core::verify::VerifyResult;
 
 use crate::interact::SuspendingInteractor;
@@ -237,10 +235,6 @@ impl TerminalSink {
                         "Updating",
                         "  {prefix:.cyan.bold} [{bar:40}] {pos}/{len}  {msg}",
                     ),
-                    Phase::Recheck => (
-                        "Checking",
-                        "  {prefix:.cyan.bold} [{bar:40}] {pos}/{len}  {msg}",
-                    ),
                     Phase::Verify => (
                         "Verifying",
                         "  {prefix:.cyan.bold} [{bar:40}] {pos}/{len}  {msg}",
@@ -348,13 +342,6 @@ impl TerminalSink {
             Phase::Apply => {
                 st.println(format!(
                     "✓ Update complete ({}/{})",
-                    st.pb.position(),
-                    st.total
-                ));
-            }
-            Phase::Recheck => {
-                st.println(format!(
-                    "✓ Recheck complete ({}/{})",
                     st.pb.position(),
                     st.total
                 ));
@@ -545,7 +532,7 @@ impl TerminalSink {
         });
     }
 
-    // ── verify / recheck items ────────────────────────────────────────────
+    // ── verify items ────────────────────────────────────────────────────
 
     fn verify_item(&self, path: &Path, result: &VerifyResult) {
         self.with_state(|st| {
@@ -581,80 +568,6 @@ impl TerminalSink {
                         "  {} {}: {}",
                         style("IO error").red(),
                         path.display(),
-                        message,
-                    ));
-                }
-            }
-        });
-    }
-
-    fn recheck_started(&self, total: usize, session_id: &str, source: &Path) {
-        self.phase_started(
-            Phase::Recheck,
-            Some(total as u64),
-            PhaseContext::source(source.to_path_buf()),
-        );
-        let output = format!(
-            "{} Rechecking {} files from session {}\n  Source: {}\n\n{} {}\n         {}\n         {}",
-            style("Recheck:").bold().cyan(),
-            style(total).cyan(),
-            style(session_id),
-            style(source.display()),
-            style("Caution:").yellow().bold(),
-            style("Recheck assumes the source device has not changed since import.").yellow(),
-            style(
-                "If you took new photos or modified files, filenames may be reused with different content."
-            ),
-            style("Please review the report carefully before deleting anything.")
-        );
-        self.println(output);
-    }
-
-    fn recheck_item(&self, src: &Path, status: &RecheckStatus) {
-        self.with_state(|st| {
-            st.pb.inc(1);
-            match status {
-                RecheckStatus::Ok => {}
-                RecheckStatus::SourceModified => {
-                    st.println(format!(
-                        "  {} {}",
-                        style("Source modified").yellow(),
-                        src.display(),
-                    ));
-                }
-                RecheckStatus::VaultCorrupted => {
-                    st.println(format!(
-                        "  {} {}",
-                        style("Vault corrupted").red(),
-                        src.display(),
-                    ));
-                }
-                RecheckStatus::BothDiverged => {
-                    st.println(format!(
-                        "  {} {}",
-                        style("Both diverged").red().bold(),
-                        src.display(),
-                    ));
-                }
-                RecheckStatus::SourceDeleted => {
-                    st.println(format!(
-                        "  {} {}",
-                        style("Source deleted").yellow(),
-                        src.display(),
-                    ));
-                }
-                RecheckStatus::VaultDeleted => {
-                    st.println(format!(
-                        "  {} {}",
-                        style("Vault deleted").red(),
-                        src.display(),
-                    ));
-                }
-                RecheckStatus::Error { message } => {
-                    st.println(format!(
-                        "  {} {}: {}",
-                        style("Error").red().bold(),
-                        src.display(),
                         message,
                     ));
                 }
@@ -743,9 +656,6 @@ impl TerminalSink {
                     output.push_str(&format!("  IO errors: {}", style(s.io_error).red()));
                 }
                 self.println(output.trim_end());
-            }
-            Summary::Recheck(s) => {
-                self.println(recheck_summary_text(s));
             }
             Summary::Clone(s) => {
                 let mut output = String::from(
@@ -1022,13 +932,6 @@ impl EventSink for TerminalSink {
                 ));
             }
 
-            Event::RecheckStarted {
-                total,
-                session_id,
-                source,
-            } => self.recheck_started(*total, session_id, source),
-            Event::RecheckItem { src, status, .. } => self.recheck_item(src, status),
-
             Event::VerifyItem { path, result } => self.verify_item(path, result),
 
             Event::SyncPlan {
@@ -1107,62 +1010,6 @@ impl Default for TerminalSink {
     fn default() -> Self {
         Self::new(false)
     }
-}
-
-/// Render the recheck tally as a text block (shared by terminal tests).
-fn recheck_summary_text(s: &RecheckSummary) -> String {
-    let mut output = String::new();
-    output.push_str(&format!("{}\n", style("Results:").bold()));
-    output.push_str(&format!("  {} OK\n", style(format!("{:>4}", s.ok)).green()));
-    if s.source_modified > 0 {
-        output.push_str(&format!(
-            "  {} Source modified\n",
-            style(format!("{:>4}", s.source_modified)).yellow()
-        ));
-    }
-    if s.vault_corrupted > 0 {
-        output.push_str(&format!(
-            "  {} Vault corrupted\n",
-            style(format!("{:>4}", s.vault_corrupted)).red()
-        ));
-    }
-    if s.both_diverged > 0 {
-        output.push_str(&format!(
-            "  {} Both diverged\n",
-            style(format!("{:>4}", s.both_diverged)).red()
-        ));
-    }
-    if s.source_deleted > 0 {
-        output.push_str(&format!(
-            "  {} Source deleted\n",
-            style(format!("{:>4}", s.source_deleted)).yellow()
-        ));
-    }
-    if s.vault_deleted > 0 {
-        output.push_str(&format!(
-            "  {} Vault deleted\n",
-            style(format!("{:>4}", s.vault_deleted)).red()
-        ));
-    }
-    if s.errors > 0 {
-        output.push_str(&format!(
-            "  {} Errors\n",
-            style(format!("{:>4}", s.errors)).red()
-        ));
-    }
-    if s.sha256_verified > 0 {
-        output.push_str(&format!(
-            "  ({} files verified with SHA-256)\n",
-            s.sha256_verified
-        ));
-    }
-    output.push('\n');
-    output.push_str(&format!(
-        "{} Report written to {}",
-        style("Report:").bold(),
-        style(s.report_path.display()).italic().bold()
-    ));
-    output
 }
 
 fn file_name(path: &Path) -> String {

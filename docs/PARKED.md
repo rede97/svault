@@ -44,6 +44,22 @@ table`）。若恢复，先回答"防谁"——无外部锚点的链不防蓄意
 
 **恢复路径**：不恢复。
 
+### A4. `svault recheck`（2026-08-09）
+
+**功能**：基于 manifest 的源 vs vault 双侧哈希比对，写报告供用户裁决。
+
+**移除原因**（维护者决策）：staging 会话日志落地后意义大减。其唯一独有
+能力——源端审计——由 `import --compare-level mid|high` 承接：重跑导入时
+对指纹疑似重复的文件做源端强哈希比对，不符则推翻指纹判定按新文件导入。
+
+**代价（已接受）**：F4 不稳定源没有独立审计命令了；怀疑时靠
+mid/high 重跑导入覆盖（failure-handling.md §4）。
+
+**恢复路径**：git 历史（`ops/recheck.rs`、CLI `commands/recheck.rs`、
+E2E `TestRecheckWorkflow`、fuse `test_recheck_fuse.py`）。
+注意：`ManifestManager` 的 load/list_all/latest/find_by_dest 与
+`ImportManifest` 的查询助手随其唯一消费者一并删除。
+
 ---
 
 ## B. 已移除/降级——可有条件恢复

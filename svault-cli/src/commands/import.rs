@@ -26,6 +26,7 @@ pub fn run(
     max_depth: usize,
     include: Vec<String>,
     exclude: Vec<String>,
+    compare_level: crate::cli::CompareLevelArg,
 ) -> anyhow::Result<()> {
     // Parse file-list input (stdin or file) into Vec<PathBuf> before entering core.
     let file_list: Option<Vec<PathBuf>> = match files_from {
@@ -102,6 +103,7 @@ pub fn run(
         max_depth,
         include,
         exclude,
+        compare_level: compare_level.into(),
     };
 
     // JSON mode requires --yes flag for non-interactive execution

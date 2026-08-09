@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use rayon::prelude::*;
 
-use svault_core::event::{
-    Event, EventSink, ItemStatus, Phase, PhaseContext, RecheckSummary, Summary,
-};
+use svault_core::event::{Event, EventSink, ItemStatus, Phase, PhaseContext, Summary};
 use svault_core::ops::ImportSummary;
 use svault_ui::TerminalSink;
 
@@ -125,13 +123,6 @@ pub fn run(count: usize, delay_ms: u64, show_dup: bool) -> anyhow::Result<()> {
         failed: 0,
         manifest_path: Some(vault.join(".svault/staging/manifest_debug.json")),
         all_cache_hit: false,
-    })));
-
-    // Recheck summary rendering demo
-    sink.emit(&Event::Summary(Summary::Recheck(RecheckSummary {
-        ok: count,
-        report_path: vault.join(".svault/staging/recheck_debug.json"),
-        ..Default::default()
     })));
 
     Ok(())

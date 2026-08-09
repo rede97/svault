@@ -1,14 +1,12 @@
-"""Verify and recheck command tests.
+"""Verify command tests.
 
 Merged from:
 - test_verify.py: Hash verification and corruption detection
-- test_recheck.py: Manifest-based recheck workflow
 - test_atomic_verification.py: Atomic verification concepts
 
 测试完整性验证功能，包括：
 - verify 命令功能（哈希匹配、损坏检测、摘要输出）
-- recheck 命令功能（基于清单的双向验证）
-- 底层验证逻辑（数据库哈希一致性、源文件验证）
+- 底层验证逻辑（数据库哈希一致性）
 - write-then-verify 模式
 - 边界情况（空文件、大文件）
 
@@ -35,14 +33,6 @@ def compute_file_hash(path: Path) -> str:
         while chunk := f.read(8192):
             h.update(chunk)
     return h.hexdigest()
-
-
-def load_latest_recheck_report(vault: VaultEnv) -> dict:
-    """Load the latest recheck report from .svault/sessions/recheck/<ts-id>/."""
-    root = vault.vault_dir / ".svault" / "sessions" / "recheck"
-    reports = sorted(root.glob("*/report.json"), key=lambda p: p.stat().st_mtime)
-    assert reports, f"No recheck report found in {root}"
-    return json.loads(reports[-1].read_text())
 
 
 # =============================================================================
@@ -202,92 +192,6 @@ class TestVerifySummary:
 
 
 # =============================================================================
-# Recheck 命令测试 (merged from test_recheck.py)
-# =============================================================================
-
-class TestRecheckWorkflow:
-    """Recheck 端到端工作流测试"""
-
-    def test_recheck_detects_corruption_and_reimport_succeeds(self, vault: VaultEnv) -> None:
-        """Detect vault file corruption and recover by re-importing."""
-        f1 = vault.source_dir / "keep.jpg"
-        f2 = vault.source_dir / "corrupt.jpg"
-        create_minimal_jpeg(f1, "KEEP_KEEP_KEEP_" * 1000)
-        create_minimal_jpeg(f2, "CORRUPT_CORRUPT_" * 1000)
-
-        result = vault.import_dir(vault.source_dir, strategy="copy")
-        assert result.returncode == 0
-        files = vault.db_files()
-        assert len(files) == 2
-
-        vault_files = vault.get_vault_files("*.jpg")
-        assert len(vault_files) == 2
-
-        corrupt_target = None
-        for vf in vault_files:
-            if "corrupt" in vf.name.lower():
-                corrupt_target = vf
-                break
-        assert corrupt_target is not None
-
-        data = corrupt_target.read_bytes()
-        corrupt_target.write_bytes(data[:65536] + b"TAMPERED_TAIL_DATA")
-
-        result = vault.run("recheck")
-        assert result.returncode == 0
-        report = load_latest_recheck_report(vault)
-        statuses = [f["status"] for f in report["files"]]
-        assert any("VaultCorrupted" in s for s in statuses)
-
-        corrupt_target.unlink()
-
-        # Mark deleted file as missing in DB, then re-import
-        result = vault.run("update", "--yes")
-        assert result.returncode == 0
-        
-        result = vault.import_dir(vault.source_dir, strategy="copy")
-        assert result.returncode == 0
-
-        vault_files_after = vault.get_vault_files("*.jpg")
-        assert len(vault_files_after) == 2
-
-        result = vault.run("recheck")
-        assert result.returncode == 0
-        report = load_latest_recheck_report(vault)
-        statuses = [f["status"] for f in report["files"]]
-        assert all("VaultCorrupted" not in s for s in statuses)
-
-    def test_recheck_all_ok(self, vault: VaultEnv) -> None:
-        """Recheck after successful import should report all OK."""
-        f1 = vault.source_dir / "a.jpg"
-        f2 = vault.source_dir / "b.jpg"
-        create_minimal_jpeg(f1, "FILE_A" * 500)
-        create_minimal_jpeg(f2, "FILE_B" * 500)
-
-        vault.import_dir(vault.source_dir, strategy="copy")
-
-        result = vault.run("recheck")
-        assert result.returncode == 0
-        report = load_latest_recheck_report(vault)
-        statuses = [f["status"] for f in report["files"]]
-        assert statuses and all("Ok" in s for s in statuses)
-
-    def test_recheck_source_mismatch(self, vault: VaultEnv) -> None:
-        """Providing a source path that doesn't match the manifest should error."""
-        f1 = vault.source_dir / "a.jpg"
-        create_minimal_jpeg(f1, "FILE_A" * 500)
-
-        vault.import_dir(vault.source_dir, strategy="copy")
-
-        wrong_source = vault.root / "wrong_source"
-        wrong_source.mkdir(parents=True, exist_ok=True)
-        result = vault.run("recheck", str(wrong_source.resolve()), check=False)
-        assert result.returncode != 0
-        combined = result.stderr + result.stdout
-        assert "Source path mismatch" in combined
-
-
-# =============================================================================
 # Source 验证测试
 # =============================================================================
 
@@ -327,7 +231,7 @@ class TestRecheckWorkflow:
 6. verify 比较：vault_hash == db_hash → PASS！
 
 解决方案：
-1. 导入后重新检查源文件（recheck --source）
+1. 导入时用 --compare-level mid/high 重新导入一次（源哈希比对）
 2. 使用外部参考（多个备份）
 3. 使用校验和/ECC 存储
 

@@ -71,7 +71,6 @@ def parse_json_summary(stdout: str, event_type: str = "import") -> dict[str, Any
         "add_summary": "add",
         "sync_summary": "sync",
         "verify_summary": "verify",
-        "recheck_summary": "recheck",
         "update_summary": "update",
         "clone_summary": "clone",
     }.get(event_type, event_type)

@@ -79,7 +79,6 @@ reconcile 只做补 rename（非删除）+ 发 `Hint::SessionResidue` 报告
 | `import` / `add` | **0** | 1 |
 | `sync` / `clone` | **0** | 1 |
 | `verify` | **1**（missing/size mismatch/hash mismatch/IO error 任一类计数 > 0，`commands/verify.rs:73-80`） | 1 |
-| `recheck` | **0**（恒返回 Ok，不一致只写报告，`ops/recheck.rs`） | 1（manifest 加载失败等） |
 | `update` | 0 | 1 |
 
 注：`import` 唯一对逐文件失败 bail 的例外是 debug-only 的 `scan` 命令
@@ -109,7 +108,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 ### G6 进程锁 [VERIFIED]
 
-- 所有经 `VaultContext::open_at` 的命令（含只读的 verify/recheck）对
+- 所有经 `VaultContext::open_at` 的命令（含只读的 verify）对
   `<vault>/.svault/lock` 取 flock 排他咨询锁（`lock.rs:19-33`、
   `context.rs:84-85`）。
 - 锁冲突 → `Err("another svault process is already running…")` → exit 1，
@@ -163,13 +162,14 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 | 故障场景 | 行为 [VERIFIED] | 可观测证据 |
 |----------|----------------|------------|
 | 源文件读取 EIO（Stage B） | 该文件 `ScanItem{Failed}`，跳过继续 | Preflight 事件 failed 计数；退出码 0 |
+| CRC 指纹命中但源内容已变 | fast（默认）：判 duplicate 跳过；`-c mid`：源端 XXH3 与 DB 比对，不符推翻为 New 重新导入；`-c high`：DB 有 sha256 用 sha256 否则回退 xxh3（`ops/mod.rs::check_duplicate_with_level`） | fast：退出码 0 全 duplicate；mid/high：改名 `.1` 重复制并入库 |
 | plan.json 写失败（ENOSPC 等） | **fail-fast**：Err → exit 1，复制尚未开始 | stderr `cannot write import plan` |
 | 源文件读取 EIO（Stage C） | 该文件 `CopyFinished{error}`，跳过继续 | 退出码 0；manifest 无此文件（plan 有意图记录） |
 | vault 目标哈希 EIO（Stage D） | 计入 **failed**，跳过继续（BUG-1 已于 `d970fd0` 修复：结构化 `hash_error` 字段替代前缀匹配） | 退出码 0；manifest status=Failed |
 | 进程在 Stage A–D 被杀死 | DB 无任何记录；已复制部分留在会话 staging 子树，**最终路径不可见** | 下次 import 对账：补 rename + 报告残留（不删），重跑幂等（§5） |
 | 进程在 Stage E 事务中被杀死 | 事务回滚，DB 无记录；已复制文件留在 staging（不再产生最终路径孤儿） | 同上 |
 | 事务提交后、rename 前被杀死 | DB 有记录，文件在 staging | 下次 import 对账补 rename，零重复制自愈 |
-| 事务提交后、manifest 写入前被杀死 | DB 有记录，无 manifest，文件在 staging | 对账补 rename；recheck --session 找不到该会话 |
+| 事务提交后、manifest 写入前被杀死 | DB 有记录，无 manifest，文件在 staging | 对账补 rename；该会话无结果清单 |
 | manifest 写入失败（ENOSPC） | Err → exit 1；DB 已提交不回滚 | stderr 报错 |
 | DB 写入失败（ENOSPC/锁） | 整批回滚，Err → exit 1 | 已复制文件留在 staging，对账报告 |
 | 源路径在 vault root 内 | 拒绝导入（自保护） | Err → exit 1 |
@@ -186,20 +186,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
   （`verify/hardlink_upgrade.rs:44-73`）；中途失败**原文件不变**，临时文件
   残留；升级失败仅 warn，不影响退出码（`commands/verify.rs:96-122`）。
 
-### 3.3 `recheck` [VERIFIED]
-
-- 唯一的**源-vs-vault 显式哈希比对**层（`ops/recheck.rs:60-123`），基于
-  manifest 记录分别重算两侧哈希。
-- 七态 RecheckStatus（`ops/recheck.rs:24-41`）。
-- 只读 DB、不改任何文件；报告写
-  `.svault/sessions/recheck/<ts-id>/report.json`（原子写入；
-  status 字段为 Rust Debug 格式，非 snake_case）。
-- `--session` 支持**唯一前缀匹配**（歧义时报错并列出候选）。
-- **恒 exit 0**：不一致由用户读报告后自行决策，这是有意设计
-  （`cli.rs:93`：“No files are imported or deleted”）。
-- source 参数与 manifest 的 source_root 不符 → Err → exit 1。
-
-### 3.4 `update` [VERIFIED]
+### 3.3 `update` [VERIFIED]
 
 - moved 匹配依据：XXH3-128 + size 初筛，SHA-256 确认（`ops/update.rs:139-171`）。
 - 找不到的文件标记 `status='missing'`，**永不删除**（`ops/update.rs:261-269`）。
@@ -210,7 +197,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - missing 记录可被同哈希再导入"复活"（`Recover` 路径，`ops/mod.rs:90-95`、
   `insert.rs:225-238`：事务内 UPDATE path + status='imported'）。
 
-### 3.5 `sync` [VERIFIED]
+### 3.4 `sync` [VERIFIED]
 
 - 前置检查仅有：源路径存在、源≠目标、源有 `.svault/vault.db`。
   **无 health pre-flight**（该设计未实现，已随 sync-design.md 删除，
@@ -230,7 +217,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - dest missing 记录在复制同 hash 文件时按既有 recover 逻辑复活
   （`insert.rs:95-99`）。
 
-### 3.6 `clone` [VERIFIED]
+### 3.5 `clone` [VERIFIED]
 
 - 独立实现（**不是** sync --export 别名，`ops/clone.rs`）。
 - 选 `status='imported'`（可 `--filter-date`）→ 逐文件 transfer_file
@@ -251,7 +238,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 | 导入时源数据已损坏（坏道返回错数据） | **无法检测**：哈希基于损坏数据计算并入库，verify 永远通过（H_bad == H_bad） | 无外部参考 |
 | 导入后 vault 文件 bit rot | **可检测**：verify 报 hash_mismatch，exit 1 | DB 哈希是导入时的参考 |
 | 源不稳定（多次读返回不同数据） | **无法检测**：Stage B CRC 用一次读、Stage C 复制用一次读、Stage D 哈希 vault 副本——三处可能各读各的，导入路径**无源-目标哈希比对** | 写后校验只是"vault 副本自洽"（隐式读回） |
-| 上述场景的兜底手段 | `svault recheck`：按 manifest 重算**源侧**哈希比对，能发现源侧变化/损坏 | `ops/recheck.rs:60-123` |
+| 上述场景的兜底手段 | `import --compare-level mid/high` 重跑：对指纹疑似重复的文件做**源端**强哈希与 DB 比对，不符则按新文件导入（recheck 已移除，2026-08-09） | `ops/mod.rs::check_duplicate_with_level` |
 
 **决策**：F3/F4 类测试的判据 MUST 断言"现行检测能力边界"（如上表），
 并在测试名/注释中明确这是**局限性确认测试**而非缺陷。真正的修复手段
@@ -329,7 +316,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 | DRIFT-1 | ~~import-pipeline.md~~ **已消解（2026-08-09）**：该文档已删除，仍准确的内容并入 ARCHITECTURE.md §3 | — |
 | DRIFT-2 | ~~sync-design.md~~（2026-08-05 已删除） | 原设计稿大量未实现且基于已移除的 reporter trait 体系：health pre-flight、sync_journal 断点续传、tmp→rename、clone=sync --export、"只比 sha256"、`svault recover` 命令。recover 等暂缓设计已抢救至 PARKED §C1；原文见 `git show f34d53b:docs/sync-design.md` |
 | DRIFT-3 | ~~ARCHITECTURE.md §6.1~~ **已消解（2026-08-09）**：clone 不再写源 DB，"只读源 vault" 措辞现已准确 | — |
-| DRIFT-4 | ~~cli.md / database-schema.md~~ **已消解（2026-08-09）**：事件名示例随事件溯源移除失效；recheck 报告路径已更新为 sessions 布局 | — |
+| DRIFT-4 | ~~cli.md / database-schema.md~~ **已消解（2026-08-09）**：事件名示例随事件溯源移除失效 | — |
 
 ---
 
@@ -346,8 +333,8 @@ DB 查询 / 文件系统状态）。
 | `test_import_pause_at_25_percent` | ✅ 实现 | pause 于源读取；SIGTERM 后：DB 无该文件记录；**最终路径无半成品**（staging 模型，G7；残留留在 `.svault/sessions/import/<ts-id>/`，下次 import 对账**报告**之）；故障解除后重跑 import 完成；`verify` 通过 |
 | `test_import_pause_at_50_resume` | ✅ 实现 | 释放 pause 后 import 自行完成；manifest 完整；vault 副本哈希与源一致 |
 | `test_import_eio_at_offset` | ✅ 实现 | 该文件 ScanItem/CopyFinished 报 error；**退出码 0**；其余文件正常导入；manifest 不含该文件；解除故障重跑后该文件成功导入 |
-| `test_recheck_pause_at_half_files` | ✅ 实现（改写） | recheck 无状态可续——判据改为：中断后**无报告或报告截断**；重跑生成完整新报告；两侧比对结果正确 |
-| `test_corrupted_hash_undetectable_by_verify` | ✅ 实现（依赖 corrupt action，§8.4） | **局限性确认测试**（§4）：import 损坏数据 → verify 通过（H_bad==H_bad）→ recheck 报 mismatch。断言三者 |
+| ~~`test_recheck_pause_at_half_files`~~ | 🗑 **已删除（2026-08-09）**：recheck 命令移除（PARKED §A4） | — |
+| `test_corrupted_hash_undetectable_by_verify` | ✅ 实现（依赖 corrupt action，§8.4） | **局限性确认测试**（§4）：import 损坏数据 → verify 通过（H_bad==H_bad）→ `-c mid` 重跑导入检出并重新入库。断言三者 |
 
 ### 8.2 P1
 
@@ -355,9 +342,9 @@ DB 查询 / 文件系统状态）。
 |----------|------|----------|
 | `test_import_enospc_simulation` | ⏭ **不重复建设，占位已删除**（2026-08-05）：`test_import_disk_full.py` 已用 loopback ext4 覆盖等价场景。**2026-08-09 判据重写**：复制 ENOSPC = 逐文件失败 → **exit 0**（G4；旧的 rc!=0 断言锁定的是已删 `append_event` 无条件写库撞 ENOSPC 的偶然行为）；致命 ENOSPC（plan/DB/manifest 写失败）才是 exit 1；最终路径绝无半成品 | — |
 | `test_import_pause_multiple_files` | ✅ 实现 | 暂停点前的文件已完成入库（如已过 Stage E）或未入库（未过）；重跑后全部一致 |
-| `test_recheck_source_modified_during_check` | ✅ 实现 | 源侧校验值与 manifest 不符 → 报告中对应状态；exit 0 |
+| ~~`test_recheck_source_modified_during_check`~~ | 🗑 **已删除（2026-08-09）**：随 recheck 移除；源中途修改的等价覆盖由 `-c mid` 重跑承接 | — |
 | `test_silent_corruption_at_specific_offset` | ✅ 实现（依赖 corrupt action） | 同 §4 局限性确认 |
-| `test_unstable_read_during_import` | ✅ 实现（依赖动态规则，§8.4） | **局限性确认**：断言现行行为=无法检测（导入成功，crc32c 与 vault 内容可能不一致）；recheck 可发现 |
+| `test_unstable_read_during_import` | ✅ 实现（依赖动态规则，§8.4） | **局限性确认**：断言现行行为=无法检测（导入成功，crc32c 与 vault 内容可能不一致）；`-c mid` 重跑可发现 |
 | `test_import_eagain_retry` | ⚠️ **改写并按实测修正**（2026-08-05）：svault 无重试层（G2）结论不变，但实测 **FUSE 内核客户端对 EAGAIN 透明重试**——瞬态 EAGAIN 被内核吸收，导入正常完成。改名 `test_import_eagain_error`，判据：注入 3 次 EAGAIN（error_count==3）→ import exit 0 全入库 |
 | `test_import_slow_read_timeout` | ❌ **删除** | 无超时机制（G2），计划前提不成立。可改为 `test_import_slow_read_completes`：慢速读取只是慢，最终正常完成（归 P2 稳定性） |
 
@@ -366,7 +353,7 @@ DB 查询 / 文件系统状态）。
 - ✅ `test_edge_cases_fuse.py`：已创建——空文件 × 故障规则 2 例
   （corrupt 规则对空文件不触发；同扩展名空文件互判 duplicate，§3.1）。
 - 🔧 保留待实现（需新设施）：`test_corruption_during_copy_to_vault`、
-  `test_recheck_vault_file_eio`（dm-flakey）；`test_import_corrupt_at_offset`；
+  `test_import_corrupt_at_offset`；
   `test_import_truncated_file`（需 truncate action）。
 - 🗑 **已删除——永不实现（前提证伪）**：`test_verify_pause_resume`（verify 不读源，
   源侧 FUSE 无注入面）、`test_verify_across_different_storage`（"带重试"假设
@@ -374,9 +361,8 @@ DB 查询 / 文件系统状态）。
   `test_multiple_hash_algorithms_detect_corruption`（三层哈希是串联身份链，
   非并行冗余）。
 - 🗑 **已删除——已有等价覆盖**：`test_import_enospc_simulation`（loopback 满盘）、
-  `test_verify_partial_failure` / `test_recheck_vault_file_corrupt` /
+  `test_verify_partial_failure` /
   `test_bit_rot_detection`（test_verify.py 系列）、`test_intermittent_corruption` /
-  `test_post_import_source_recheck_detects_corruption`（P0-5/unstable 已含）、
   `test_bad_sector_during_import`（= eio_at_offset）。
 - 🗑 **已删除——冗余通过项**：`test_silent_corruption_at_specific_offset`
   （与 P0-5 同构，XOR 路径由设施自验 `test_corrupt_xor_flip` 锁定）、

@@ -15,7 +15,6 @@
 //!   outside the vault (e.g., "/media/SDCARD/DCIM/photo.jpg"). Only populated during `import`
 //!   command. Used for:
 //!   - Writing accurate import manifests (recording where file came from)
-//!   - Recheck operations (verifying source file integrity)
 //!   - Error reporting (showing user-friendly paths)
 //!
 //! ## Path Flow in Import Pipeline
@@ -34,7 +33,7 @@
 //!                     src_path = source path (preserved from Stage C)
 //!
 //! Stage E (insert):   DB: path (final vault path)
-//!                     Manifest: src_path (source path for recheck)
+//!                     Manifest: src_path (source path)
 //!                     After commit: staged_path atomically renamed to path
 //! ```
 //!
@@ -142,7 +141,7 @@ pub struct HashResult {
     pub path: PathBuf,
     /// Original source path (where file was copied from).
     /// Only populated for import command; None for add command.
-    /// Used for manifest recording and recheck operations.
+    /// Used for manifest recording.
     pub src_path: Option<PathBuf>,
     /// Staged copy location (import only), carried through from `CrcEntry`.
     /// Stage E renames it to `path` only after the DB transaction commits.

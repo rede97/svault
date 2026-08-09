@@ -8,7 +8,7 @@
 //! Two communication models exist in core:
 //!
 //! - **Push (events)** — for long-running operations (import, add, update,
-//!   recheck, verify). The operation emits events; the sink renders them.
+//!   verify). The operation emits events; the sink renders them.
 //! - **Pull (return data)** — for instant queries (status, db dump). The
 //!   function returns a `serde::Serialize` data structure and the caller
 //!   formats it. No events involved.
@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::ops::add::AddSummary;
-use crate::ops::recheck::RecheckStatus;
 use crate::ops::types::ImportSummary;
 use crate::ops::update::UpdateSummary;
 use crate::verify::{VerifyResult, VerifySummary};
@@ -44,8 +43,6 @@ pub enum Phase {
     Insert,
     /// Database path updates (`update` command).
     Apply,
-    /// Manifest re-verification (`recheck` command).
-    Recheck,
     /// Vault integrity verification (`verify` command).
     Verify,
     /// Vault-to-vault comparison (`sync` command).
@@ -92,8 +89,6 @@ pub enum Summary {
     Add(AddSummary),
     /// `svault verify` finished.
     Verify(Box<VerifySummary>),
-    /// `svault recheck` finished.
-    Recheck(RecheckSummary),
     /// `svault update` finished.
     Update(UpdateSummary),
     /// `svault clone` finished.
@@ -140,20 +135,6 @@ pub struct SyncSummary {
     pub conflict_paths: Vec<String>,
     /// Path of the written sync manifest.
     pub manifest_path: Option<PathBuf>,
-}
-
-/// Tally of a `recheck` run, plus the path of the written JSON report.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct RecheckSummary {
-    pub ok: usize,
-    pub source_modified: usize,
-    pub vault_corrupted: usize,
-    pub both_diverged: usize,
-    pub source_deleted: usize,
-    pub vault_deleted: usize,
-    pub errors: usize,
-    pub sha256_verified: usize,
-    pub report_path: PathBuf,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,19 +300,6 @@ pub enum Event {
     Progress { phase: Phase, done: u64, total: u64 },
     /// A database update failed during the apply phase.
     ApplyError { path: String, message: String },
-
-    /// `recheck` has started: `total` file pairs from `session_id`.
-    RecheckStarted {
-        total: usize,
-        session_id: String,
-        source: PathBuf,
-    },
-    /// A single source/vault pair has been re-verified.
-    RecheckItem {
-        src: PathBuf,
-        vault: PathBuf,
-        status: RecheckStatus,
-    },
 
     /// A single vault file has been verified.
     VerifyItem { path: PathBuf, result: VerifyResult },

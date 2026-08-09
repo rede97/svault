@@ -89,10 +89,11 @@ svault import <source> [options]
 | `-r, --max-depth <N>` | 扫描深度：0 = 不限（默认，全递归），1 = 仅源目录本身一层。`--files-from` 时忽略 |
 | `--include <GLOB>` | 只导入匹配的文件（源相对路径、大小写不敏感、可重复，如 `--include 'DCIM/**/*.JPG'`） |
 | `--exclude <GLOB>` | 跳过匹配的文件（优先于 --include，可重复）。与扩展名白名单是 AND 关系 |
+| `-c, --compare-level <fast\|mid\|high>` | 指纹疑似重复的再验证等级：fast（默认）信任指纹；mid 对命中者做源端 XXH3-128 全量比对；high 优先 SHA-256（DB 无则回退 XXH3）。别名 0/1/2。怀疑有疏漏时用 mid/high 重跑一次导入即可 |
 
 **会话日志：** 每次导入在 `.svault/sessions/import/<ts-id>/` 写
 `plan.json`（复制前意图）与 `manifest.json`（结果清单：源路径、归档路径
-与哈希，供 `recheck` 使用）；复制中的暂存文件在同目录 `staging/` 子树，
+与哈希；复制中的暂存文件在同目录 `staging/` 子树，
 成功入库后搬到最终路径。中断遗留的会话目录由下次 import 报告，
 svault 不删除，用户审阅后手动处理。
 
@@ -156,26 +157,6 @@ svault verify [options]
 
 校验策略：DB 中有 SHA-256 用 SHA-256（确定），否则用 XXH3-128（快速）。
 发现 missing / size mismatch / hash mismatch / IO error 时以退出码 1 结束。
-
----
-
-### `svault recheck`
-
-基于 manifest 同时校验**源文件**和 vault 副本与导入时记录的一致性。
-报告写入 `.svault/sessions/recheck/<ts-id>/report.json`。
-
-```
-svault recheck [source] [--session <id>] [--target <path>]
-```
-
-| 选项 | 说明 |
-|------|------|
-| `[source]` | 可选源目录，必须与 manifest 记录的 source_root 一致 |
-| `--session <id>` | 指定会话（默认最近一次）；支持**唯一前缀匹配**（如 `20260809T1530`），歧义时报错并列出候选 |
-| `--target <path>` | vault 子目录（同 import 的发现规则） |
-
-状态分类：`ok` / `source_modified` / `vault_corrupted` / `both_diverged` /
-`source_deleted` / `vault_deleted` / `error`。
 
 ---
 

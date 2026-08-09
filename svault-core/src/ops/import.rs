@@ -25,7 +25,7 @@ use crate::config::{ImportConfig, SyncStrategy};
 use crate::db::Db;
 use crate::event::{Event, EventSink, Hint, Interactor, ItemStatus, Phase, PhaseContext, Summary};
 use crate::fs::transfer_file;
-use crate::ops::check_duplicate;
+use crate::ops::check_duplicate_with_level;
 use crate::ops::exif::read_exif_date_device;
 use crate::ops::path::resolve_dest_path;
 use crate::ops::types::{ImportOptions, ImportSummary};
@@ -296,7 +296,13 @@ impl ImportOptions {
         });
 
         let state = match self.files_from {
-            Some(ref paths) => Self::collect_from_list(paths, &self.vault_root, Some(db), sink)?,
+            Some(ref paths) => Self::collect_from_list(
+                paths,
+                &self.vault_root,
+                self.compare_level,
+                Some(db),
+                sink,
+            )?,
             None => Self::collect_from_scan(
                 &source_canon,
                 &self.vault_root,
@@ -306,6 +312,7 @@ impl ImportOptions {
                     include: self.include.clone(),
                     exclude: self.exclude.clone(),
                 },
+                self.compare_level,
                 Some(db),
                 sink,
             )?,
@@ -325,6 +332,7 @@ impl ImportOptions {
         vault_root: &Path,
         allowed_extensions: &[String],
         filter: &crate::fs::ScanFilter,
+        compare_level: crate::ops::types::CompareLevel,
         db: Option<&Db>,
         sink: &dyn EventSink,
     ) -> anyhow::Result<ImportState> {
@@ -374,7 +382,7 @@ impl ImportOptions {
             };
 
             let check_result = match db {
-                Some(db) => check_duplicate(&entry, db, vault_root, None),
+                Some(db) => check_duplicate_with_level(&entry, db, vault_root, compare_level),
                 None => pipeline::CheckResult::New,
             };
             classify_and_emit(entry, check_result, sink, &mut state);
@@ -389,6 +397,7 @@ impl ImportOptions {
     fn collect_from_list(
         paths: &[PathBuf],
         vault_root: &Path,
+        compare_level: crate::ops::types::CompareLevel,
         db: Option<&Db>,
         sink: &dyn EventSink,
     ) -> anyhow::Result<ImportState> {
@@ -433,7 +442,7 @@ impl ImportOptions {
             };
 
             let check_result = match db {
-                Some(db) => check_duplicate(&entry, db, vault_root, None),
+                Some(db) => check_duplicate_with_level(&entry, db, vault_root, compare_level),
                 None => pipeline::CheckResult::New,
             };
             classify_and_emit(entry, check_result, sink, &mut state);
@@ -470,6 +479,7 @@ impl ImportOptions {
                 include: self.include.clone(),
                 exclude: self.exclude.clone(),
             },
+            self.compare_level,
             db,
             sink,
         )?;
@@ -1025,6 +1035,15 @@ mod tests {
 
     /// Run a full import over `source` into `vault` and return the summary.
     fn run_test_import(source: &Path, vault: &Path, db: &Db) -> ImportSummary {
+        run_test_import_with_level(source, vault, db, crate::ops::types::CompareLevel::Fast)
+    }
+
+    fn run_test_import_with_level(
+        source: &Path,
+        vault: &Path,
+        db: &Db,
+        compare_level: crate::ops::types::CompareLevel,
+    ) -> ImportSummary {
         let opts = ImportOptions {
             source: source.to_path_buf(),
             vault_root: vault.to_path_buf(),
@@ -1039,6 +1058,7 @@ mod tests {
             max_depth: 0,
             include: Vec::new(),
             exclude: Vec::new(),
+            compare_level,
         };
         opts.run_import(db, &crate::event::NoopSink, &crate::event::YesInteractor)
             .unwrap()
@@ -1141,5 +1161,62 @@ mod tests {
         assert_eq!(second.duplicate, 1);
         assert!(second.all_cache_hit);
         assert_eq!(import_session_dirs(&vault).len(), 1);
+    }
+
+    #[test]
+    fn compare_level_mid_catches_fingerprint_blind_spot_edit() {
+        use crate::ops::types::CompareLevel;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let vault = tmp.path().join("vault");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&vault).unwrap();
+
+        // 200 KiB file: the JPEG CRC fingerprint reads head+tail 64 KiB,
+        // leaving a blind zone in [64 KiB, 136 KiB).
+        let target = source.join("big.jpg");
+        fs::write(&target, vec![0xABu8; 200 * 1024]).unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        let first = run_test_import(&source, &vault, &db);
+        assert_eq!(first.imported, 1);
+
+        // Edit inside the blind zone: size and fingerprint unchanged.
+        let flip_middle = |byte: u8| {
+            let mut data = fs::read(&target).unwrap();
+            data[100 * 1024] = byte;
+            fs::write(&target, data).unwrap();
+        };
+        flip_middle(0xCD);
+
+        // fast: fingerprint hit → duplicate, no new import.
+        let fast = run_test_import(&source, &vault, &db);
+        assert_eq!(fast.imported, 0);
+        assert_eq!(fast.duplicate, 1);
+
+        flip_middle(0xCE);
+
+        // mid: full XXH3 of the source mismatches the DB record → imported
+        // as a new file (renamed destination).
+        let mid = run_test_import_with_level(&source, &vault, &db, CompareLevel::Mid);
+        assert_eq!(mid.imported, 1);
+        let visible: Vec<_> = walkdir::WalkDir::new(&vault)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|e| e.into_path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("big"))
+                    .unwrap_or(false)
+                    && !p.starts_with(vault.join(".svault"))
+            })
+            .collect();
+        assert_eq!(visible.len(), 2, "original + renamed second copy");
+        assert_eq!(
+            db.get_all_files().unwrap().len(),
+            2,
+            "both contents are recorded"
+        );
     }
 }

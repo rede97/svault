@@ -98,27 +98,13 @@ pub enum Command {
         /// Skip files matching this glob (wins over --include, repeatable).
         #[arg(long, value_name = "GLOB")]
         exclude: Vec<String>,
-    },
 
-    /// Re-check a previous import against its manifest.
-    ///
-    /// Reads an import manifest and verifies both the original source files
-    /// and the vault copies against the hashes recorded at import time.
-    /// A report is written to `.svault/staging/` so you can decide which
-    /// side is correct. No files are imported or deleted.
-    Recheck {
-        /// Optional source directory to verify against the manifest.
-        /// Must match the source_root recorded in the manifest.
-        #[arg(value_name = "SOURCE")]
-        source: Option<std::path::PathBuf>,
-
-        /// Sub-directory inside the vault (same discovery rules as import).
-        #[arg(long, value_name = "PATH")]
-        target: Option<std::path::PathBuf>,
-
-        /// Session ID to recheck (default: latest import).
-        #[arg(long, value_name = "SESSION_ID")]
-        session: Option<String>,
+        /// How thoroughly fingerprint-suspected duplicates are re-verified
+        /// against the vault database: fast = trust the fingerprint;
+        /// mid = full XXH3-128 comparison; high = SHA-256 when available.
+        /// Re-run with mid/high to audit files you suspect were mis-detected.
+        #[arg(short = 'c', long, value_enum, default_value = "fast")]
+        compare_level: CompareLevelArg,
     },
 
     /// Register files already inside the vault
@@ -264,6 +250,31 @@ pub enum DebugCommand {
         #[arg(long)]
         show_dup: bool,
     },
+}
+
+/// Duplicate-verification level for `import --compare-level`
+/// (aliases: 0 = fast, 1 = mid, 2 = high).
+#[derive(Clone, Copy, ValueEnum)]
+pub enum CompareLevelArg {
+    /// Trust the size+CRC fingerprint (default).
+    #[value(alias = "0")]
+    Fast,
+    /// Re-verify fingerprint hits with a full XXH3-128 source hash.
+    #[value(alias = "1")]
+    Mid,
+    /// Re-verify with SHA-256 when the DB record has one, else XXH3-128.
+    #[value(alias = "2")]
+    High,
+}
+
+impl From<CompareLevelArg> for svault_core::ops::types::CompareLevel {
+    fn from(arg: CompareLevelArg) -> Self {
+        match arg {
+            CompareLevelArg::Fast => Self::Fast,
+            CompareLevelArg::Mid => Self::Mid,
+            CompareLevelArg::High => Self::High,
+        }
+    }
 }
 
 #[derive(Subcommand)]

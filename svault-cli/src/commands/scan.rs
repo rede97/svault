@@ -47,6 +47,7 @@ pub fn run(source: PathBuf, show_dup: bool) -> anyhow::Result<()> {
         max_depth: 0,
         include: Vec::new(),
         exclude: Vec::new(),
+        compare_level: svault_core::ops::types::CompareLevel::Fast,
     };
 
     let sink = PipeSink::new(show_dup);

@@ -10,7 +10,6 @@
 //! | [`import`]  | Import files from outside the vault |
 //! | [`add`]     | Register files already in the vault |
 //! | [`update`]  | Fix DB paths of moved/renamed files |
-//! | [`recheck`] | Re-verify an import against its manifest |
 //! | [`album`]   | Hierarchical albums + per-membership ratings (Pull model) |
 
 pub mod add;
@@ -19,13 +18,11 @@ pub mod clone;
 mod exif;
 pub mod import;
 mod path;
-pub mod recheck;
 pub mod sync;
 pub mod types;
 pub mod update;
 pub mod utils;
 
-pub use recheck::{RecheckOptions, RecheckResult, RecheckStatus, run_recheck};
 pub use types::{ImportOptions, ImportSummary};
 
 use std::path::Path;
@@ -105,4 +102,64 @@ pub fn check_duplicate(
     }
 
     pipeline::CheckResult::New
+}
+
+/// Fingerprint-suspected duplicates re-verified per [`types::CompareLevel`].
+///
+/// `Fast` returns the CRC-only verdict unchanged. `Mid`/`High` re-hash the
+/// **source** file when the fingerprint says `Duplicate` and compare it
+/// against the DB record (`High` uses SHA-256 when the record has one,
+/// otherwise XXH3-128). A mismatch flips the verdict to `New` — the file is
+/// then copied and, if the destination name is taken, renamed by the usual
+/// unique-destination rule. A source-side hash error also flips to `New`,
+/// letting the copy stage surface the IO error per-file (G3).
+pub fn check_duplicate_with_level(
+    entry: &pipeline::types::CrcEntry,
+    db: &Db,
+    vault_root: &Path,
+    level: types::CompareLevel,
+) -> pipeline::CheckResult {
+    let result = check_duplicate(entry, db, vault_root, None);
+    if level == types::CompareLevel::Fast || !matches!(result, pipeline::CheckResult::Duplicate) {
+        return result;
+    }
+
+    // Fingerprint hit — pick the strongest hash the DB record actually has.
+    let ext = entry
+        .file
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let row = db
+        .lookup_by_crc32c(
+            entry.file.size as i64,
+            entry.crc32c,
+            ext,
+            entry.raw_unique_id.as_deref(),
+        )
+        .ok()
+        .flatten();
+    let Some(row) = row else {
+        return result;
+    };
+
+    let algo = match level {
+        types::CompareLevel::High if row.sha256.is_some() => HashAlgorithm::Sha256,
+        _ => HashAlgorithm::Xxh3_128,
+    };
+    let hash_bytes = match algo {
+        HashAlgorithm::Sha256 => {
+            crate::hash::sha256_file(&entry.file.path).map(|h| h.to_bytes().to_vec())
+        }
+        HashAlgorithm::Xxh3_128 => {
+            crate::hash::xxh3_128_file(&entry.file.path).map(|h| h.to_bytes().to_vec())
+        }
+    };
+    match hash_bytes {
+        Ok(bytes) => check_duplicate(entry, db, vault_root, Some((&bytes, &algo))),
+        // Unverifiable suspicion: flip to New so the copy stage surfaces
+        // the IO error instead of silently trusting the fingerprint.
+        Err(_) => pipeline::CheckResult::New,
+    }
 }

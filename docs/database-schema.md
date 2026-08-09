@@ -41,10 +41,9 @@ SQL 读写者**——复合媒体绑定（`media/binding.rs`）现阶段只在�
 | 路径 | 用途 |
 |------|------|
 | `.svault/sessions/import/<ts-id>/plan.json` | import 复制前意图（src/dest/size/crc32c，原子写入） |
-| `.svault/sessions/import/<ts-id>/manifest.json` | import 结果清单（`recheck` 的输入，原子写入） |
+| `.svault/sessions/import/<ts-id>/manifest.json` | import 结果清单（原子写入） |
 | `.svault/sessions/import/<ts-id>/staging/` | import 暂存 payload（入库 commit 后 rename 到最终路径） |
 | `.svault/sessions/sync/<ts-id>/{plan,manifest}.json` | sync 会话日志（diff 意图 + 结果） |
-| `.svault/sessions/recheck/<ts-id>/report.json` | recheck 报告 |
 | `.svault/lock` | 进程咨询锁 |
 
 会话目录内容即状态：**有 manifest.json = 已提交**（审计记录，永久保留）；
@@ -157,7 +156,7 @@ CREATE TABLE media_groups (
   `src_path` / `dest_path`（vault 相对，Unix 风格）/ `size` / `crc32c`；
   sync：`files[]` 含 `path` / `size` / `xxh3_128` / `sha256`。
   plan 是事后剖析的 hint，DB 是唯一真值。
-- `manifest.json` — 复制**后**的结果清单（`recheck` 的输入）：
+- `manifest.json` — 复制**后**的结果清单：
 
 ```json
 {
@@ -179,8 +178,6 @@ CREATE TABLE media_groups (
 }
 ```
 
-`svault recheck` 以 manifest 为准同时校验源文件与 vault 副本；
-`--session` 支持唯一前缀匹配。
 
 ---
 

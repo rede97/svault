@@ -38,9 +38,68 @@ from pathlib import Path
 
 import pytest
 
-from conftest import VaultEnv, assert_file_duplicate, assert_file_imported, assert_path_contains, copy_fixture
+from conftest import VaultEnv, assert_file_duplicate, assert_file_imported, assert_path_contains, copy_fixture, create_minimal_jpeg
 
 import re
+
+
+@pytest.mark.dedup
+class TestCompareLevel:
+    """--compare-level：对指纹疑似重复的源端哈希再验证（recheck 的替代能力）
+
+    契约（cli.md / failure-handling §3.1）：
+    - fast（默认）：指纹（size+CRC 头尾 64KB+扩展名）命中即判 duplicate
+    - mid：指纹命中时对源文件算完整 XXH3-128 与 DB 比对，不符则按新文件导入
+    - high：DB 有 sha256 用 sha256，否则回退 xxh3（本套件默认导入无 sha256，
+      故 high 行为 == mid）
+    """
+
+    def _import_padded(self, vault: VaultEnv, name: str = "big.jpg") -> Path:
+        """导入一个 200KB 文件（CRC 盲区位于中段 [64KB,136KB)）"""
+        src = vault.source_dir / name
+        create_minimal_jpeg(src, "PADDED")
+        with open(src, "ab") as f:
+            f.write(b"\xff" * (200 * 1024 - src.stat().st_size))
+        assert vault.import_dir(vault.source_dir, strategy="copy").returncode == 0
+        return src
+
+    def _flip_middle(self, path: Path, byte: bytes) -> None:
+        data = bytearray(path.read_bytes())
+        data[100 * 1024 : 100 * 1024 + 1] = byte  # CRC 盲区内
+        path.write_bytes(bytes(data))
+
+    def test_fast_trusts_fingerprint_despite_middle_edit(self, vault: VaultEnv) -> None:
+        src = self._import_padded(vault)
+        self._flip_middle(src, b"\xcd")
+
+        result = vault.import_dir(vault.source_dir, strategy="copy")
+        assert result.returncode == 0
+        assert len(vault.db_files()) == 1, "fast：盲区修改不改变指纹，仍为 duplicate"
+
+    def test_mid_catches_middle_edit_and_reimports(self, vault: VaultEnv) -> None:
+        src = self._import_padded(vault)
+        self._flip_middle(src, b"\xcd")
+
+        result = vault.run(
+            "--yes", "import", str(vault.source_dir),
+            "--strategy", "copy", "--compare-level", "mid",
+        )
+        assert result.returncode == 0
+        assert len(vault.db_files()) == 2, "mid：哈希不符应推翻指纹判定，重新导入"
+        # 目标名被占 → 自动改名生成第二个物理副本
+        jpgs = [f for f in vault.get_vault_files("*.jpg")]
+        assert len(jpgs) == 2
+
+    def test_high_falls_back_to_xxh3_without_db_sha256(self, vault: VaultEnv) -> None:
+        src = self._import_padded(vault)
+        self._flip_middle(src, b"\xce")
+
+        result = vault.run(
+            "--yes", "import", str(vault.source_dir),
+            "--strategy", "copy", "-c", "2",  # 数字别名 = high
+        )
+        assert result.returncode == 0
+        assert len(vault.db_files()) == 2, "high（无 DB sha256 → xxh3）应同样检出"
 
 
 @pytest.mark.dedup

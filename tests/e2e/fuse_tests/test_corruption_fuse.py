@@ -42,13 +42,6 @@ def _vault_data_files(vault: VaultEnv) -> list[Path]:
     return [f for f in vault.get_vault_files() if f.name != "svault.toml"]
 
 
-def _latest_recheck_report(vault: VaultEnv) -> dict:
-    """读取最新的 recheck 报告（sessions/recheck/<ts-id>/report.json）"""
-    root = vault.vault_dir / ".svault" / "sessions" / "recheck"
-    reports = sorted(root.glob("*/report.json"))
-    assert reports, "未找到 recheck 报告"
-    return json.loads(reports[-1].read_text())
-
 
 class TestFundamentalProblem:
     """演示哈希验证的根本限制
@@ -64,23 +57,25 @@ class TestFundamentalProblem:
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """局限性确认（§8.1 P0-5）：导入时源损坏 → verify 不可检出，recheck 可检出
+        """局限性确认（§8.1 P0-5）：导入时源损坏 → verify 与 fast 重跑均不可检出，
+        `-c mid` 重跑可检出
 
         场景与判据（failure-handling.md §4 检测能力边界）：
-        1. FUSE 在 offset=1024 注入 16 字节 0x00（模拟坏道返回错误数据）
+        1. FUSE 在 CRC 盲区（offset=100KB，头尾各 64KB 之外）注入 16 字节 0x00
         2. import 读取损坏数据 → 哈希基于损坏数据入库（H_bad），exit 0
-        3. verify：vault 副本哈希 == DB H_bad → **exit 0（无法检测，这是被锁定的局限）**
-        4. 清除故障 + 失效页缓存后 recheck：源为原始数据 ≠ manifest H_bad
-           → 报告 SourceModified（recheck 是唯一兜底手段）
+        3. verify：vault 副本哈希 == DB H_bad → **exit 0（无法检测，锁定局限）**
+        4. 清除故障 + 失效页缓存后：fast 重跑 → 指纹命中（盲区）判 duplicate，
+           仍不可检出；`-c mid` 重跑 → 源端 XXH3 与 DB H_bad 不符 → 推翻指纹
+           判定，按新文件导入（第二条记录 = 检出证据）
         """
         vault, fuse_mount, fs = vault_with_fuse_source
-        victim = _create_padded_jpeg(vault.source_dir, "victim.jpg", 8 * 1024)
+        victim = _create_padded_jpeg(vault.source_dir, "victim.jpg", 200 * 1024)
         original = victim.read_bytes()
 
         fs.add_rule(
             FaultRule(
                 path="/victim.jpg",
-                offset=1024,
+                offset=100 * 1024,  # CRC 头尾读取盲区
                 action="corrupt",
                 # 填充区是 0xFF，用 0x00 载荷保证损坏可区分
                 corrupt_data=b"\x00" * 16,
@@ -105,23 +100,24 @@ class TestFundamentalProblem:
             f"局限性确认：verify 对导入期损坏不可检出，应 exit 0: {verify.stderr}"
         )
 
-        # 4. 清除故障并失效页缓存（重写真实源文件使缓存页作废），
-        #    recheck 重读到的将是原始数据
+        # 4. 清除故障并失效页缓存（重写真实源文件使缓存页作废）
         fs.clear_rules()
         victim.write_bytes(original)
 
-        recheck = vault.run("recheck", str(fuse_mount), check=False)
-        assert recheck.returncode == 0, (
-            f"recheck 恒 exit 0（不一致只写报告）: {recheck.stderr}"
+        # fast 重跑：损坏在 CRC 盲区 → 指纹命中判 duplicate，不可检出（锁定局限）
+        fast = vault.import_dir(fuse_mount)
+        assert fast.returncode == 0
+        assert len(vault.db_files()) == 1, (
+            "fast：盲区损坏不改变指纹，应仍判 duplicate"
         )
 
-        report = _latest_recheck_report(vault)
-        victim_entries = [
-            f for f in report["files"] if Path(f["src_path"]).name == "victim.jpg"
-        ]
-        assert len(victim_entries) == 1, "报告应包含 victim.jpg"
-        assert victim_entries[0]["status"] == "SourceModified", (
-            f"源（原始数据）应与 manifest 的 H_bad 不符，实际: {victim_entries[0]['status']}"
+        # mid 重跑：源端 XXH3 与 DB H_bad 不符 → 按新文件导入 = 检出
+        mid = vault.run(
+            "--yes", "import", str(fuse_mount), "-c", "mid", check=False
+        )
+        assert mid.returncode == 0, f"mid 重跑应完成: {mid.stderr}"
+        assert len(vault.db_files()) == 2, (
+            "mid：源（原始数据）与 DB H_bad 不符，应推翻指纹判定重新入库"
         )
 
 
@@ -145,7 +141,8 @@ class TestUnstableStorage:
         判据：
         1. import exit 0——不稳定读取**无法检测**（被锁定的局限）
         2. vault 副本含 B 载荷；verify exit 0（自洽）
-        3. 清除故障 + 失效页缓存后 recheck → SourceModified（唯一兜底）
+        3. 清除故障 + 失效页缓存后重跑 import：源（原始数据）CRC 与
+           DB 记录的 CRC(A) 不符 → 按新文件导入（第二条记录 = 检出证据）
         """
         vault, fuse_mount, fs = vault_with_fuse_source
         victim = _create_padded_jpeg(vault.source_dir, "unstable.jpg", 8 * 1024)
@@ -181,14 +178,11 @@ class TestUnstableStorage:
         fs.clear_rules()
         victim.write_bytes(original)  # 失效页缓存
 
-        recheck = vault.run("recheck", str(fuse_mount), check=False)
-        assert recheck.returncode == 0
-
-        report = _latest_recheck_report(vault)
-        entries = [f for f in report["files"] if Path(f["src_path"]).name == "unstable.jpg"]
-        assert len(entries) == 1
-        assert entries[0]["status"] == "SourceModified", (
-            f"recheck 应检出源与 H(B) 不符，实际: {entries[0]['status']}"
+        # 8KB 文件 CRC 全覆盖：恢复后的源与 DB 的 CRC(A) 不符 → 按新文件导入
+        rerun = vault.import_dir(fuse_mount)
+        assert rerun.returncode == 0
+        assert len(vault.db_files()) == 2, (
+            "重跑应检出源变化（CRC 不符），按新文件入库"
         )
 
 

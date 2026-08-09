@@ -43,7 +43,7 @@
 ```rust
 // svault-core/src/event.rs
 
-pub enum Phase { Scan, Copy, Hash, Insert, Apply, Recheck, Verify, Compare }
+pub enum Phase { Scan, Copy, Hash, Insert, Apply, Verify, Compare }
 
 pub enum Event {
     PhaseStarted { phase, total, context },      // 阶段开始（创建进度条）
@@ -59,10 +59,8 @@ pub enum Event {
     Progress { phase, done, total },             // insert/apply 计数
     ApplyError { path, message },
     VerifyItem { path, result },
-    RecheckStarted { total, session_id, source },
-    RecheckItem { src, vault, status },
     SyncPlan { source_vault, identical, to_copy, .. },   // sync 比对结果
-    Summary(Summary),  // import/add/verify/recheck/update/clone/sync
+    Summary(Summary),  // import/add/verify/update/clone/sync/album
     Hint(Hint),        // OnlyMoved / MovedHint / NothingToUpdate / DryRunMissing
                        // StagingReconciled / SessionResidue / StagedCommitDeferred
 }
@@ -106,7 +104,6 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `ops::import` | 目录遍历 / 文件列表 | ✓ | ✓ | ✓ + manifest |
 | `ops::add` | 目录遍历（vault 内） | ✓ | ✗ | ✓ + manifest |
 | `ops::update` | DB missing 记录 + 磁盘扫描 | 按 hash 匹配 | ✗ | 路径修正 |
-| `ops::recheck` | manifest | ✗ | ✗ | 只写报告 |
 | `ops::verify` | DB 全量 | ✗ | ✗ | 只读 |
 | `ops::clone` | DB 全量（可过滤） | ✗ | ✓ | 目标 manifest |
 | `ops::sync` | 对端 vault DB（只读） | diff 引擎 | ✓ | ✓ + sync plan/manifest |
@@ -145,7 +142,6 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `add` | 注册 vault 内已有文件 |
 | `update` | 修正被移动/重命名文件的数据库路径 |
 | `verify` | 完整性校验（含 `--file` / `--recent` / `--background-hash` / `--upgrade-links`） |
-| `recheck` | 基于 manifest 的双侧校验 |
 | `status` | vault 统计 |
 | `clone` | 单向导出子集到普通目录（§6.1） |
 | `sync` | vault 间同步，hash 加速比对（§6.2） |
@@ -174,7 +170,7 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 ## 5. 核心原则（不可妥协）
 
 1. **永不删除用户文件** — 任何命令不得提供删除磁盘文件的路径（svault 只清理本次会话自建的 staging 子树）
-2. **会话日志** — import/sync/recheck 的意图与结果写入 `.svault/sessions/<kind>/<ts-id>/`（plan/manifest/report，原子写入）
+2. **会话日志** — import/sync 的意图与结果写入 `.svault/sessions/<kind>/<ts-id>/`（plan/manifest，原子写入）
 3. **三层哈希** — CRC32C（预筛）→ XXH3-128（快速身份）→ SHA-256（确定身份）
 4. **进程锁** — 写操作必须持有 `.svault/lock`
 5. **core 可测试** — 所有用例可用 `NoopSink` 在无终端环境运行
@@ -235,7 +231,7 @@ rusqlite 保持默认适配器，turso 以 feature flag 实验接入，用同一
 | 概念 | 位置 |
 |------|------|
 | 管线五阶段（scan/crc/lookup/hash/insert） | `svault-core/src/pipeline/` |
-| 用例编排（import/add/update/sync/clone/recheck） | `svault-core/src/ops/` |
+| 用例编排（import/add/update/sync/clone/album） | `svault-core/src/ops/` |
 | 相册与评级（多级树、成员引用 files.id） | `svault-core/src/ops/album.rs` + `svault-core/src/db/albums.rs` |
 | 会话日志：plan/staging/manifest/对账 | `svault-core/src/session.rs` |
 | 事件与交互边界（R3/R4） | `svault-core/src/event.rs`（`Event` / `EventSink` / `Interactor` / `NoopSink` / `YesInteractor`） |
