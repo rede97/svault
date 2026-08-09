@@ -142,7 +142,7 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 |------|----------|
 | `history` | 次要功能；可用 `db dump` 查询 |
 | `update --delete` | **违反"永不删除用户文件"核心原则**，是设计漂移的产物 |
-| 事件溯源（`events` 表 + `db verify-chain`） | 维护者决策：伪需求（2026-08-09，PARKED §8） |
+| 事件溯源（`events` 表 + `db verify-chain`） | 维护者决策：伪需求（2026-08-09，PARKED §A2） |
 
 （`sync` / `clone` 曾为 `todo!()` stub 被移除，后按 §6 设计正式实现。）
 

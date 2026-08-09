@@ -3,7 +3,7 @@
 > 本文档描述 **当前实现** 的 SQLite 结构（以 `svault-core/src/db/mod.rs` 中
 > 的 `SCHEMA` 常量为准）。历史设计（如 `import_sessions` 表、`.pending`
 > 续传文件、**`events` 事件溯源表**——2026-08-09 移除，见
-> [PARKED.md](./PARKED.md) §8）从未实现或已移除，不在本文档记录。
+> [PARKED.md](./PARKED.md) §A2）从未实现或已移除，不在本文档记录。
 
 ---
 

@@ -16,7 +16,7 @@
 | FUSE 故障注入 (Linux, `fuse_tests/`) | 23 | 19 | 0 | 4（P2 待设施） |
 
 > **2026-08-09（二）事件溯源移除 + 会话日志：**
-> - 删 events 表/verify-chain（伪需求，PARKED §8）：-9 单测、-4 E2E
+> - 删 events 表/verify-chain（伪需求，PARKED §A2）：-9 单测、-4 E2E
 > - 会话日志布局 `.svault/sessions/<kind>/<ts-id>/`：plan.json fail-fast +
 >   staging/ + manifest 原子写（BUG-3/4 修复）；reconcile 只报告不删
 > - 单测：session 模块 6（路径/原子写/reconcile 四态）+ session_id 唯一性

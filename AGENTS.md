@@ -61,15 +61,14 @@ cargo run -p svault -- import <source-dir>
 
 | 文档 | 说明 |
 |------|------|
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | **架构规则与分层边界（单一事实源）** |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | **架构规则与分层边界（单一事实源）**，含源码地图（概念→文件:符号） |
 | [docs/failure-handling.md](./docs/failure-handling.md) | **故障处理决策矩阵（故障注入测试判据单一事实源）** |
-| [docs/REFACTOR-2026-04.md](./docs/REFACTOR-2026-04.md) | **本轮重构决策记录**（问题→决策→修改→结果） |
-| [docs/PARKED.md](./docs/PARKED.md) | 已移除/暂缓功能及原因 |
-| [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) | 测试跟踪文档 |
+| [docs/PARKED.md](./docs/PARKED.md) | 已移除/暂缓功能登记（防止复活已否决设计） |
+| [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) | 测试概览统计与变更记录 |
 | [docs/cli.md](./docs/cli.md) | CLI 使用文档 |
-| [docs/database-schema.md](./docs/database-schema.md) | 数据库结构 |
+| [docs/database-schema.md](./docs/database-schema.md) | 数据库结构与磁盘布局 |
 | [docs/file-identity.md](./docs/file-identity.md) | 三层哈希与文件身份 |
-| [docs/import-pipeline.md](./docs/import-pipeline.md) | 导入管线详解 |
+| [tests/e2e/README.md](./tests/e2e/README.md) | E2E 套件宪法（一测试一契约等） |
 | [README.md](./README.md) | 用户面向的项目介绍 |
 
 ---
@@ -172,4 +171,4 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 | 2026-08-05 | 文档清理：删除 CLAUDE.md 陈旧内容/testing-plan/HANDOFF-LINUX/sync-design（recover 设计抢救入 PARKED §6）；FUSE 故障注入落地：INFRA-1/2/4 + P0/P1/P2 共 20 例全绿；修复 BUG-1（哈希错误误分类） |
 |2026-08-06|**E2E 套件重设计**（220→167）：删 60 冗余用例、修 dedup 同名类遮蔽死代码、chaos/background-hash 合并、6 弱断言加固、套件宪法入 tests/e2e/README.md；修复 scan 协议转义缺陷（空格文件名管线导入）|
 |2026-08-09|**import staging 原子提交**（OPEN-3 闭环）：复制入 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 → commit 后 rename（`pipeline/staging.rs`、`fs::atomic_commit`）；启动对账补 rename/清残留；G1 精确化为"不删除用户文件"；+7 单测 +2 E2E|
-|2026-08-09|**事件溯源移除 + 会话日志落地**：维护者决策删 events 表/verify-chain（伪需求，PARKED §8）；`.svault/sessions/<kind>/<ts-id>/` 统一布局（plan.json 复制前 fail-fast 落盘 + staging/ + manifest.json 原子写，sync 带 plan，recheck 报告迁入）；session_id 时间戳+唯一后缀（BUG-3/4 修复）；reconcile 改只报告不删（G1 最终形态）；复制 ENOSPC 锁定逐文件失败 exit 0|
+|2026-08-09|**事件溯源移除 + 会话日志落地**：维护者决策删 events 表/verify-chain（伪需求，PARKED §A2）；`.svault/sessions/<kind>/<ts-id>/` 统一布局（plan.json 复制前 fail-fast 落盘 + staging/ + manifest.json 原子写，sync 带 plan，recheck 报告迁入）；session_id 时间戳+唯一后缀（BUG-3/4 修复）；reconcile 改只报告不删（G1 最终形态）；复制 ENOSPC 锁定逐文件失败 exit 0|

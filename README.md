@@ -168,7 +168,7 @@ svault db dump files --format json | jq .
 Removed in the 2026-04 architecture refactor: `history` (use `db dump`),
 `update --delete` (violated the no-delete principle). Removed 2026-08-09:
 the event-sourcing log (`events` table + `db verify-chain`) — maintainer
-decision, pseudo-requirement (see docs/PARKED.md §8). `scan` remains available
+decision, pseudo-requirement (see docs/PARKED.md §A2). `scan` remains available
 in debug builds. `sync`/`clone` were re-implemented properly — Beyond Compare
 style, not git style (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §6).
 

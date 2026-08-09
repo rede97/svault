@@ -5,8 +5,8 @@
 > - 任何故障注入测试的判据 MUST 以本文档为准；`tests/e2e/fuse_tests/VALIDATION_PLAN.md`
 >   中的测试场景只有与本文档判据一致的部分有效。
 > - 本文档与代码冲突时，按仓库惯例**当场修正其一**（修代码或修文档），
->   不允许两者长期不一致（见 docs/REFACTOR-2026-04.md §遗留规则）。
-> - 其他文档（import-pipeline.md / cli.md / database-schema.md）
+>   不允许两者长期不一致。
+> - 其他文档（cli.md / database-schema.md）
 >   中与故障行为相关的段落，凡与本文档冲突，以本文档为准并应回改。
 > - 每条决策标注代码证据（`文件:行号`）。行号会腐烂，仅作定位参考；符号名优先。
 > - 状态标记：**[VERIFIED]** = 已对照代码核实；**[OPEN-n]** = 待维护者拍板（见 §9）。
@@ -36,7 +36,7 @@
 临时文件，且源文件从不被触碰。**中断遗留的会话目录 svault 绝不删除**：
 reconcile 只做补 rename（非删除）+ 发 `Hint::SessionResidue` 报告
 （目录/文件数/字节数），用户审阅其中的 plan.json 后手动处理。
-`update --delete` 因违反本原则被移除（docs/PARKED.md §3）。
+`update --delete` 因违反本原则被移除（docs/PARKED.md §A1）。
 
 ### G2 无重试、无超时、无信号处理 [VERIFIED]
 
@@ -49,8 +49,8 @@ reconcile 只做补 rename（非删除）+ 发 `Hint::SessionResidue` 报告
 
 **推论**：故障的应对策略只有两种——**跳过该文件继续**（逐文件隔离，G3），
 或**整个命令报错退出**（致命错误，G4）。恢复一律靠**幂等重跑**（§6），
-不靠断点续传状态（`.pending` 设计从未实现且已移除，
-docs/import-pipeline.md §原子性与可恢复性）。会话对账
+不靠断点续传状态（`.pending` 设计从未实现且已移除）。
+会话对账
 （`session::reconcile`，2026-08-09 起）只做两件事：补完成
 "已入库未 rename"的 rename、**报告**（而非删除）中断残留——不利用已复制
 未入库的暂存文件续传（无法低成本区分完整与半截副本，见 §5 注）。
@@ -210,7 +210,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 - 前置检查仅有：源路径存在、源≠目标、源有 `.svault/vault.db`。
   **无 health pre-flight**（该设计未实现，已随 sync-design.md 删除，
-  见 PARKED §6）。
+  见 PARKED §C1）。
 - 源 DB 只读打开（G6）；比对只取 `status='imported'` 记录
   （`ops/sync.rs:110,116`）。
 - diff 依据 identity = SHA-256 优先、XXH3-128 兜底（`sync/diff.rs:37-39`）；
@@ -252,7 +252,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 **决策**：F3/F4 类测试的判据 MUST 断言"现行检测能力边界"（如上表），
 并在测试名/注释中明确这是**局限性确认测试**而非缺陷。真正的修复手段
 （多副本比对、外部校验、`svault recover` 损坏恢复）属于已暂缓的设计
-（docs/PARKED.md §6；另见 §7 DRIFT-2、[OPEN-5]）。
+（docs/PARKED.md §C1；另见 §7 DRIFT-2、[OPEN-5]）。
 
 ---
 
@@ -275,7 +275,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 **注（为何不利用 staging 残留续传）**：中断点任意，staging 内的无记录
 文件无法低成本区分"完整副本"与"写了一半"——唯一可靠判别是源/暂存两侧
 重算哈希比对（各读一遍），省下的仅一次写 IO；真正的断点续传属于
-已暂缓的 sync_journal 范畴（PARKED §6）。plan.json 提供了 source↔dest
+已暂缓的 sync_journal 范畴（PARKED §C1）。plan.json 提供了 source↔dest
 映射，但只用于**事后剖析**，不参与恢复决策。因此中断残留一律报告给
 用户处理（G1 最终形态），重跑重新复制。
 
@@ -283,7 +283,6 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - ~~"已复制未入库"的孤儿文件无法被任何去重层识别，重跑改名重复制~~
   **已闭环（2026-08-09，[OPEN-3]）**：staging 模型下孤儿只存在于会话
   staging 子树，对账报告、用户处置，最终路径不再有不可识别副本。
-  docs/import-pipeline.md "由 Stage D 去重识别"的说法仍然错误。
 - `--force` 是有意破坏幂等的开关：跳过 CRC 短路 + 跳过二次去重 +
   跳过按路径检查 → 重复内容会复制并插入第二条 DB 记录
   （`lookup.rs`、`import.rs`、`insert.rs`）。
@@ -304,7 +303,7 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
   （`fs::atomic_write`，BUG-3 已修复）；session_id 为
   `YYYYMMDDTHHMMSS-<hex 后缀>`，同秒冲突不复存在（BUG-4 已修复）。
 - files 表**无唯一约束**（`idx_files_xxh3_128` 等均为普通索引，
-  `db/mod.rs` SCHEMA），import-pipeline.md "层 3 唯一约束兜底"不存在。
+  `db/mod.rs` SCHEMA）——去重完全靠 Stage B/D 查询，无数据库层兜底。
 
 ---
 
@@ -323,8 +322,8 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 | 编号 | 文档 | 漂移内容 |
 |------|------|----------|
-| DRIFT-1 | import-pipeline.md | 11 处不符：lookup_stream 不存在（串行内联）；层 3 唯一约束不存在；无 500 条分批提交（整批单事务）；crc32c 只在 Stage E 落库；duplicate 从不写 files 表；无 import_sessions 表；manifest 是 JSON 非文本；孤儿文件 Stage D 无法识别；无归档文件清理；CRC32C 命名 |
-| DRIFT-2 | ~~sync-design.md~~（2026-08-05 已删除） | 原设计稿大量未实现且基于已移除的 reporter trait 体系：health pre-flight、sync_journal 断点续传、tmp→rename、clone=sync --export、"只比 sha256"、`svault recover` 命令。recover 等暂缓设计已抢救至 PARKED §6；原文见 `git show f34d53b:docs/sync-design.md` |
+| DRIFT-1 | ~~import-pipeline.md~~ **已消解（2026-08-09）**：该文档已删除，仍准确的内容并入 ARCHITECTURE.md §3 | — |
+| DRIFT-2 | ~~sync-design.md~~（2026-08-05 已删除） | 原设计稿大量未实现且基于已移除的 reporter trait 体系：health pre-flight、sync_journal 断点续传、tmp→rename、clone=sync --export、"只比 sha256"、`svault recover` 命令。recover 等暂缓设计已抢救至 PARKED §C1；原文见 `git show f34d53b:docs/sync-design.md` |
 | DRIFT-3 | ~~ARCHITECTURE.md §6.1~~ **已消解（2026-08-09）**：clone 不再写源 DB，"只读源 vault" 措辞现已准确 | — |
 | DRIFT-4 | ~~cli.md / database-schema.md~~ **已消解（2026-08-09）**：事件名示例随事件溯源移除失效；recheck 报告路径已更新为 sessions 布局 | — |
 
@@ -396,8 +395,8 @@ DB 查询 / 文件系统状态）。
 - 信号中断恢复：`tests/e2e/test_import_interruption.py`（strace 信号注入；strace 中断 3 例：SIGTERM 重跑、write 阶段中断、SIGKILL 后 DB 完整性
   ——2026-08-09 起改用 `PRAGMA integrity_check`，事件链校验随事件溯源移除）
 - 幂等/增量恢复：`test_import_recovery.py`（幂等/增量/修改识别/vault 内移动各有代表）
-- 手动破坏 vault 后 verify 失败：ai-user-testing §C（AI-VERIFY-002），
-  E2E 对应 `test_verify.py` 损坏检测族。~~events 表篡改检测（AI-DB-001）~~
+- 手动破坏 vault 后 verify 失败：E2E `test_verify.py` 损坏检测族
+  （AI-VERIFY-002 场景）。~~events 表篡改检测（AI-DB-001）~~
   已随事件溯源移除（2026-08-09）
 
 ---
@@ -412,9 +411,9 @@ DB 查询 / 文件系统状态）。
 | OPEN-2 | ~~BUG-2：update 绕过事件溯源写协议~~ **已消解（2026-08-09）**：事件溯源整体移除（维护者决策：伪需求），直接 UPDATE 即唯一写路径 | — |
 | OPEN-3 | ~~半成品/孤儿文件不清理 + 重跑改名重复制~~ **已决策执行（2026-08-09）**：选 B 的 staging 变体——import 改走会话 staging 原子提交（tmp→fsync→hash→入库→rename），半成品不进入最终路径，对账报告残留交用户处置；G1 收窄为"svault 只清理本次会话自建暂存" | — |
 | OPEN-4 | ~~manifest 非原子 + session_id 秒冲突~~ **已修复（2026-08-09）**：`fs::atomic_write` + `YYYYMMDDTHHMMSS-<hex 后缀>` session_id | — |
-| OPEN-5 | PARKED §6 暂缓设计（recover / health pre-flight / sync_journal） | A. 维持暂缓；B. 立项实现（recover 涉及 .svault/corrupted/ 与逐文件确认交互，必须走 Event/Interactor，不得复活 reporter trait） |
+| OPEN-5 | PARKED §C1 暂缓设计（recover / health pre-flight / sync_journal） | A. 维持暂缓；B. 立项实现（recover 涉及 .svault/corrupted/ 与逐文件确认交互，必须走 Event/Interactor，不得复活 reporter trait） |
 | OPEN-6 | 部分失败退出码不一致：import/sync/clone=0，verify=1 | A. 接受（verify 是审计命令，语义不同）；B. 统一 |
-| OPEN-7 | DRIFT-1/3/4 原文档回改 | A. 本次一并回改；B. 仅保留本文档权威声明，原文档加指向 |
+| OPEN-7 | ~~DRIFT-1/3/4 原文档回改~~ **已消解（2026-08-09）**：import-pipeline.md 删除（准确内容并入 ARCHITECTURE.md §3），DRIFT-3/4 随事件溯源移除失效 | — |
 
 ---
 
