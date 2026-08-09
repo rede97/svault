@@ -138,13 +138,6 @@ pub struct ManifestSummary {
 }
 
 impl ImportManifest {
-    /// Save manifest to file (JSON format).
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
-        Ok(())
-    }
-
     /// Load manifest from file.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let json = fs::read_to_string(path)?;
@@ -200,64 +193,100 @@ impl ImportManifest {
 }
 
 /// Manifest manager for a vault.
+///
+/// Manifests live inside session journal directories:
+/// `.svault/sessions/<kind>/<ts-id>/manifest.json` (see [`crate::session`]).
 pub struct ManifestManager {
-    manifests_dir: PathBuf,
+    vault_root: PathBuf,
 }
 
 impl ManifestManager {
     /// Create manager for vault root.
     pub fn new(vault_root: &Path) -> Self {
         Self {
-            manifests_dir: vault_root.join(".svault").join("manifests"),
+            vault_root: vault_root.to_path_buf(),
         }
     }
 
-    /// Ensure manifests directory exists.
-    fn ensure_dir(&self) -> anyhow::Result<()> {
-        fs::create_dir_all(&self.manifests_dir)?;
-        Ok(())
-    }
-
-    /// Save manifest. The filename reflects the session type
-    /// (`import-<id>.json`, `sync-<id>.json`, …).
+    /// Save manifest into its session directory
+    /// (`sessions/<type>/<session_id>/manifest.json`), atomically.
     pub fn save(&self, manifest: &ImportManifest) -> anyhow::Result<PathBuf> {
-        self.ensure_dir()?;
-        let path = self.manifests_dir.join(format!(
-            "{}-{}.json",
-            manifest.session_type, manifest.session_id
-        ));
-        manifest.save(&path)?;
+        let dir = crate::session::session_dir(
+            &self.vault_root,
+            manifest.session_type,
+            &manifest.session_id,
+        );
+        let path = dir.join(crate::session::MANIFEST_FILE);
+        crate::session::write_json_atomic(&path, manifest)?;
         Ok(path)
     }
 
-    /// Load manifest by session ID.
-    ///
-    /// Looks up `import-<id>.json` first, then other session-type prefixes,
-    /// so recheck works for sync/import sessions alike.
-    pub fn load(&self, session_id: &str) -> anyhow::Result<ImportManifest> {
-        for prefix in ["import", "sync", "add", "clone", "update"] {
-            let path = self
-                .manifests_dir
-                .join(format!("{}-{}.json", prefix, session_id));
-            if path.exists() {
-                return ImportManifest::load(&path);
+    /// Iterate all session directories (any kind) that contain a manifest.
+    fn session_dirs_with_manifest(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        let root = crate::session::sessions_root(&self.vault_root);
+        let Ok(kinds) = fs::read_dir(&root) else {
+            return dirs;
+        };
+        for kind_entry in kinds.flatten() {
+            let kind_dir = kind_entry.path();
+            if !kind_dir.is_dir() {
+                continue;
+            }
+            let Ok(sessions) = fs::read_dir(&kind_dir) else {
+                continue;
+            };
+            for session_entry in sessions.flatten() {
+                let dir = session_entry.path();
+                if dir.is_dir() && dir.join(crate::session::MANIFEST_FILE).is_file() {
+                    dirs.push(dir);
+                }
             }
         }
-        // Fall back to the historical name for a clear error message.
-        ImportManifest::load(&self.manifests_dir.join(format!("import-{session_id}.json")))
+        dirs
+    }
+
+    /// Load manifest by session ID or unique prefix.
+    ///
+    /// An exact directory-name match wins; otherwise the prefix must match
+    /// exactly one session directory. Interrupted sessions (no manifest yet)
+    /// and ambiguous prefixes produce a clear error.
+    pub fn load(&self, session_prefix: &str) -> anyhow::Result<ImportManifest> {
+        let dirs = self.session_dirs_with_manifest();
+        let dir_name = |d: &PathBuf| {
+            d.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+
+        let exact: Vec<&PathBuf> = dirs.iter().filter(|d| dir_name(d) == session_prefix).collect();
+        let matches: Vec<&PathBuf> = if exact.is_empty() {
+            dirs.iter()
+                .filter(|d| dir_name(d).starts_with(session_prefix))
+                .collect()
+        } else {
+            exact
+        };
+
+        match matches.len() {
+            0 => anyhow::bail!("no session manifest found matching '{session_prefix}'"),
+            1 => ImportManifest::load(matches[0].join(crate::session::MANIFEST_FILE).as_path()),
+            _ => {
+                let names: Vec<String> = matches.iter().map(|d| dir_name(d)).collect();
+                anyhow::bail!(
+                    "session prefix '{session_prefix}' is ambiguous: {}",
+                    names.join(", ")
+                )
+            }
+        }
     }
 
     /// List all manifests (newest first).
     pub fn list_all(&self) -> anyhow::Result<Vec<(PathBuf, ImportManifest)>> {
-        self.ensure_dir()?;
         let mut manifests = Vec::new();
-
-        for entry in fs::read_dir(&self.manifests_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json")
-                && let Ok(m) = ImportManifest::load(&path)
-            {
+        for dir in self.session_dirs_with_manifest() {
+            let path = dir.join(crate::session::MANIFEST_FILE);
+            if let Ok(m) = ImportManifest::load(&path) {
                 manifests.push((path, m));
                 // Silently skip invalid manifests — core does not print to terminal.
             }

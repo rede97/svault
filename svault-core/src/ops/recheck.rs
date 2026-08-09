@@ -2,10 +2,9 @@
 //!
 //! Reads an import manifest and verifies both the original source files
 //! and the vault copies against the hashes recorded at import time.
-//! A report is written to `.svault/staging/` so the user can decide which
-//! side is correct. No files are imported or modified.
+//! A report is written to `.svault/sessions/recheck/<ts-id>/report.json`
+//! so the user can decide which side is correct.
 
-use std::fs;
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -217,16 +216,19 @@ fn compute_hash(path: &Path, use_sha256: bool) -> std::io::Result<String> {
     }
 }
 
-/// Write the recheck report to `.svault/staging/` and return its path.
+/// Write the recheck report to its session directory
+/// (`sessions/recheck/<session_id>/report.json`) and return its path.
 fn write_report(
     vault_root: &Path,
     session_id: &str,
     results: &[RecheckResult],
 ) -> anyhow::Result<std::path::PathBuf> {
-    let staging = vault_root.join(".svault").join("staging");
-    fs::create_dir_all(&staging)?;
-
-    let report_path = staging.join(format!("recheck_{}.json", session_id));
+    let dir = crate::session::session_dir(
+        vault_root,
+        crate::verify::manifest::SessionType::Recheck,
+        session_id,
+    );
+    let report_path = dir.join(crate::session::REPORT_FILE);
 
     let mut report = serde_json::Map::new();
     report.insert("session_id".to_string(), session_id.into());
@@ -254,8 +256,7 @@ fn write_report(
         .collect();
     report.insert("files".to_string(), items.into());
 
-    let json = serde_json::to_string_pretty(&report)?;
-    fs::write(&report_path, json)?;
+    crate::session::write_json_atomic(&report_path, &report)?;
 
     Ok(report_path)
 }
