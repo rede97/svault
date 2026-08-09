@@ -10,12 +10,20 @@ pub fn unix_now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Generate a session ID based on current timestamp.
-/// Format: Unix seconds (sufficient for session uniqueness).
+/// Generate a session ID: local timestamp + unique suffix.
+///
+/// Format: `YYYYMMDDTHHMMSS-fffff` (hex suffix from sub-second microseconds
+/// XORed with the PID). Second-resolution IDs collided when two sessions
+/// started within the same second (formerly BUG-4); the suffix makes
+/// collisions practically impossible, and the vault process lock serializes
+/// writers anyway.
 pub fn session_id_now() -> String {
-    let ms = unix_now_ms();
-    let secs = ms / 1000;
-    format!("{secs}")
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let ts = chrono::Local::now().format("%Y%m%dT%H%M%S");
+    let suffix = (now.subsec_micros() ^ std::process::id()) & 0xFFFFF;
+    format!("{ts}-{suffix:05x}")
 }
 
 #[cfg(test)]
@@ -33,7 +41,19 @@ mod tests {
     #[test]
     fn test_session_id_format() {
         let id = session_id_now();
-        // Should be numeric (Unix seconds)
-        assert!(id.parse::<u64>().is_ok());
+        // Format: YYYYMMDDTHHMMSS-fffff (timestamp + unique hex suffix)
+        let (ts, suffix) = id.rsplit_once('-').expect("session id has suffix");
+        assert_eq!(ts.len(), 15); // YYYYMMDD T HHMMSS
+        assert_eq!(ts.chars().nth(8), Some('T'));
+        assert_eq!(suffix.len(), 5);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_session_id_unique_within_same_second() {
+        // BUG-4 regression: two sessions started back-to-back must differ.
+        let a = session_id_now();
+        let b = session_id_now();
+        assert_ne!(a, b);
     }
 }

@@ -511,6 +511,24 @@ fn sync_parent_dir(_path: &Path) -> FsResult<()> {
     Ok(())
 }
 
+/// Atomically write bytes to `path`: write a sibling temp file, fsync it,
+/// rename over the destination, then fsync the parent directory. A crash
+/// either leaves the old content or the new content — never a truncated file.
+pub fn atomic_write(path: &Path, contents: &[u8]) -> FsResult<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| FsError::Other(format!("invalid path: {}", path.display())))?;
+    let tmp = path.with_file_name(format!("{}.tmp", file_name.to_string_lossy()));
+    {
+        let mut f = fs::File::create(&tmp).map_err(FsError::Io)?;
+        use std::io::Write as _;
+        f.write_all(contents).map_err(FsError::Io)?;
+        f.sync_all().map_err(FsError::Io)?;
+    }
+    fs::rename(&tmp, path).map_err(FsError::Io)?;
+    sync_parent_dir(path)
+}
+
 // ---------------------------------------------------------------------------
 // Capability probing
 // ---------------------------------------------------------------------------

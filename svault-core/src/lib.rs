@@ -18,6 +18,7 @@ pub mod lock;
 pub mod media;
 pub mod ops;
 pub mod pipeline;
+pub mod session;
 pub mod status;
 pub mod sync;
 pub mod verify;
