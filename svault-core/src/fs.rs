@@ -51,6 +51,65 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
+/// Scan constraints: depth limit and glob filtering.
+///
+/// Globs match the root-relative path (e.g. `DCIM/**/*.JPG`), case-insensitively.
+/// Exclusions win over inclusions; an empty include list includes everything.
+#[derive(Debug, Clone, Default)]
+pub struct ScanFilter {
+    /// Maximum depth below the scan root: 0 = unlimited, 1 = direct children only.
+    pub max_depth: usize,
+    /// Include glob patterns (empty = all files).
+    pub include: Vec<String>,
+    /// Exclude glob patterns.
+    pub exclude: Vec<String>,
+}
+
+/// Compiled glob sets for a [`ScanFilter`].
+struct CompiledFilter {
+    include: Option<globset::GlobSet>,
+    exclude: Option<globset::GlobSet>,
+}
+
+fn compile_globs(patterns: &[String]) -> FsResult<Option<globset::GlobSet>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        let glob = globset::GlobBuilder::new(pattern)
+            .case_insensitive(true)
+            .build()
+            .map_err(|e| FsError::Other(format!("invalid glob '{pattern}': {e}")))?;
+        builder.add(glob);
+    }
+    builder
+        .build()
+        .map(Some)
+        .map_err(|e| FsError::Other(format!("invalid glob set: {e}")))
+}
+
+impl CompiledFilter {
+    fn compile(filter: &ScanFilter) -> FsResult<Self> {
+        Ok(Self {
+            include: compile_globs(&filter.include)?,
+            exclude: compile_globs(&filter.exclude)?,
+        })
+    }
+
+    fn matches(&self, rel: &Path) -> bool {
+        if let Some(ex) = &self.exclude
+            && ex.is_match(rel)
+        {
+            return false;
+        }
+        match &self.include {
+            Some(inc) => inc.is_match(rel),
+            None => true,
+        }
+    }
+}
+
 /// Errors from filesystem operations.
 #[derive(Debug)]
 pub enum FsError {
@@ -102,14 +161,17 @@ pub fn walk_stream(
     root: &Path,
     dir: &Path,
     extensions: &[&str],
+    filter: &ScanFilter,
 ) -> FsResult<mpsc::Receiver<FsResult<DirEntry>>> {
     ensure_root_exists(root)?;
     let full_root = resolve_path(root, dir);
     let exts: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
+    let compiled = CompiledFilter::compile(filter)?;
+    let max_depth = filter.max_depth;
 
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        walk_stream_recursive(&full_root, &full_root, &exts, &tx);
+        walk_stream_recursive(&full_root, &full_root, &exts, &compiled, max_depth, &tx);
     });
 
     Ok(rx)
@@ -119,9 +181,16 @@ fn walk_stream_recursive(
     root: &Path,
     current: &Path,
     exts: &[String],
+    filter: &CompiledFilter,
+    max_depth: usize,
     tx: &mpsc::Sender<FsResult<DirEntry>>,
 ) {
     for entry_result in jwalk::WalkDir::new(current)
+        .max_depth(if max_depth == 0 {
+            usize::MAX
+        } else {
+            max_depth
+        })
         .skip_hidden(false)
         .process_read_dir(|_depth, _path, _state, children| {
             children.iter_mut().for_each(|child_result| {
@@ -144,6 +213,10 @@ fn walk_stream_recursive(
                     .strip_prefix(root)
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|_| abs_path.to_path_buf());
+
+                if !filter.matches(&path) {
+                    continue;
+                }
 
                 if !exts.is_empty() {
                     let ext_matches = path

@@ -30,6 +30,7 @@ regex = "1"
 chrono = "0.4"
 fs2 = "0.4"
 thiserror = "1"
+globset = "0.4"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"

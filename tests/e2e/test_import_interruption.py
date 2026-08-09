@@ -332,6 +332,37 @@ class TestStagingReconcile:
 
 
 
+class TestStatusInterruptedSessions:
+    """status 报告中断会话（无 manifest 的会话目录 + 其 staging 残留）"""
+
+    def test_status_reports_interrupted_session(self, vault: VaultEnv) -> None:
+        import json as _json
+
+        create_minimal_jpeg(vault.source_dir / "a.jpg", "STATUS_CHECK")
+        assert vault.import_dir(vault.source_dir).returncode == 0
+
+        # 干净状态：无中断会话
+        report = _json.loads(vault.run("--output=json", "status").stdout)
+        assert report["incomplete_sessions"] == []
+
+        # 伪造中断现场：无 manifest + plan + staging 残留
+        broken = (
+            vault.vault_dir / ".svault" / "sessions" / "import" / "20260101T000000-dead0"
+        )
+        (broken / "staging" / "x").mkdir(parents=True)
+        (broken / "plan.json").write_text("{}")
+        (broken / "staging" / "x" / "part.jpg").write_bytes(b"partial")
+
+        report = _json.loads(vault.run("--output=json", "status").stdout)
+        sessions = report["incomplete_sessions"]
+        assert len(sessions) == 1
+        assert sessions[0]["kind"] == "import"
+        assert sessions[0]["session_id"] == "20260101T000000-dead0"
+        assert sessions[0]["residue_files"] == 1
+        assert sessions[0]["residue_bytes"] == 7
+        assert str(broken) in sessions[0]["dir"]
+
+
 # =============================================================================
 # Test Architecture Notes
 # =============================================================================

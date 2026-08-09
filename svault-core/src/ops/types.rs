@@ -35,6 +35,17 @@ pub struct ImportOptions {
     /// constructing `ImportOptions`.
     /// When `None`, `source` is scanned recursively.
     pub files_from: Option<Vec<PathBuf>>,
+    /// Maximum scan depth below the source root: 0 = unlimited (default),
+    /// 1 = only files directly inside the source directory.
+    /// Ignored when `files_from` is set.
+    pub max_depth: usize,
+    /// Include globs matched against the source-relative path
+    /// (case-insensitive; empty = everything, subject to `allowed_extensions`).
+    /// Ignored when `files_from` is set.
+    pub include: Vec<String>,
+    /// Exclude globs; exclusions win over inclusions.
+    /// Ignored when `files_from` is set.
+    pub exclude: Vec<String>,
 }
 
 /// Final summary returned to the caller.

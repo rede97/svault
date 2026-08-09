@@ -176,3 +176,4 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 |2026-08-09|**import staging 原子提交**（OPEN-3 闭环）：复制入 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 → commit 后 rename（`pipeline/staging.rs`、`fs::atomic_commit`）；启动对账补 rename/清残留；G1 精确化为"不删除用户文件"；+7 单测 +2 E2E|
 |2026-08-09|**事件溯源移除 + 会话日志落地**：维护者决策删 events 表/verify-chain（伪需求，PARKED §A2）；`.svault/sessions/<kind>/<ts-id>/` 统一布局（plan.json 复制前 fail-fast 落盘 + staging/ + manifest.json 原子写，sync 带 plan，recheck 报告迁入）；session_id 时间戳+唯一后缀（BUG-3/4 修复）；reconcile 改只报告不删（G1 最终形态）；复制 ENOSPC 锁定逐文件失败 exit 0|
 |2026-08-09|**相册与评级**：`svault album`（多级树 `parent_id` 邻接表 + 成员引用 `files.id` + 成员级独立评级 `album_items.rating`）；`files` 行永不物理删除升级为 FK 硬约束；derivatives/assets 表删除（GUI 派生物独立实现；三级链拍平）；媒体绑定计划入 docs/media-binding.md|
+|2026-08-09|**查询体验三件套**：import 支持 `-r/--max-depth`（0 全递归/1 仅一层）与 `--include/--exclude` 通配过滤（globset，大小写不敏感，exclude 优先）；album list/show 支持通配（add/remove/rate 保持精确路径）；status 报告中断会话（无 manifest 的会话目录 + 残留量 + 路径）|

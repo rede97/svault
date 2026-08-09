@@ -83,6 +83,21 @@ pub enum Command {
         /// Show duplicate files that were skipped during import.
         #[arg(long)]
         show_dup: bool,
+
+        /// Maximum scan depth below the source directory:
+        /// 0 = unlimited (default), 1 = only files directly inside it.
+        /// Ignored when --files-from is used.
+        #[arg(short = 'r', long, value_name = "N", default_value = "0")]
+        max_depth: usize,
+
+        /// Only import files matching this glob (source-relative,
+        /// case-insensitive, repeatable, e.g. --include 'DCIM/**/*.JPG').
+        #[arg(long, value_name = "GLOB")]
+        include: Vec<String>,
+
+        /// Skip files matching this glob (wins over --include, repeatable).
+        #[arg(long, value_name = "GLOB")]
+        exclude: Vec<String>,
     },
 
     /// Re-check a previous import against its manifest.
@@ -259,9 +274,16 @@ pub enum AlbumCommand {
         #[arg(value_name = "PATH")]
         path: String,
     },
-    /// List all albums as a tree with member counts
-    List,
-    /// Show an album's members with their per-membership ratings
+    /// List all albums as a tree with member counts.
+    /// An optional glob filters by full album path (e.g. "trips/*"),
+    /// keeping the ancestor chain of matches.
+    List {
+        /// Glob pattern over album paths
+        #[arg(value_name = "GLOB")]
+        pattern: Option<String>,
+    },
+    /// Show album members with per-membership ratings.
+    /// Accepts an exact album path or a glob matching several albums.
     Show {
         /// Album path
         #[arg(value_name = "PATH")]

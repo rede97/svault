@@ -50,6 +50,7 @@ fn normalize_scan_root(path: &Path) -> PathBuf {
 pub fn scan_stream(
     root: &Path,
     exts: &[&str],
+    filter: &crate::fs::ScanFilter,
 ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<FileEntry>>> {
     // Normalize path: strip trailing separators and quotes (handles PowerShell auto-completion quirks)
     let root = normalize_scan_root(root);
@@ -59,6 +60,7 @@ pub fn scan_stream(
         &root,
         Path::new(""),
         &exts.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        filter,
     )?;
 
     let (tx, rx) = mpsc::channel();
@@ -108,7 +110,7 @@ mod tests {
         fs::write(root.join("b.png"), "content b").unwrap();
         fs::write(root.join("c.txt"), "content c").unwrap();
 
-        let rx = scan_stream(root, &["jpg", "png"]).unwrap();
+        let rx = scan_stream(root, &["jpg", "png"], &crate::fs::ScanFilter::default()).unwrap();
         let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
 
         assert_eq!(entries.len(), 2);
@@ -121,7 +123,7 @@ mod tests {
     #[test]
     fn test_scan_stream_empty_dir() {
         let tmp = TempDir::new().unwrap();
-        let rx = scan_stream(tmp.path(), &["jpg"]).unwrap();
+        let rx = scan_stream(tmp.path(), &["jpg"], &crate::fs::ScanFilter::default()).unwrap();
         let entries: Vec<_> = rx.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
         assert!(entries.is_empty());
     }
@@ -138,7 +140,7 @@ mod tests {
         fs::write(root.join("subdir2/b.jpg"), "b").unwrap();
         fs::write(root.join("c.jpg"), "c").unwrap();
 
-        let rx = scan_stream(root, &["jpg"]).unwrap();
+        let rx = scan_stream(root, &["jpg"], &crate::fs::ScanFilter::default()).unwrap();
         let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
 
         assert_eq!(entries.len(), 3);
@@ -157,10 +159,85 @@ mod tests {
         fs::write(root.join("b.png"), "b").unwrap();
         fs::write(root.join("c.txt"), "c").unwrap();
 
-        let rx = scan_stream(root, &[]).unwrap();
+        let rx = scan_stream(root, &[], &crate::fs::ScanFilter::default()).unwrap();
         let entries: Vec<_> = rx.into_iter().filter_map(|r| r.ok()).collect();
 
         assert_eq!(entries.len(), 3);
+    }
+
+    // =========================================================================
+    // ScanFilter tests (max_depth + globs)
+    // =========================================================================
+
+    fn filtered_entries(filter: &crate::fs::ScanFilter) -> Vec<String> {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("sub/deep")).unwrap();
+        fs::write(root.join("top.jpg"), "t").unwrap();
+        fs::write(root.join("top.png"), "t").unwrap();
+        fs::write(root.join("sub/mid.JPG"), "m").unwrap();
+        fs::write(root.join("sub/deep/bottom.jpg"), "b").unwrap();
+
+        let rx = scan_stream(root, &[], filter).unwrap();
+        let mut names: Vec<String> = rx
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .map(|e| {
+                e.path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_scan_max_depth_one_scans_only_top_level() {
+        let names = filtered_entries(&crate::fs::ScanFilter {
+            max_depth: 1,
+            ..Default::default()
+        });
+        assert_eq!(names, vec!["top.jpg", "top.png"]);
+    }
+
+    #[test]
+    fn test_scan_include_glob_case_insensitive() {
+        let names = filtered_entries(&crate::fs::ScanFilter {
+            include: vec!["*.jpg".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(
+            names,
+            vec!["sub/deep/bottom.jpg", "sub/mid.JPG", "top.jpg"],
+            "include glob must match at any depth, case-insensitively"
+        );
+    }
+
+    #[test]
+    fn test_scan_exclude_wins_over_include() {
+        let names = filtered_entries(&crate::fs::ScanFilter {
+            include: vec!["**/*.jpg".to_string()],
+            exclude: vec!["sub/**".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(names, vec!["top.jpg"]);
+    }
+
+    #[test]
+    fn test_scan_invalid_glob_is_an_error_not_a_silent_pass() {
+        let tmp = TempDir::new().unwrap();
+        let result = scan_stream(
+            tmp.path(),
+            &[],
+            &crate::fs::ScanFilter {
+                include: vec!["[unclosed".to_string()],
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
     }
 
     // =========================================================================

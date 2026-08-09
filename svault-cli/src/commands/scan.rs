@@ -44,6 +44,9 @@ pub fn run(source: PathBuf, show_dup: bool) -> anyhow::Result<()> {
         full_id: false,
         show_dup,
         files_from: None,
+        max_depth: 0,
+        include: Vec::new(),
+        exclude: Vec::new(),
     };
 
     let sink = PipeSink::new(show_dup);

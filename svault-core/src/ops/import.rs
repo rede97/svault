@@ -301,6 +301,11 @@ impl ImportOptions {
                 &source_canon,
                 &self.vault_root,
                 &self.import_config.allowed_extensions,
+                &crate::fs::ScanFilter {
+                    max_depth: self.max_depth,
+                    include: self.include.clone(),
+                    exclude: self.exclude.clone(),
+                },
                 Some(db),
                 sink,
             )?,
@@ -319,6 +324,7 @@ impl ImportOptions {
         source_canon: &Path,
         vault_root: &Path,
         allowed_extensions: &[String],
+        filter: &crate::fs::ScanFilter,
         db: Option<&Db>,
         sink: &dyn EventSink,
     ) -> anyhow::Result<ImportState> {
@@ -326,7 +332,7 @@ impl ImportOptions {
             dunce::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
         let exts: Vec<&str> = allowed_extensions.iter().map(|s| s.as_str()).collect();
 
-        let scan_rx = pipeline::scan::scan_stream(source_canon, &exts)?;
+        let scan_rx = pipeline::scan::scan_stream(source_canon, &exts, filter)?;
         let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
 
         let mut state = ImportState::new();
@@ -459,6 +465,11 @@ impl ImportOptions {
             &source_canon,
             &self.vault_root,
             &self.import_config.allowed_extensions,
+            &crate::fs::ScanFilter {
+                max_depth: self.max_depth,
+                include: self.include.clone(),
+                exclude: self.exclude.clone(),
+            },
             db,
             sink,
         )?;
@@ -1025,6 +1036,9 @@ mod tests {
             full_id: false,
             show_dup: false,
             files_from: None,
+            max_depth: 0,
+            include: Vec::new(),
+            exclude: Vec::new(),
         };
         opts.run_import(db, &crate::event::NoopSink, &crate::event::YesInteractor)
             .unwrap()

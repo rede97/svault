@@ -23,6 +23,9 @@ pub fn run(
     force: bool,
     full_id: bool,
     show_dup: bool,
+    max_depth: usize,
+    include: Vec<String>,
+    exclude: Vec<String>,
 ) -> anyhow::Result<()> {
     // Parse file-list input (stdin or file) into Vec<PathBuf> before entering core.
     let file_list: Option<Vec<PathBuf>> = match files_from {
@@ -96,6 +99,9 @@ pub fn run(
         full_id,
         show_dup,
         files_from: file_list,
+        max_depth,
+        include,
+        exclude,
     };
 
     // JSON mode requires --yes flag for non-interactive execution

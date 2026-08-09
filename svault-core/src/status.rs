@@ -27,6 +27,9 @@ pub struct StatusReport {
     pub imports_last_7d: i64,
     /// Files imported in the last 30 days.
     pub imports_last_30d: i64,
+    /// Interrupted operation sessions (import/sync dirs without a manifest),
+    /// with their staging residue. Empty when every session completed.
+    pub incomplete_sessions: Vec<crate::session::IncompleteSession>,
 }
 
 /// Options for generating a status report.
@@ -56,6 +59,7 @@ pub fn generate_report(
     let imports_last_24h = db.recent_imports(1)?;
     let imports_last_7d = db.recent_imports(7)?;
     let imports_last_30d = db.recent_imports(30)?;
+    let incomplete_sessions = crate::session::find_incomplete_sessions(vault_root);
 
     Ok(StatusReport {
         vault_root: vault_root.to_path_buf(),
@@ -65,5 +69,6 @@ pub fn generate_report(
         imports_last_24h,
         imports_last_7d,
         imports_last_30d,
+        incomplete_sessions,
     })
 }

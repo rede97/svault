@@ -39,9 +39,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             force,
             full_id,
             show_dup,
+            max_depth,
+            include,
+            exclude,
         } => commands::import::run(
             output, quiet, dry_run, yes, source, files_from, target, strategy, force, full_id,
-            show_dup,
+            show_dup, max_depth, include, exclude,
         ),
         Command::Recheck {
             source,

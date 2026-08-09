@@ -231,6 +231,52 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// An interrupted operation session: the directory exists but its outcome
+/// file (`manifest.json`) was never written.
+#[derive(Debug, Clone, Serialize)]
+pub struct IncompleteSession {
+    /// `import` or `sync`.
+    pub kind: SessionType,
+    pub session_id: String,
+    pub dir: PathBuf,
+    /// Files left in the session's `staging/` subtree (0 for sync).
+    pub residue_files: usize,
+    pub residue_bytes: u64,
+}
+
+/// Find interrupted import/sync sessions (no `manifest.json` in the session
+/// directory). Recheck sessions are excluded: an interrupted recheck leaves
+/// no directory at all. Used by `status` and safe to call any time.
+pub fn find_incomplete_sessions(vault_root: &Path) -> Vec<IncompleteSession> {
+    let mut out = Vec::new();
+    for kind in [SessionType::Import, SessionType::Sync] {
+        let kind_dir = sessions_root(vault_root).join(kind.to_string());
+        let Ok(entries) = std::fs::read_dir(&kind_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() || dir.join(MANIFEST_FILE).is_file() {
+                continue;
+            }
+            let mut staged = Vec::new();
+            collect_files(&staging_dir(&dir), &mut staged);
+            out.push(IncompleteSession {
+                kind,
+                session_id: entry.file_name().to_string_lossy().into_owned(),
+                residue_bytes: staged
+                    .iter()
+                    .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+                    .sum(),
+                residue_files: staged.len(),
+                dir,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +457,45 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let stats = reconcile(tmp.path(), &db, &RecordingSink::default());
         assert_eq!(stats, ReconcileStats::default());
+    }
+
+    #[test]
+    fn find_incomplete_sessions_reports_only_missing_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = tmp.path();
+
+        // Completed import session (has manifest) — must NOT be reported.
+        let complete = session_dir(vault, SessionType::Import, "20260809T100000-aaaa1");
+        write_json_atomic(
+            &complete.join(MANIFEST_FILE),
+            &serde_json::json!({"ok": true}),
+        )
+        .unwrap();
+
+        // Interrupted import: plan + staging residue, no manifest.
+        let broken = session_dir(vault, SessionType::Import, "20260809T100001-aaaa2");
+        write_json_atomic(&broken.join(PLAN_FILE), &serde_json::json!({})).unwrap();
+        let staged = staging_dir(&broken).join("2024/x.jpg");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"abc").unwrap();
+
+        // Interrupted sync (no staging payload at all).
+        let sync_broken = session_dir(vault, SessionType::Sync, "20260809T100002-aaaa3");
+        write_json_atomic(&sync_broken.join(PLAN_FILE), &serde_json::json!({})).unwrap();
+
+        let found = find_incomplete_sessions(vault);
+        assert_eq!(found.len(), 2);
+
+        let import = found
+            .iter()
+            .find(|s| s.kind == SessionType::Import)
+            .unwrap();
+        assert_eq!(import.session_id, "20260809T100001-aaaa2");
+        assert_eq!(import.residue_files, 1);
+        assert_eq!(import.residue_bytes, 3);
+
+        let sync = found.iter().find(|s| s.kind == SessionType::Sync).unwrap();
+        assert_eq!(sync.residue_files, 0);
+        assert_eq!(sync.residue_bytes, 0);
     }
 }

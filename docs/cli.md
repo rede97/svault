@@ -86,6 +86,9 @@ svault import <source> [options]
 | `--force` | 即使确认重复也强制导入（同时计算 SHA-256 做确定身份） |
 | `--full-id` | 计算 SHA-256 作为确定身份（更强去重保证，更慢） |
 | `--show-dup` | 在扫描输出中显示被跳过的重复文件 |
+| `-r, --max-depth <N>` | 扫描深度：0 = 不限（默认，全递归），1 = 仅源目录本身一层。`--files-from` 时忽略 |
+| `--include <GLOB>` | 只导入匹配的文件（源相对路径、大小写不敏感、可重复，如 `--include 'DCIM/**/*.JPG'`） |
+| `--exclude <GLOB>` | 跳过匹配的文件（优先于 --include，可重复）。与扩展名白名单是 AND 关系 |
 
 **会话日志：** 每次导入在 `.svault/sessions/import/<ts-id>/` 写
 `plan.json`（复制前意图）与 `manifest.json`（结果清单：源路径、归档路径
@@ -230,13 +233,17 @@ svault sync <source_vault> [options]
 
 ```
 svault album create <path>              # 创建（父级自动创建）：album create 挪威旅行/特罗姆瑟
-svault album list                       # 树形列出全部相册及成员数
-svault album show <path>                # 列出成员及评级
+svault album list [glob]                # 树形列出相册及成员数；可选通配过滤（如 "挪威旅行/*"，保留父链）
+svault album show <path|glob>           # 列出成员及评级；通配可匹配多个相册
 svault album add <album> <path>...      # 添加成员（vault 相对路径或 vault 内绝对路径）
 svault album remove <album> <path>...   # 移除成员（不删文件）
 svault album rate <album> <0-5> <path>...  # 成员评级（1-5 星，0 清除）
 svault album delete <path>              # 删除空相册（有成员/子相册则拒绝）
 ```
+
+通配符大小写不敏感，作用于完整相册路径（与 `import --include/--exclude`
+共用 globset 匹配库）。`add/remove/rate` 只接受精确路径——通配批量改
+成员关系风险太大，刻意不支持。
 
 **评级语义**：评级挂在成员关系上——同一张照片在不同相册中评级相互独立；
 `files` 表不持有评级。评级前须先 `add` 为成员。
@@ -246,6 +253,9 @@ svault album delete <path>              # 删除空相册（有成员/子相册�
 ### `svault status`
 
 显示归档库的当前状态概览（文件统计、哈希覆盖、近期导入、数据库大小、主要文件类型）。
+若存在**中断的操作会话**（`.svault/sessions/` 下无 manifest 的 import/sync 目录），
+额外列出：操作类型、会话 ID、残留文件数/大小及目录路径——审阅其中的 plan.json
+后手动处置（svault 不删除，见 G1）。
 
 ```
 svault status [--output json]

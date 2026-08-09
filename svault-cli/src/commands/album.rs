@@ -21,8 +21,8 @@ pub fn run(output: OutputFormat, command: AlbumCommand) -> anyhow::Result<()> {
                 println!("✓ Album created: {}", result.path);
             }
         }
-        AlbumCommand::List => {
-            let tree = album::list(db)?;
+        AlbumCommand::List { pattern } => {
+            let tree = album::list(db, pattern.as_deref())?;
             if matches!(output, OutputFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&tree)?);
             } else if tree.is_empty() {
@@ -32,21 +32,23 @@ pub fn run(output: OutputFormat, command: AlbumCommand) -> anyhow::Result<()> {
             }
         }
         AlbumCommand::Show { path } => {
-            let detail = album::show(db, &path)?;
+            let result = album::show(db, &path)?;
             if matches!(output, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&detail)?);
+                println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                println!(
-                    "Album: {} ({} member(s))",
-                    detail.path,
-                    detail.members.len()
-                );
-                for m in &detail.members {
-                    let rating = m
-                        .rating
-                        .map(|r| format!("{}★", r))
-                        .unwrap_or_else(|| "-".to_string());
-                    println!("  {:>3}  {}", rating, m.path);
+                for detail in &result.matched {
+                    println!(
+                        "Album: {} ({} member(s))",
+                        detail.path,
+                        detail.members.len()
+                    );
+                    for m in &detail.members {
+                        let rating = m
+                            .rating
+                            .map(|r| format!("{}★", r))
+                            .unwrap_or_else(|| "-".to_string());
+                        println!("  {:>3}  {}", rating, m.path);
+                    }
                 }
             }
         }

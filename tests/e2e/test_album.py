@@ -65,7 +65,7 @@ class TestAlbumMembership:
 
         vault.run("album", "add", "favs", a, b, "ghost.jpg")
         detail = json.loads(vault.run("--output=json", "album", "show", "favs").stdout)
-        assert {m["path"] for m in detail["members"]} == {a, b}
+        assert {m["path"] for m in detail["matched"][0]["members"]} == {a, b}
 
         # Re-add is a skip, not a duplicate row.
         vault.run("album", "add", "favs", a)
@@ -74,7 +74,7 @@ class TestAlbumMembership:
 
         vault.run("album", "remove", "favs", a)
         detail = json.loads(vault.run("--output=json", "album", "show", "favs").stdout)
-        assert [m["path"] for m in detail["members"]] == [b]
+        assert [m["path"] for m in detail["matched"][0]["members"]] == [b]
         # The file itself is untouched (G1).
         assert (vault.vault_dir / a).exists()
 
@@ -98,8 +98,8 @@ class TestAlbumRating:
 
         keep = json.loads(vault.run("--output=json", "album", "show", "keep").stdout)
         review = json.loads(vault.run("--output=json", "album", "show", "review").stdout)
-        assert keep["members"][0]["rating"] == 5
-        assert review["members"][0]["rating"] == 2
+        assert keep["matched"][0]["members"][0]["rating"] == 5
+        assert review["matched"][0]["members"][0]["rating"] == 2
 
         # files 表不持有评级（评级是成员关系属性，不是文件属性）
         cols = [r["name"] for r in vault.db_query("SELECT name FROM pragma_table_info('files')")]
@@ -113,7 +113,7 @@ class TestAlbumRating:
         vault.run("album", "rate", "favs", "4", a)
         vault.run("album", "rate", "favs", "0", a)  # 清除
         detail = json.loads(vault.run("--output=json", "album", "show", "favs").stdout)
-        assert detail["members"][0]["rating"] is None
+        assert detail["matched"][0]["members"][0]["rating"] is None
 
         # 非成员评级：跳过，不隐式创建成员关系
         vault.run("album", "rate", "favs", "3", b)
@@ -122,6 +122,39 @@ class TestAlbumRating:
         # 越界评级报错
         result = vault.run("album", "rate", "favs", "6", a, check=False)
         assert result.returncode != 0
+
+
+class TestAlbumGlob:
+    """相册查询的通配符支持（list/show 共享 globset 匹配）"""
+
+    def test_list_glob_filters_tree(self, vault: VaultEnv) -> None:
+        vault.run("album", "create", "trips/norway/tromso")
+        vault.run("album", "create", "trips/japan")
+        vault.run("album", "create", "random")
+
+        result = vault.run("--output=json", "album", "list", "trips/nor*")
+        tree = json.loads(result.stdout)
+        assert len(tree) == 1
+        assert tree[0]["name"] == "trips"
+        children = tree[0]["children"]
+        assert [c["name"] for c in children] == ["norway"]
+        assert children[0]["children"][0]["name"] == "tromso"
+
+    def test_show_glob_matches_multiple(self, vault: VaultEnv) -> None:
+        a, b = _import_two(vault)
+        vault.run("album", "create", "trips/norway")
+        vault.run("album", "create", "trips/japan")
+        vault.run("album", "add", "trips/norway", a)
+        vault.run("album", "add", "trips/japan", b)
+
+        result = vault.run("--output=json", "album", "show", "trips/*")
+        matched = json.loads(result.stdout)["matched"]
+        assert [m["path"] for m in matched] == ["trips/japan", "trips/norway"]
+        assert matched[0]["members"][0]["path"] == b
+
+        # 通配无匹配 → 报错
+        miss = vault.run("album", "show", "zzz*", check=False)
+        assert miss.returncode != 0
 
 
 class TestAlbumDelete:

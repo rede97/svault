@@ -137,10 +137,41 @@ pub fn create(db: &Db, path: &str) -> anyhow::Result<AlbumCreated> {
     })
 }
 
-/// `album list` — the full tree with direct member counts, root albums first.
-pub fn list(db: &Db) -> anyhow::Result<Vec<AlbumNode>> {
+/// `album list [pattern]` — the full tree with direct member counts, root
+/// albums first. With `pattern` (a glob matched against full album paths,
+/// case-insensitive), matching albums and their ancestor chain are kept.
+pub fn list(db: &Db, pattern: Option<&str>) -> anyhow::Result<Vec<AlbumNode>> {
     let rows = db.albums_all()?;
-    build_tree(db, &rows, None)
+    let tree = build_tree(db, &rows, None)?;
+    match pattern {
+        None => Ok(tree),
+        Some(p) => {
+            let matcher = glob_matcher(p)?;
+            Ok(prune_tree(tree, &matcher))
+        }
+    }
+}
+
+/// Compile a case-insensitive glob matcher for album paths.
+fn glob_matcher(pattern: &str) -> anyhow::Result<globset::GlobMatcher> {
+    Ok(globset::GlobBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .map_err(|e| anyhow::anyhow!("invalid glob '{pattern}': {e}"))?
+        .compile_matcher())
+}
+
+/// Keep nodes whose path matches or that have a matching descendant.
+fn prune_tree(nodes: Vec<AlbumNode>, matcher: &globset::GlobMatcher) -> Vec<AlbumNode> {
+    nodes
+        .into_iter()
+        .filter_map(|mut node| {
+            let children = prune_tree(std::mem::take(&mut node.children), matcher);
+            let keep = matcher.is_match(&node.path) || !children.is_empty();
+            node.children = children;
+            if keep { Some(node) } else { None }
+        })
+        .collect()
 }
 
 fn build_tree(db: &Db, rows: &[AlbumRow], parent: Option<i64>) -> anyhow::Result<Vec<AlbumNode>> {
@@ -173,24 +204,75 @@ fn build_tree_with_prefix(
     Ok(out)
 }
 
-/// `album show <path>` — members with per-membership ratings.
-pub fn show(db: &Db, path: &str) -> anyhow::Result<AlbumDetail> {
-    let segments = parse_album_path(path)?;
-    let id =
-        resolve_album(db, &segments)?.ok_or_else(|| anyhow::anyhow!("album not found: {path}"))?;
-    let members = db
-        .album_items(id)?
-        .into_iter()
-        .map(|r| AlbumMember {
-            path: r.path,
-            rating: r.rating,
-            added_at: r.added_at,
-        })
-        .collect();
-    Ok(AlbumDetail {
-        path: segments.join("/"),
-        members,
-    })
+/// Result of `album show`: one detail per matched album.
+#[derive(Debug, Clone, Serialize)]
+pub struct AlbumShow {
+    pub matched: Vec<AlbumDetail>,
+}
+
+/// `album show <path-or-glob>` — members with per-membership ratings.
+///
+/// An exact album path returns a single detail; otherwise the argument is
+/// treated as a case-insensitive glob over full album paths and every match
+/// is returned (sorted by path).
+pub fn show(db: &Db, path_or_glob: &str) -> anyhow::Result<AlbumShow> {
+    let members_of = |id: i64| -> anyhow::Result<Vec<AlbumMember>> {
+        Ok(db
+            .album_items(id)?
+            .into_iter()
+            .map(|r| AlbumMember {
+                path: r.path,
+                rating: r.rating,
+                added_at: r.added_at,
+            })
+            .collect())
+    };
+
+    // Exact path first.
+    let segments = parse_album_path(path_or_glob)?;
+    if let Some(id) = resolve_album(db, &segments)? {
+        return Ok(AlbumShow {
+            matched: vec![AlbumDetail {
+                path: segments.join("/"),
+                members: members_of(id)?,
+            }],
+        });
+    }
+
+    // Otherwise treat as a glob over full album paths.
+    if !path_or_glob.contains(['*', '?', '[']) {
+        anyhow::bail!("album not found: {path_or_glob}");
+    }
+    let matcher = glob_matcher(path_or_glob)?;
+    let rows = db.albums_all()?;
+    let by_id: std::collections::HashMap<i64, &AlbumRow> = rows.iter().map(|r| (r.id, r)).collect();
+
+    let mut matched = Vec::new();
+    for row in &rows {
+        // Reconstruct the full path by walking parents.
+        let mut names = vec![row.name.clone()];
+        let mut parent = row.parent_id;
+        while let Some(pid) = parent {
+            let prow = by_id
+                .get(&pid)
+                .ok_or_else(|| anyhow::anyhow!("album {pid} referenced but missing"))?;
+            names.push(prow.name.clone());
+            parent = prow.parent_id;
+        }
+        names.reverse();
+        let full = names.join("/");
+        if matcher.is_match(&full) {
+            matched.push(AlbumDetail {
+                path: full,
+                members: members_of(row.id)?,
+            });
+        }
+    }
+    matched.sort_by(|a, b| a.path.cmp(&b.path));
+    if matched.is_empty() {
+        anyhow::bail!("no album matches: {path_or_glob}");
+    }
+    Ok(AlbumShow { matched })
 }
 
 /// Normalize a user-supplied path to the vault-relative Unix-style form
@@ -379,7 +461,7 @@ mod tests {
         assert_eq!(again.created.len(), 0);
         assert_eq!(again.existed.len(), 2);
 
-        let tree = list(&db).unwrap();
+        let tree = list(&db, None).unwrap();
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].name, "trips");
         assert_eq!(tree[0].children[0].children[0].path, "trips/norway/tromso");
@@ -421,13 +503,13 @@ mod tests {
         assert!(again.affected.is_empty());
         assert_eq!(again.skipped[0].reason, "already a member");
 
-        let detail = show(&db, "favs").unwrap();
+        let detail = show(&db, "favs").unwrap().matched.remove(0);
         assert_eq!(detail.members.len(), 2);
         assert!(detail.members.iter().all(|m| m.rating.is_none()));
 
         let removed = remove(&db, vault, "favs", &["2026/a.jpg".into()]).unwrap();
         assert_eq!(removed.affected, vec!["2026/a.jpg".to_string()]);
-        assert_eq!(show(&db, "favs").unwrap().members.len(), 1);
+        assert_eq!(show(&db, "favs").unwrap().matched[0].members.len(), 1);
         let _ = (a, b);
     }
 
@@ -443,14 +525,17 @@ mod tests {
         rate(&db, vault, "keep", Some(5), &["2026/a.jpg".into()]).unwrap();
         rate(&db, vault, "review", Some(2), &["2026/a.jpg".into()]).unwrap();
 
-        let keep = show(&db, "keep").unwrap();
-        let review = show(&db, "review").unwrap();
+        let keep = show(&db, "keep").unwrap().matched.remove(0);
+        let review = show(&db, "review").unwrap().matched.remove(0);
         assert_eq!(keep.members[0].rating, Some(5));
         assert_eq!(review.members[0].rating, Some(2));
 
         // Clear via None; rating a non-member is skipped, not invented.
         rate(&db, vault, "keep", None, &["2026/a.jpg".into()]).unwrap();
-        assert_eq!(show(&db, "keep").unwrap().members[0].rating, None);
+        assert_eq!(
+            show(&db, "keep").unwrap().matched[0].members[0].rating,
+            None
+        );
         let not_member = rate(&db, vault, "keep", Some(1), &["2026/b.jpg".into()]).unwrap();
         assert!(not_member.affected.is_empty());
         assert_eq!(not_member.skipped[0].reason, "not a member (add it first)");
@@ -471,7 +556,7 @@ mod tests {
         remove(&db, vault, "parent/child", &["2026/a.jpg".into()]).unwrap();
         delete(&db, "parent/child").unwrap();
         delete(&db, "parent").unwrap();
-        assert!(list(&db).unwrap().is_empty());
+        assert!(list(&db, None).unwrap().is_empty());
     }
 
     #[test]
@@ -481,5 +566,48 @@ mod tests {
         create(&db, "favs").unwrap();
         let change = add(&db, vault, "favs", &["/vault/2026/a.jpg".into()]).unwrap();
         assert_eq!(change.affected, vec!["2026/a.jpg".to_string()]);
+    }
+
+    #[test]
+    fn list_glob_keeps_matches_and_ancestor_chain() {
+        let (db, _, _) = setup();
+        create(&db, "trips/norway/tromso").unwrap();
+        create(&db, "trips/japan/kyoto").unwrap();
+        create(&db, "random").unwrap();
+
+        let tree = list(&db, Some("trips/norway*")).unwrap();
+        assert_eq!(tree.len(), 1, "only the norway branch survives");
+        assert_eq!(tree[0].name, "trips");
+        let norway = &tree[0].children;
+        assert_eq!(norway.len(), 1);
+        assert_eq!(norway[0].path, "trips/norway");
+        assert_eq!(norway[0].children[0].path, "trips/norway/tromso");
+
+        // Glob matching nothing → empty tree, not an error.
+        assert!(list(&db, Some("zzz*")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn show_glob_matches_multiple_albums() {
+        let (db, _, _) = setup();
+        let vault = Path::new("/vault");
+        create(&db, "trips/norway").unwrap();
+        create(&db, "trips/japan").unwrap();
+        create(&db, "other").unwrap();
+        add(&db, vault, "trips/norway", &["2026/a.jpg".into()]).unwrap();
+        add(&db, vault, "trips/japan", &["2026/b.jpg".into()]).unwrap();
+
+        let result = show(&db, "trips/*").unwrap();
+        assert_eq!(result.matched.len(), 2);
+        assert_eq!(result.matched[0].path, "trips/japan");
+        assert_eq!(result.matched[1].path, "trips/norway");
+        assert_eq!(result.matched[1].members[0].path, "2026/a.jpg");
+
+        // Exact path still returns a single detail.
+        assert_eq!(show(&db, "trips/norway").unwrap().matched.len(), 1);
+
+        // Non-glob miss → error; glob miss → error.
+        assert!(show(&db, "nope").is_err());
+        assert!(show(&db, "zzz*").is_err());
     }
 }

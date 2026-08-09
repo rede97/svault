@@ -102,6 +102,27 @@ pub fn render_human(report: &StatusReport) -> String {
     output.push_str(&render_to_string(&db_table));
     output.push('\n');
 
+    // Interrupted sessions section (only when present)
+    if !report.incomplete_sessions.is_empty() {
+        let mut interrupted = table(
+            "⚠️  Interrupted Sessions",
+            &["Operation", "Session", "Leftover Files", "Size"],
+        );
+        for s in &report.incomplete_sessions {
+            interrupted.add_row_cells([
+                s.kind.to_string(),
+                s.session_id.clone(),
+                format_count(s.residue_files as i64),
+                format_bytes(s.residue_bytes as i64),
+            ]);
+        }
+        output.push_str(&render_to_string(&interrupted));
+        for s in &report.incomplete_sessions {
+            output.push_str(&format!("\n   ↳ {}", s.dir.display()));
+        }
+        output.push_str("\n\x1b[3m\x1b[90m💡 Review plan.json inside; the next import finishes pending renames. Delete the directories manually when done.\x1b[0m\n\n");
+    }
+
     // Top extensions section
     if !report.top_extensions.is_empty() {
         let mut ext_table = table("📁 Top File Types", &["Type", "Files", "Size"]);
@@ -140,6 +161,15 @@ pub fn render_json(report: &StatusReport) -> anyhow::Result<String> {
             "last_7d": report.imports_last_7d,
             "last_30d": report.imports_last_30d,
         },
+        "incomplete_sessions": report.incomplete_sessions.iter().map(|s| {
+            serde_json::json!({
+                "kind": s.kind.to_string(),
+                "session_id": s.session_id,
+                "dir": s.dir,
+                "residue_files": s.residue_files,
+                "residue_bytes": s.residue_bytes,
+            })
+        }).collect::<Vec<_>>(),
         "top_extensions": report.top_extensions.iter().map(|e| {
             serde_json::json!({
                 "extension": e.extension,

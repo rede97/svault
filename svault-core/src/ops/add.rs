@@ -54,7 +54,8 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
         context: PhaseContext::both(opts.path.clone(), opts.vault_root.clone()),
     });
 
-    let scan_rx = pipeline::scan::scan_stream(&opts.path, &exts)?;
+    let scan_rx =
+        pipeline::scan::scan_stream(&opts.path, &exts, &crate::fs::ScanFilter::default())?;
     let crc_rx = pipeline::crc::compute_crcs_stream(scan_rx);
 
     let mut lookup_results = Vec::new();
