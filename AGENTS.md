@@ -99,6 +99,8 @@ cargo run -p svault -- import <source-dir>
 - core 的用例必须用 `NoopSink` 可在无终端环境测试
 - 更新 [docs/UNIT_TESTS.md](./docs/UNIT_TESTS.md) 的概览统计
 - Python E2E 测试用于验证端到端场景
+- **测试环境操作指南（RAMDisk/exiftool/FUSE 前置/新增用例规范）：
+  `.claude/skills/svault-testing/SKILL.md`**
 
 #### E2E 测试执行规范
 
