@@ -2,7 +2,8 @@
 
 > 本文档描述 **当前实现** 的 SQLite 结构（以 `svault-core/src/db/mod.rs` 中
 > 的 `SCHEMA` 常量为准）。历史设计（如 `import_sessions` 表、`.pending`
-> 续传文件）从未实现，已不在本文档记录。
+> 续传文件、**`events` 事件溯源表**——2026-08-09 移除，见
+> [PARKED.md](./PARKED.md) §8）从未实现或已移除，不在本文档记录。
 
 ---
 
@@ -10,8 +11,7 @@
 
 | 表 | 用途 |
 |------|------|
-| `events` | 事件溯源日志（append-only，哈希链） |
-| `files` | 文件记录（物化视图） |
+| `files` | 文件记录（运行时状态索引：路径/大小/哈希/状态） |
 | `assets` | 资产（媒体组的容器） |
 | `media_groups` | 复合媒体组（Live Photo、RAW+JPEG 等） |
 | `derivatives` | 派生文件（缩略图、转码等，预留） |
@@ -20,31 +20,17 @@
 
 | 路径 | 用途 |
 |------|------|
-| `.svault/manifests/<type>-<session>.json` | 导入/同步清单（`recheck` 的输入） |
-| `.svault/staging/recheck_<session>.json` | recheck 报告 |
-| `.svault/staging/import/<session>/` | import 暂存区（复制→哈希→入库→rename 的暂存；中断残留由下次 import 对账清理） |
+| `.svault/sessions/import/<ts-id>/plan.json` | import 复制前意图（src/dest/size/crc32c，原子写入） |
+| `.svault/sessions/import/<ts-id>/manifest.json` | import 结果清单（`recheck` 的输入，原子写入） |
+| `.svault/sessions/import/<ts-id>/staging/` | import 暂存 payload（入库 commit 后 rename 到最终路径） |
+| `.svault/sessions/sync/<ts-id>/{plan,manifest}.json` | sync 会话日志（diff 意图 + 结果） |
+| `.svault/sessions/recheck/<ts-id>/report.json` | recheck 报告 |
 | `.svault/lock` | 进程咨询锁 |
 
+会话目录内容即状态：**有 manifest.json = 已提交**（审计记录，永久保留）；
+**无 manifest.json = 被中断**（下次 import 对账报告，svault 绝不删除）。
+
 ---
-
-## events（事件溯源）
-
-```sql
-CREATE TABLE events (
-    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-    occurred_at  INTEGER NOT NULL,   -- Unix 毫秒
-    event_type   TEXT    NOT NULL,   -- 如 'file.imported' / 'file.path_updated' / 'vault.cloned'
-    entity_type  TEXT    NOT NULL,   -- 'file' / 'vault' / ...
-    entity_id    INTEGER NOT NULL,   -- 关联实体 ID（文件 ID 等）
-    payload      TEXT    NOT NULL,   -- JSON 负载
-    prev_hash    TEXT    NOT NULL,   -- 上一条事件的 self_hash（创世为 64 个 0）
-    self_hash    TEXT    NOT NULL    -- 本条事件的哈希（链式完整性）
-);
-```
-
-- **只增不改**：所有状态变更先写事件，再更新物化视图（同一事务）
-- **哈希链**：`self_hash = H(event_type, entity_type, entity_id, payload, occurred_at, prev_hash)`，
-  可用 `svault db verify-chain` 验证完整性
 
 ## files（文件记录）
 
@@ -112,13 +98,20 @@ CREATE TABLE derivatives (
 
 ---
 
-## 清单文件（manifest）
+## 会话日志（plan / manifest）
 
-每次 `import` / `add` / `sync` 在 `.svault/manifests/` 写一份 JSON：
+每次 `import` / `sync` 在 `.svault/sessions/<kind>/<ts-id>/` 写 JSON
+（tmp+fsync+rename 原子写入）：
+
+- `plan.json` — 复制**前**落盘的操作意图。import：`files[]` 含
+  `src_path` / `dest_path`（vault 相对，Unix 风格）/ `size` / `crc32c`；
+  sync：`files[]` 含 `path` / `size` / `xxh3_128` / `sha256`。
+  plan 是事后剖析的 hint，DB 是唯一真值。
+- `manifest.json` — 复制**后**的结果清单（`recheck` 的输入）：
 
 ```json
 {
-  "session_id": "1710518400",
+  "session_id": "20260809T153012-a1b2c",
   "session_type": "import",
   "source_root": "/mnt/card",
   "imported_at": 1710518400000,
@@ -136,7 +129,8 @@ CREATE TABLE derivatives (
 }
 ```
 
-`svault recheck` 以 manifest 为准同时校验源文件与 vault 副本。
+`svault recheck` 以 manifest 为准同时校验源文件与 vault 副本；
+`--session` 支持唯一前缀匹配。
 
 ---
 

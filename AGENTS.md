@@ -140,13 +140,13 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 
 ## 关键设计（不可妥协）
 
-- **永不删除用户文件** — Svault 没有任何删除文件的路径
-- **事件溯源数据库** — 所有变更记录在 `events` 表
+- **永不删除用户文件** — Svault 只清理本次会话自建的 staging 子树；中断残留只报告不删
+- **会话日志** — import/sync 的 plan.json + manifest.json 与 recheck 报告在 `.svault/sessions/<kind>/<ts-id>/`，原子写入
 - **三层哈希** — CRC32C → XXH3-128 → SHA-256
 - **Vault 发现** — 从 CWD 向上查找 `.svault/vault.db`
 - **进程锁保护** — 修改命令自动获取 `<vault>/.svault/lock` 咨询锁
 - **Vault 自保护** — 导入扫描时自动跳过 vault root 子树
-- **Manifest 导入清单** — 每次导入写入 JSON 清单
+- **Manifest 导入清单** — 每次导入在会话目录写 JSON 清单
 
 ---
 
@@ -172,3 +172,4 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 | 2026-08-05 | 文档清理：删除 CLAUDE.md 陈旧内容/testing-plan/HANDOFF-LINUX/sync-design（recover 设计抢救入 PARKED §6）；FUSE 故障注入落地：INFRA-1/2/4 + P0/P1/P2 共 20 例全绿；修复 BUG-1（哈希错误误分类） |
 |2026-08-06|**E2E 套件重设计**（220→167）：删 60 冗余用例、修 dedup 同名类遮蔽死代码、chaos/background-hash 合并、6 弱断言加固、套件宪法入 tests/e2e/README.md；修复 scan 协议转义缺陷（空格文件名管线导入）|
 |2026-08-09|**import staging 原子提交**（OPEN-3 闭环）：复制入 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 → commit 后 rename（`pipeline/staging.rs`、`fs::atomic_commit`）；启动对账补 rename/清残留；G1 精确化为"不删除用户文件"；+7 单测 +2 E2E|
+|2026-08-09|**事件溯源移除 + 会话日志落地**：维护者决策删 events 表/verify-chain（伪需求，PARKED §8）；`.svault/sessions/<kind>/<ts-id>/` 统一布局（plan.json 复制前 fail-fast 落盘 + staging/ + manifest.json 原子写，sync 带 plan，recheck 报告迁入）；session_id 时间戳+唯一后缀（BUG-3/4 修复）；reconcile 改只报告不删（G1 最终形态）；复制 ENOSPC 锁定逐文件失败 exit 0|

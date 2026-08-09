@@ -29,9 +29,9 @@
 - `svault verify`
 - `svault recheck`
 - `svault update`
-- `svault history`
 - `svault clone`
-- `svault db verify-chain`
+
+（`history` 与 `db verify-chain` 已移除，见 docs/PARKED.md）
 
 不作为当前阶段主目标的内容：
 
@@ -228,7 +228,9 @@ AI-IMPORT-001
 ### C. 破坏性与恢复场景
 
 9. `AI-VERIFY-002` 手动破坏 vault 文件后 verify 应失败
-10. `AI-DB-001` 手动篡改 events 表后 `db verify-chain` 应失败
+
+~~10. `AI-DB-001` 手动篡改 events 表后 `db verify-chain` 应失败~~
+（已随事件溯源移除，2026-08-09）
 
 这些场景已经覆盖：
 
@@ -237,7 +239,6 @@ AI-IMPORT-001
 - 完整性验证
 - 清单重查
 - 手工移动恢复
-- 事件链防篡改
 
 ---
 
@@ -509,7 +510,6 @@ AI 驱动用户行为测试不替代 `tests/e2e/`，两者分工如下：
 - `recheck`
 - `update`
 - `clone`
-- `db verify-chain`
 
 `sync` 不应进入第一批 AI 行为测试范围。
 

@@ -49,7 +49,7 @@
 {"event":"preflight","source":"/mnt/card","total":245,"new":142,"duplicate":103,"moved":0,"failed":0}
 {"event":"phase_finished","phase":"scan"}
 {"event":"copy_started","src":"/mnt/card/IMG_001.CR3","dst":"/vault/2024/03-15/Canon/IMG_001.CR3","bytes":52428800}
-{"event":"summary","kind":"import","total":245,"imported":142,"duplicate":103,"failed":0,"manifest_path":"/vault/.svault/manifests/import-1710518400.json","all_cache_hit":false}
+{"event":"summary","kind":"import","total":245,"imported":142,"duplicate":103,"failed":0,"manifest_path":"/vault/.svault/sessions/import/20240315T143000-a1b2c/manifest.json","all_cache_hit":false}
 ```
 
 **约定**：每个操作一定以 `{"event":"summary","kind":...}` 事件收尾，
@@ -87,8 +87,11 @@ svault import <source> [options]
 | `--full-id` | 计算 SHA-256 作为确定身份（更强去重保证，更慢） |
 | `--show-dup` | 在扫描输出中显示被跳过的重复文件 |
 
-**清单文件：** 每次导入写入 `.svault/manifests/import-<session>.json`，
-记录源路径、归档路径与哈希，供 `recheck` 使用。
+**会话日志：** 每次导入在 `.svault/sessions/import/<ts-id>/` 写
+`plan.json`（复制前意图）与 `manifest.json`（结果清单：源路径、归档路径
+与哈希，供 `recheck` 使用）；复制中的暂存文件在同目录 `staging/` 子树，
+成功入库后搬到最终路径。中断遗留的会话目录由下次 import 报告，
+svault 不删除，用户审阅后手动处理。
 
 **全部命中缓存时：** 输出提示并以 `all_cache_hit: true` 的 summary 退出。
 
@@ -156,7 +159,7 @@ svault verify [options]
 ### `svault recheck`
 
 基于 manifest 同时校验**源文件**和 vault 副本与导入时记录的一致性。
-报告写入 `.svault/staging/recheck_<session>.json`。
+报告写入 `.svault/sessions/recheck/<ts-id>/report.json`。
 
 ```
 svault recheck [source] [--session <id>] [--target <path>]
@@ -165,7 +168,7 @@ svault recheck [source] [--session <id>] [--target <path>]
 | 选项 | 说明 |
 |------|------|
 | `[source]` | 可选源目录，必须与 manifest 记录的 source_root 一致 |
-| `--session <id>` | 指定会话（默认最近一次导入） |
+| `--session <id>` | 指定会话（默认最近一次）；支持**唯一前缀匹配**（如 `20260809T1530`），歧义时报错并列出候选 |
 | `--target <path>` | vault 子目录（同 import 的发现规则） |
 
 状态分类：`ok` / `source_modified` / `vault_corrupted` / `both_diverged` /
@@ -188,7 +191,7 @@ svault clone --target <dir> [options]
 | `--filter-date <range>` | 按 mtime 过滤，如 `2024-03-01..2024-03-31` |
 | `--strategy <list>` | 传输策略（同 import） |
 
-导出完成后在源 vault 的事件日志记一条 `vault.cloned` 审计事件。
+导出完成后在目标目录写出 `svault-clone-manifest.json`；源 vault 不被修改。
 
 ---
 
@@ -213,7 +216,7 @@ svault sync <source_vault> [options]
 | 分类 | 含义 | 行为 |
 |------|------|------|
 | Identical | 两侧 hash 与路径均相同 | 跳过 |
-| To copy | 仅源 vault 有 | 复制并入库（SessionType=sync，写 `sync-<id>.json` manifest） |
+| To copy | 仅源 vault 有 | 复制并入库（会话日志 `sessions/sync/<ts-id>/plan.json` + `manifest.json`） |
 | Only local | 仅本 vault 有 | 仅报告（永不删除） |
 | Moved | hash 相同但路径不同 | 仅报告（不改路径） |
 | Conflict | 路径相同但 hash 不同 | 跳过复制，保留本地，报告 |
@@ -222,7 +225,7 @@ svault sync <source_vault> [options]
 
 ### `svault status`
 
-显示归档库的当前状态概览（文件统计、哈希覆盖、近期导入、事件日志、主要文件类型）。
+显示归档库的当前状态概览（文件统计、哈希覆盖、近期导入、数据库大小、主要文件类型）。
 
 ```
 svault status [--output json]
@@ -239,16 +242,6 @@ svault db dump [tables...] [--format csv|json|sql] [--limit N]
 ```
 
 默认导出全部表。JSON 格式为 `[{name, columns, row_count, rows}]`。
-
----
-
-### `svault db verify-chain`
-
-验证事件日志的哈希链完整性（逐条验证 `self_hash` 与 `prev_hash`）。
-
-```
-svault db verify-chain
-```
 
 ---
 

@@ -14,7 +14,7 @@
 **移除原因**：
 - 次要功能——早期 AI 会话按"归档工具应该有历史浏览"的假设造出，并非用户核心需求
 - 给 core 的报告接口增加了 4 个 DTO + 2 个 reporter trait，是接口面膨胀的典型
-- **数据未丢失**：事件溯源 DB 仍在，等价查询可用 `svault db dump events|files --format json`
+- **数据未丢失**：逐文件历史在会话清单中，等价查询可用 `svault db dump`
 
 **恢复路径**：git 历史中 `svault-core/src/history/`、CLI `commands/history.rs`、
 E2E `tests/e2e/test_history.py`。若恢复，应改为 Pull 模型（返回数据，UI 格式化），
@@ -71,13 +71,32 @@ E2E 测试使用 debug 二进制，因此 `test_scan_import_pipeline.py` 不受�
 原设计稿可从 git 历史恢复：`git show f34d53b:docs/sync-design.md`。
 
 > **2026-08-09 部分复活**：原 sync-design 的 tmp→rename 原子提交思路已就
-> **import** 立项实现为 staging 模型（`.svault/staging/import/<session>/`
-> → fsync → hash → 整批入库 → rename + 启动对账，见 `pipeline/staging.rs`
-> 与 failure-handling.md G7）。sync/clone 仍直达最终路径；sync_journal
-> 断点续传与 recover 维持暂缓。
+> **import** 立项实现为会话日志模型（`.svault/sessions/import/<ts-id>/`：
+> plan.json → staging/ → fsync → hash → 整批入库 → rename + 启动对账，
+> 见 `session` 模块与 failure-handling.md G7）。sync/clone 仍直达最终路径；
+> sync_journal 断点续传与 recover 维持暂缓。
 
 ## 7. 已知小遗留（2026-08-04 Linux 验证确认，非 bug）
 
 1. `verify --background-hash` 的 Summary 事件未统一（用 messages 输出）
 2. clone 重复导出会重新复制（path+size 跳过优化未采纳，可作后续小改进）
 3. diff 引擎边缘：dest 同 identity 多路径时只保留一个索引项——v1 接受
+
+## 8. 事件溯源（`events` 表 + 哈希链 + `db verify-chain`）
+
+**功能**：所有 DB 变更先写 append-only 事件（含 prev_hash/self_hash 链），
+物化视图由事件重放得到；`db verify-chain` 校验链完整性。
+
+**移除原因**（维护者决策，2026-08-09）：**伪需求**。
+- 工具定位是帮助用户的比对/归档工具，不为"用户擅自修改数据库"无限兜底
+- 哈希链无外部锚点（无签名/异地副本），蓄意篡改者可重建全链——
+  防篡改场景不成立，只能防"随手编辑"，而那不是本工具的职责
+- 实际只有 3 种事件（batch.imported / file.sha256_resolved / vault.cloned），
+  写协议已在漏（update 直接 UPDATE），且从不被重放——write-mostly 死重
+
+**替代**：逐文件历史在 `.svault/sessions/<kind>/<ts-id>/` 的
+plan.json / manifest.json（原子写入）；DB 的 `files` 表是运行时状态索引，
+整批单事务写入。`db dump` 仍可导出任意表。
+
+**恢复路径**：git 历史（移除提交见 2026-08-09 `refactor: 移除 events
+事件溯源表`）。若恢复，先回答"防谁"——无外部锚点的链不防蓄意篡改。

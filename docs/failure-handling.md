@@ -28,15 +28,15 @@
 
 ## 2. 全局原则（不可妥协）
 
-### G1 永不删除用户文件 [VERIFIED；2026-08-09 精确化]
+### G1 永不删除用户文件 [VERIFIED；2026-08-09 最终形态]
 
-任何命令不得删除**用户**磁盘文件。唯一例外：`.svault/staging/import/`
-内由 svault **自己创建**的导入暂存残留（中断半成品、Stage-D 重复副本），
-允许由 svault 自己清理（`pipeline/staging.rs::reconcile` 对账清除 +
-`ops/import.rs` Stage E 提交后清空 session 目录）——这些不是用户文件，
-用户源文件从不被触碰。故障路径上其余 `remove_file` 仅 `fs.rs` hardlink
-能力探测的临时文件。`update --delete` 因违反本原则被移除
-（docs/PARKED.md §3）。
+任何命令不得删除**用户**磁盘文件。svault 唯一的文件删除路径是
+**本次进程自己创建的会话 staging 子树**（`sessions/import/<ts-id>/staging/`：
+正常完成后清理其中的判重/失败暂存副本）——这些是 svault 自己刚创建的
+临时文件，且源文件从不被触碰。**中断遗留的会话目录 svault 绝不删除**：
+reconcile 只做补 rename（非删除）+ 发 `Hint::SessionResidue` 报告
+（目录/文件数/字节数），用户审阅其中的 plan.json 后手动处理。
+`update --delete` 因违反本原则被移除（docs/PARKED.md §3）。
 
 ### G2 无重试、无超时、无信号处理 [VERIFIED]
 
@@ -50,9 +50,9 @@
 **推论**：故障的应对策略只有两种——**跳过该文件继续**（逐文件隔离，G3），
 或**整个命令报错退出**（致命错误，G4）。恢复一律靠**幂等重跑**（§6），
 不靠断点续传状态（`.pending` 设计从未实现且已移除，
-docs/import-pipeline.md §原子性与可恢复性）。staging 对账
-（`pipeline::staging::reconcile`，2026-08-09 起）只做两件事：补完成
-"已入库未 rename"的 rename、清除"未入库"的暂存残留——**不利用**已复制
+docs/import-pipeline.md §原子性与可恢复性）。会话对账
+（`session::reconcile`，2026-08-09 起）只做两件事：补完成
+"已入库未 rename"的 rename、**报告**（而非删除）中断残留——不利用已复制
 未入库的暂存文件续传（无法低成本区分完整与半截副本，见 §5 注）。
 
 ### G3 逐文件失败隔离 [VERIFIED]
@@ -89,17 +89,19 @@ import 的 `ImportSummary.failed` 不含扫描阶段失败（只含复制+哈希
 
 import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记为 **[OPEN-6]**。
 
-### G5 事件溯源 + WAL 事务 [VERIFIED]
+### G5 单事务写入 [VERIFIED；2026-08-09 重写]
 
-- DB 以 WAL 模式打开（`db/mod.rs:55`）。
-- 写协议：状态变更应经 `append_event` 在同一事务内写事件 + 物化视图
-  （`db/mod.rs:7-13`）。**例外：`update` 命令直接 UPDATE 绕过协议（BUG-2，§7）。**
-- import/add/sync 的入库是**整批单事务**（`pipeline/insert.rs:204`），
-  失败整体回滚（`db/mod.rs:151-158`）；事务提交后追加单条 `batch.imported`
-  汇总事件（`insert.rs:278-284`）。
-- events 表**不记录逐文件错误**；逐文件错误只出现在 Event 流（UI/JSON 输出）
-  和 manifest 中（且 manifest 只覆盖进入 Stage E 的文件——扫描失败和
-  复制失败的文件不进 manifest）。
+- DB 以 WAL 模式打开（`db/mod.rs`）。
+- import/add/sync 的入库是**整批单事务**（`pipeline/insert.rs` 经
+  `Db::with_transaction`），失败整体回滚。
+- **事件溯源（events 表 + 哈希链 + `db verify-chain`）已于 2026-08-09
+  移除**——维护者决策：伪需求。工具不为"用户擅自修改 DB"兜底；无外部
+  锚点的哈希链防不了蓄意篡改（可重建全链）。会话历史在 DB 之外：
+  `.svault/sessions/<kind>/<ts-id>/` 的 plan.json / manifest.json。
+  BUG-2（update 绕过写协议）随之消解。
+- 逐文件错误只出现在 Event 流（UI/JSON 输出）和 manifest 中（且
+  manifest 只覆盖进入 Stage E 的文件——扫描失败和复制失败的文件不进
+  manifest，但复制前会落 plan.json 记录意图）。
 
 ### G6 进程锁 [VERIFIED]
 
@@ -119,17 +121,24 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - Stream copy 是终态：其错误**不再降级**，直接向上传播。
 - 跨文件系统：reflink 跨设备 ioctl 失败归一化为"不支持"→ 静默降级 copy，
   不区分具体 errno。
+- **import/sync 先落 plan.json**：复制前把操作意图（src/dest/size/hash）
+  原子写入 `sessions/<kind>/<ts-id>/plan.json`（`fs::atomic_write`：
+  tmp+fsync+rename+目录 fsync）；plan 写失败 **fail-fast**（exit 1，
+  复制尚未开始）。plan 是事后剖析的 hint，DB 仍是唯一真值。
 - **import 走 staging 原子提交**：复制目标是
-  `.svault/staging/import/<session_id>/`（镜像最终相对路径，
-  `pipeline/staging.rs`），传输成功后 `fs::sync_file_and_dir` 落盘，
+  `.svault/sessions/import/<ts-id>/staging/`（镜像最终相对路径，
+  `session` 模块），传输成功后 `fs::sync_file_and_dir` 落盘，
   Stage D 在**暂存副本**上算哈希，Stage E 整批事务入库（记录最终路径）
   成功后才逐个 `fs::atomic_commit`（rename + 目录 fsync）搬到最终路径。
   **不变量：最终路径可见 ⟹ 已完整复制 + 哈希 + 入库**；半成品永不进入
   用户可见目录树。rename 失败非致命：发 `Hint::StagedCommitDeferred`，
   下次 import 对账补齐。reflink 失败的空文件、copy 写失败的截断文件
-  只可能残留在 staging 内，由对账/Stage E 后清理清除（G1 例外）。
+  只可能残留在 staging 子树内。
+- **reconcile 只报告不删**：下次 import 启动时 `session::reconcile`
+  补完成"已入库未 rename"的 rename；其余中断残留发 `Hint::SessionResidue`
+  （目录+文件数+字节数）交用户手动处理（G1 最终形态）。
 - **sync/clone 不在 staging 范围内**：仍直达最终路径复制，中断残留
-  （半成品/孤儿）语义维持原状。
+  （半成品/孤儿）语义维持原状；sync 有 plan.json 记录 diff 意图。
 - 死代码：`capabilities_for` / `best_strategy`（`fs.rs`）无调用者，
   sync/clone 不做传输预检。
 
@@ -141,22 +150,24 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 管线：Stage A 扫描（jwalk 线程→mpsc）→ Stage B CRC（100 条攒批 + rayon）
 → Lookup 查重（串行内联 `ops::check_duplicate`）→ Preflight + 用户确认
-→ Stage C 复制到 **staging**（串行 EXIF 路径解析 + rayon 并行传输 +
-fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
+→ **plan.json 落盘**（fail-fast）→ Stage C 复制到 **staging**（串行 EXIF
+路径解析 + rayon 并行传输 + fsync，目标
+`.svault/sessions/import/<ts-id>/staging/`）→ Stage D 强哈希
 （对**暂存副本**计算 + 二次去重）→ Stage E 整批入库 + manifest +
 **commit 后 rename 到最终路径**（G7）。
 
 | 故障场景 | 行为 [VERIFIED] | 可观测证据 |
 |----------|----------------|------------|
 | 源文件读取 EIO（Stage B） | 该文件 `ScanItem{Failed}`，跳过继续 | Preflight 事件 failed 计数；退出码 0 |
-| 源文件读取 EIO（Stage C） | 该文件 `CopyFinished{error}`，跳过继续 | 退出码 0；manifest 无此文件 |
+| plan.json 写失败（ENOSPC 等） | **fail-fast**：Err → exit 1，复制尚未开始 | stderr `cannot write import plan` |
+| 源文件读取 EIO（Stage C） | 该文件 `CopyFinished{error}`，跳过继续 | 退出码 0；manifest 无此文件（plan 有意图记录） |
 | vault 目标哈希 EIO（Stage D） | 计入 **failed**，跳过继续（BUG-1 已于 `d970fd0` 修复：结构化 `hash_error` 字段替代前缀匹配） | 退出码 0；manifest status=Failed |
-| 进程在 Stage A–D 被杀死 | DB 无任何记录；已复制部分留在 `.svault/staging/import/<session>/`，**最终路径不可见** | 下次 import 对账清除 staging 残留后重跑幂等（§5） |
+| 进程在 Stage A–D 被杀死 | DB 无任何记录；已复制部分留在会话 staging 子树，**最终路径不可见** | 下次 import 对账：补 rename + 报告残留（不删），重跑幂等（§5） |
 | 进程在 Stage E 事务中被杀死 | 事务回滚，DB 无记录；已复制文件留在 staging（不再产生最终路径孤儿） | 同上 |
 | 事务提交后、rename 前被杀死 | DB 有记录，文件在 staging | 下次 import 对账补 rename，零重复制自愈 |
 | 事务提交后、manifest 写入前被杀死 | DB 有记录，无 manifest，文件在 staging | 对账补 rename；recheck --session 找不到该会话 |
 | manifest 写入失败（ENOSPC） | Err → exit 1；DB 已提交不回滚 | stderr 报错 |
-| DB 写入失败（ENOSPC/锁） | 整批回滚，Err → exit 1 | 已复制文件成孤儿 |
+| DB 写入失败（ENOSPC/锁） | 整批回滚，Err → exit 1 | 已复制文件留在 staging，对账报告 |
 | 源路径在 vault root 内 | 拒绝导入（自保护） | Err → exit 1 |
 | 0 字节文件 | 无特判，正常导入；同扩展名 0 字节文件互判 duplicate（size=0 且 CRC 相同） | manifest |
 
@@ -164,8 +175,8 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 
 - 哈希选择：DB 有 SHA-256 用 SHA-256，否则 XXH3-128（`verify/mod.rs:93-128`）。
 - 结果六态：Ok / Missing / SizeMismatch / HashMismatch / IoError / （Skipped）。
-- 只读命令：**不写 events 表、不改文件**（唯一例外：`--background-hash`
-  补算 SHA-256 并写 `file.sha256_resolved` 事件，`verify/background_hash.rs:69-77`）。
+- 只读命令：**不改 DB 文件记录、不改文件**（唯一例外：`--background-hash`
+  补算 SHA-256 并直接 UPDATE `files.sha256`，`verify/background_hash.rs`）。
 - 逐文件 IO 错误：计入 io_error，继续后续文件；四类失败任一 > 0 → exit 1。
 - `--upgrade-links`：hardlink 升级走"同目录临时文件 + fsync + 原子 rename"
   （`verify/hardlink_upgrade.rs:44-73`）；中途失败**原文件不变**，临时文件
@@ -176,8 +187,10 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 - 唯一的**源-vs-vault 显式哈希比对**层（`ops/recheck.rs:60-123`），基于
   manifest 记录分别重算两侧哈希。
 - 七态 RecheckStatus（`ops/recheck.rs:24-41`）。
-- 只读 DB、不改任何文件；报告写 `.svault/staging/recheck_<新时间戳>.json`
-  （`ops/recheck.rs:207-252`；status 字段为 Rust Debug 格式，非 snake_case）。
+- 只读 DB、不改任何文件；报告写
+  `.svault/sessions/recheck/<ts-id>/report.json`（原子写入；
+  status 字段为 Rust Debug 格式，非 snake_case）。
+- `--session` 支持**唯一前缀匹配**（歧义时报错并列出候选）。
 - **恒 exit 0**：不一致由用户读报告后自行决策，这是有意设计
   （`cli.rs:93`：“No files are imported or deleted”）。
 - source 参数与 manifest 的 source_root 不符 → Err → exit 1。
@@ -188,8 +201,8 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 - 找不到的文件标记 `status='missing'`，**永不删除**（`ops/update.rs:261-269`）。
 - 确认默认 No；用户拒绝时**连 missing 标记都跳过**（`ops/update.rs:215-228`）。
 - 非终端输出（JSON / 管道）回退 YesInteractor 自动确认（`commands/update.rs:27-39`）。
-- **BUG-2**：路径修正与 missing 标记均为直接 SQL UPDATE，绕过 `append_event`
-  写协议，events 表无记录（`db/files.rs:237-253`）。
+- 路径修正与 missing 标记均为直接 SQL UPDATE（`db/files.rs`）——原 BUG-2
+  （绕过 append_event 写协议）已随事件溯源移除而消解（2026-08-09）。
 - missing 记录可被同哈希再导入"复活"（`Recover` 路径，`ops/mod.rs:90-95`、
   `insert.rs:225-238`：事务内 UPDATE path + status='imported'）。
 
@@ -205,27 +218,23 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
   同路径不同 hash → Conflict，保留目标不复制；双方无 hash 的 OnlySource
   计入 skipped_hashless 不复制（`sync/diff.rs:146-212`）。
 - 单文件传输失败：failed+=1 继续；退出码仍 0（G4）。
-- **无 journal**：全部复制完成后才整批 batch_insert（SessionType::Sync +
-  manifest）。中断 → "文件已复制但 DB 无记录"，重跑靠 diff 重新复制覆盖
-  （文件级重传，非断点续传）。
+- 复制前落 `sessions/sync/<ts-id>/plan.json`（diff 意图，fail-fast）；
+  复制直达最终路径（**不在 staging 范围**）。全部复制完成后整批
+  batch_insert（SessionType::Sync + manifest）。中断 → "文件已复制但
+  DB 无记录"，重跑靠 diff 重新复制覆盖（文件级重传，非断点续传）。
 - 完成后按 `--verify`（默认 norm）做同步后校验。
 - dest missing 记录在复制同 hash 文件时按既有 recover 逻辑复活
   （`insert.rs:95-99`）。
 
 ### 3.6 `clone` [VERIFIED]
 
-- 独立实现（**不是** sync --export 别名，`ops/clone.rs:65-177`）。
+- 独立实现（**不是** sync --export 别名，`ops/clone.rs`）。
 - 选 `status='imported'`（可 `--filter-date`）→ 逐文件 transfer_file
-  （失败 failed+=1 继续）→ 目标目录写 `svault-clone-manifest.json`
-  → 源 DB 写 `vault.cloned` 审计事件。
-- 拒绝目标在 vault 内（`clone.rs:76-81`）。
-- CLI 层对本地 vault 持排他锁 + 读写打开（因要写审计事件）——
-  ARCHITECTURE.md §6.1 "只读源 vault" 措辞不准确，实际是"不修改文件记录"。
-
-### 3.7 `db verify-chain` [VERIFIED]
-
-事件链防篡改校验；`events` 表被篡改 → 校验失败 → exit 1
-（E2E `AI-DB-001` 场景，docs/ai-user-testing.md §C）。
+  （失败 failed+=1 继续）→ 目标目录写 `svault-clone-manifest.json`。
+  **不再写源 vault DB**（vault.cloned 审计事件随事件溯源移除，
+  2026-08-09；DRIFT-3 随之消解——clone 现在确实不修改源 vault）。
+- 拒绝目标在 vault 内（`clone.rs`）。
+- CLI 层对本地 vault 持排他锁（`VaultContext::open_cwd`）。
 
 ---
 
@@ -254,25 +263,26 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 
 | 中断点 | 系统状态 | 重跑结果 [VERIFIED] |
 |--------|----------|--------------------|
-| import Stage A–D | DB 无记录；已复制部分在 staging，最终路径不可见 | 对账清除 staging 残留；全部重新处理 |
+| import Stage A–D | DB 无记录；已复制部分在会话 staging 子树，最终路径不可见；plan.json 已存在 | 对账：补 rename（若有已入库项）+ 报告残留（**不删**）；全部重新处理 |
 | import Stage E 事务中 | 事务回滚 | 同上 |
 | import commit 后、rename 前 | DB 有记录；文件在 staging | 对账补 rename，零重复制 |
-| import 完成后 | DB + manifest 完整；staging 已清空 | CRC32C 短路：秒级跳过，全部 duplicate |
+| import 完成后 | DB + manifest 完整；本次会话 staging 子树已清空，plan/manifest 保留 | CRC32C 短路：秒级跳过，全部 duplicate |
 | 重跑时 CRC 命中 | — | 不复制、不入库（`db/files.rs` 查 size+CRC+扩展名） |
-| 重跑时 CRC 未命中但哈希相同 | — | 复制到 staging 后 Stage D 查 `files.xxh3_128` 判重复、**不入库**；暂存副本由 Stage E 后清理/对账清除，**不再在最终路径残留第二份物理副本**（2026-08-09 起） |
-| sync 复制中途 | 部分文件已复制，DB 无记录 | diff 重算，重新复制覆盖 |
+| 重跑时 CRC 未命中但哈希相同 | — | 复制到 staging 后 Stage D 查 `files.xxh3_128` 判重复、**不入库**；暂存副本由本进程 Stage E 后清理，**不再在最终路径残留第二份物理副本**（2026-08-09 起） |
+| sync 复制中途 | 部分文件已复制，DB 无记录；plan.json 已存在 | diff 重算，重新复制覆盖 |
 | sync 入库后 | DB + manifest 完整 | diff 全 Identical，空计划 |
 
 **注（为何不利用 staging 残留续传）**：中断点任意，staging 内的无记录
 文件无法低成本区分"完整副本"与"写了一半"——唯一可靠判别是源/暂存两侧
-重算哈希比对（各读一遍），省下的仅一次写 IO；且 staged→source 反向映射
-需要持久化元数据（即已暂缓的 sync_journal 范畴，PARKED §6）。因此一律
-清除后重复制。
+重算哈希比对（各读一遍），省下的仅一次写 IO；真正的断点续传属于
+已暂缓的 sync_journal 范畴（PARKED §6）。plan.json 提供了 source↔dest
+映射，但只用于**事后剖析**，不参与恢复决策。因此中断残留一律报告给
+用户处理（G1 最终形态），重跑重新复制。
 
 **已知边界（非 bug 但须锁定）**：
 - ~~"已复制未入库"的孤儿文件无法被任何去重层识别，重跑改名重复制~~
-  **已闭环（2026-08-09，[OPEN-3]）**：staging 模型下孤儿只存在于
-  `.svault/staging/`，对账清除，最终路径不再有不可识别副本。
+  **已闭环（2026-08-09，[OPEN-3]）**：staging 模型下孤儿只存在于会话
+  staging 子树，对账报告、用户处置，最终路径不再有不可识别副本。
   docs/import-pipeline.md "由 Stage D 去重识别"的说法仍然错误。
 - `--force` 是有意破坏幂等的开关：跳过 CRC 短路 + 跳过二次去重 +
   跳过按路径检查 → 重复内容会复制并插入第二条 DB 记录
@@ -288,11 +298,13 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 - **ImportSummary.failed = 复制失败 + 哈希失败**，不含扫描阶段失败
   （`ops/import.rs:721`）；扫描失败只见于 Preflight 事件。
 - **manifest 只覆盖进入 Stage E 的文件**；扫描失败、复制失败的文件
-  不在 manifest 中。
-- **manifest 非原子写入**（直接 `fs::write`，`manifest.rs:142-145`）；
-  session_id 为 Unix 秒，同秒同类会话 manifest 互相覆盖。登记 **[OPEN-4]**。
+  不在 manifest 中（复制前意图见 plan.json）。
+- **manifest 路径与命名（2026-08-09 起）**：
+  `.svault/sessions/<kind>/<ts-id>/manifest.json`，原子写入
+  （`fs::atomic_write`，BUG-3 已修复）；session_id 为
+  `YYYYMMDDTHHMMSS-<hex 后缀>`，同秒冲突不复存在（BUG-4 已修复）。
 - files 表**无唯一约束**（`idx_files_xxh3_128` 等均为普通索引，
-  `db/mod.rs:365-368`），import-pipeline.md "层 3 唯一约束兜底"不存在。
+  `db/mod.rs` SCHEMA），import-pipeline.md "层 3 唯一约束兜底"不存在。
 
 ---
 
@@ -303,9 +315,9 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 | 编号 | 描述 | 证据 | 影响 |
 |------|------|------|------|
 | BUG-1 | ~~`insert.rs:121` 用 `reason.starts_with("hash error")` 判定哈希失败，但实际消息前缀永不匹配 → 哈希 IO 错误被计为 duplicate~~ **已修复（`d970fd0`，2026-08-05）**：`HashResult.hash_error` 结构化字段替代字符串前缀匹配；回归单测 `batch_insert_classifies_hash_error_as_failed_not_duplicate` | — | 已闭环 |
-| BUG-2 | `update` 的路径修正/missing 标记直接 UPDATE，绕过 append_event 写协议，events 表无记录 | `db/files.rs:237-253` | 事件溯源完整性受损 |
-| BUG-3 | manifest 非原子写入，写一半中断留截断 JSON | `manifest.rs:142-145` | recheck 加载失败 |
-| BUG-4 | session_id 为 Unix 秒，同秒同类会话 manifest 互相覆盖 | `ops/utils.rs:14-19` | manifest 丢失 |
+| BUG-2 | ~~`update` 绕过 append_event 写协议~~ **已消解（2026-08-09）**：事件溯源整体移除，直接 UPDATE 即唯一写路径 | — | 已闭环 |
+| BUG-3 | ~~manifest 非原子写入，写一半中断留截断 JSON~~ **已修复（2026-08-09）**：`fs::atomic_write`（tmp+fsync+rename+目录 fsync） | — | 已闭环 |
+| BUG-4 | ~~session_id 为 Unix 秒，同秒同类会话 manifest 互相覆盖~~ **已修复（2026-08-09）**：`YYYYMMDDTHHMMSS-<hex 后缀>`，回归单测 `test_session_id_unique_within_same_second` | — | 已闭环 |
 
 ### 文档漂移（以本文档为准，应回改原文档）
 
@@ -313,8 +325,8 @@ fsync，目标 `.svault/staging/import/<session>/`）→ Stage D 强哈希
 |------|------|----------|
 | DRIFT-1 | import-pipeline.md | 11 处不符：lookup_stream 不存在（串行内联）；层 3 唯一约束不存在；无 500 条分批提交（整批单事务）；crc32c 只在 Stage E 落库；duplicate 从不写 files 表；无 import_sessions 表；manifest 是 JSON 非文本；孤儿文件 Stage D 无法识别；无归档文件清理；CRC32C 命名 |
 | DRIFT-2 | ~~sync-design.md~~（2026-08-05 已删除） | 原设计稿大量未实现且基于已移除的 reporter trait 体系：health pre-flight、sync_journal 断点续传、tmp→rename、clone=sync --export、"只比 sha256"、`svault recover` 命令。recover 等暂缓设计已抢救至 PARKED §6；原文见 `git show f34d53b:docs/sync-design.md` |
-| DRIFT-3 | ARCHITECTURE.md §6.1 | "只读源 vault" 措辞：clone 实际读写打开源 DB 并写 vault.cloned 审计事件 |
-| DRIFT-4 | cli.md / database-schema.md | 事件名示例（file.imported / file.path_updated）与实际（batch.imported / file.sha256_resolved / vault.cloned）不符；recheck 报告 session 实为新时间戳；recheck 报告 status 为 Debug 格式 |
+| DRIFT-3 | ~~ARCHITECTURE.md §6.1~~ **已消解（2026-08-09）**：clone 不再写源 DB，"只读源 vault" 措辞现已准确 | — |
+| DRIFT-4 | ~~cli.md / database-schema.md~~ **已消解（2026-08-09）**：事件名示例随事件溯源移除失效；recheck 报告路径已更新为 sessions 布局 | — |
 
 ---
 
@@ -328,7 +340,7 @@ DB 查询 / 文件系统状态）。
 
 | 计划测试 | 处置 | 判据（按现行行为） |
 |----------|------|-------------------|
-| `test_import_pause_at_25_percent` | ✅ 实现 | pause 于源读取；SIGTERM 后：DB 无该文件记录；**最终路径无半成品**（staging 模型，G7；残留只在 `.svault/staging/`，下次 import 对账清除）；故障解除后重跑 import 完成；`verify` 通过 |
+| `test_import_pause_at_25_percent` | ✅ 实现 | pause 于源读取；SIGTERM 后：DB 无该文件记录；**最终路径无半成品**（staging 模型，G7；残留留在 `.svault/sessions/import/<ts-id>/`，下次 import 对账**报告**之）；故障解除后重跑 import 完成；`verify` 通过 |
 | `test_import_pause_at_50_resume` | ✅ 实现 | 释放 pause 后 import 自行完成；manifest 完整；vault 副本哈希与源一致 |
 | `test_import_eio_at_offset` | ✅ 实现 | 该文件 ScanItem/CopyFinished 报 error；**退出码 0**；其余文件正常导入；manifest 不含该文件；解除故障重跑后该文件成功导入 |
 | `test_recheck_pause_at_half_files` | ✅ 实现（改写） | recheck 无状态可续——判据改为：中断后**无报告或报告截断**；重跑生成完整新报告；两侧比对结果正确 |
@@ -338,7 +350,7 @@ DB 查询 / 文件系统状态）。
 
 | 计划测试 | 处置 | 判据要点 |
 |----------|------|----------|
-| `test_import_enospc_simulation` | ⏭ **不重复建设，占位已删除**（2026-08-05）：`test_import_disk_full.py` 已用 loopback ext4 覆盖等价场景（copy 路径 ENOSPC + DB 写失败 exit 1 + 清理后恢复）。判据以该文件实际断言为准（其"exit code 4"注释陈旧，实际断言 `[4, 1]` 兼容现行 exit 1） | — |
+| `test_import_enospc_simulation` | ⏭ **不重复建设，占位已删除**（2026-08-05）：`test_import_disk_full.py` 已用 loopback ext4 覆盖等价场景。**2026-08-09 判据重写**：复制 ENOSPC = 逐文件失败 → **exit 0**（G4；旧的 rc!=0 断言锁定的是已删 `append_event` 无条件写库撞 ENOSPC 的偶然行为）；致命 ENOSPC（plan/DB/manifest 写失败）才是 exit 1；最终路径绝无半成品 | — |
 | `test_import_pause_multiple_files` | ✅ 实现 | 暂停点前的文件已完成入库（如已过 Stage E）或未入库（未过）；重跑后全部一致 |
 | `test_recheck_source_modified_during_check` | ✅ 实现 | 源侧校验值与 manifest 不符 → 报告中对应状态；exit 0 |
 | `test_silent_corruption_at_specific_offset` | ✅ 实现（依赖 corrupt action） | 同 §4 局限性确认 |
@@ -381,9 +393,12 @@ DB 查询 / 文件系统状态）。
 
 ### 8.5 已覆盖、不重复建设
 
-- 信号中断恢复：`tests/e2e/test_import_interruption.py`（strace 信号注入；2026-08-06 套件重设计后 7 例，其中 strace 中断 3 例：SIGTERM 重跑、write 阶段中断、SIGKILL 后 DB/链一致性）
-- 幂等/增量恢复：`test_import_recovery.py`（重设计后 9 例，幂等/增量/修改识别/vault 内移动各有代表）
-- 手动破坏 vault 后 verify 失败、events 表篡改检测：ai-user-testing §C（AI-VERIFY-002 / AI-DB-001），E2E 对应 `test_verify.py` 损坏检测族 + `TestDbVerifyChain`
+- 信号中断恢复：`tests/e2e/test_import_interruption.py`（strace 信号注入；strace 中断 3 例：SIGTERM 重跑、write 阶段中断、SIGKILL 后 DB 完整性
+  ——2026-08-09 起改用 `PRAGMA integrity_check`，事件链校验随事件溯源移除）
+- 幂等/增量恢复：`test_import_recovery.py`（幂等/增量/修改识别/vault 内移动各有代表）
+- 手动破坏 vault 后 verify 失败：ai-user-testing §C（AI-VERIFY-002），
+  E2E 对应 `test_verify.py` 损坏检测族。~~events 表篡改检测（AI-DB-001）~~
+  已随事件溯源移除（2026-08-09）
 
 ---
 
@@ -394,9 +409,9 @@ DB 查询 / 文件系统状态）。
 | 编号 | 问题 | 选项 |
 |------|------|------|
 | OPEN-1 | ~~BUG-1：哈希 IO 错误误计 duplicate~~ **已决策执行（2026-08-05）**：选 A——修代码（`HashResult.hash_error` 结构化字段替代字符串前缀匹配），+1 回归单测 `batch_insert_classifies_hash_error_as_failed_not_duplicate` | — |
-| OPEN-2 | BUG-2：update 绕过事件溯源写协议 | A. 修代码走 append_event；B. 接受现状并更新 database-schema.md |
-| OPEN-3 | ~~半成品/孤儿文件不清理 + 重跑改名重复制~~ **已决策执行（2026-08-09）**：选 B 的 staging 变体——import 改走 `.svault/staging/import/` 原子提交（tmp→fsync→hash→入库→rename），半成品不进入最终路径，对账清除残留；G1 精确化为"不删除**用户**文件"。+7 单测（staging 对账 ×5、import 端到端 ×2） | — |
-| OPEN-4 | manifest 非原子 + session_id 秒冲突 | A. 接受；B. tmp+rename + 纳秒/UUID session_id |
+| OPEN-2 | ~~BUG-2：update 绕过事件溯源写协议~~ **已消解（2026-08-09）**：事件溯源整体移除（维护者决策：伪需求），直接 UPDATE 即唯一写路径 | — |
+| OPEN-3 | ~~半成品/孤儿文件不清理 + 重跑改名重复制~~ **已决策执行（2026-08-09）**：选 B 的 staging 变体——import 改走会话 staging 原子提交（tmp→fsync→hash→入库→rename），半成品不进入最终路径，对账报告残留交用户处置；G1 收窄为"svault 只清理本次会话自建暂存" | — |
+| OPEN-4 | ~~manifest 非原子 + session_id 秒冲突~~ **已修复（2026-08-09）**：`fs::atomic_write` + `YYYYMMDDTHHMMSS-<hex 后缀>` session_id | — |
 | OPEN-5 | PARKED §6 暂缓设计（recover / health pre-flight / sync_journal） | A. 维持暂缓；B. 立项实现（recover 涉及 .svault/corrupted/ 与逐文件确认交互，必须走 Event/Interactor，不得复活 reporter trait） |
 | OPEN-6 | 部分失败退出码不一致：import/sync/clone=0，verify=1 | A. 接受（verify 是审计命令，语义不同）；B. 统一 |
 | OPEN-7 | DRIFT-1/3/4 原文档回改 | A. 本次一并回改；B. 仅保留本文档权威声明，原文档加指向 |
@@ -409,3 +424,10 @@ DB 查询 / 文件系统状态）。
 
 *2026-08-09 更新：import 引入 staging 原子提交（G7 重写、G1 精确化、§3.1/§5
 中断语义更新、[OPEN-3] 闭环）。sync/clone 的中断残留语义不变。*
+
+*2026-08-09 更新（二）：① 事件溯源（events 表 + 哈希链 + db verify-chain）
+维护者决策移除（伪需求），BUG-2 消解、OPEN-2 关闭；② 会话日志布局落地
+（`.svault/sessions/<kind>/<ts-id>/`：plan.json + staging/ + manifest.json +
+recheck report），BUG-3/BUG-4 修复、OPEN-4 关闭；③ reconcile 改只报告不删，
+G1 收窄为最终形态；④ 复制 ENOSPC 锁定为逐文件失败 exit 0（G4），
+旧 rc!=0 断言锁定的是已删事件的偶然行为。*

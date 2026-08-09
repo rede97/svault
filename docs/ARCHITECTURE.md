@@ -107,8 +107,8 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `ops::update` | DB missing 记录 + 磁盘扫描 | 按 hash 匹配 | ✗ | 路径修正 |
 | `ops::recheck` | manifest | ✗ | ✗ | 只写报告 |
 | `ops::verify` | DB 全量 | ✗ | ✗ | 只读 |
-| `ops::clone` | DB 全量（可过滤） | ✗ | ✓ | 审计事件 + 目标 manifest |
-| `ops::sync` | 对端 vault DB（只读） | diff 引擎 | ✓ | ✓ + sync manifest |
+| `ops::clone` | DB 全量（可过滤） | ✗ | ✓ | 目标 manifest |
+| `ops::sync` | 对端 vault DB（只读） | diff 引擎 | ✓ | ✓ + sync plan/manifest |
 
 ---
 
@@ -127,7 +127,7 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `status` | vault 统计 |
 | `clone` | 单向导出子集到普通目录（§6.1） |
 | `sync` | vault 间同步，hash 加速比对（§6.2） |
-| `db` | 维护工具（dump / verify-chain） |
+| `db` | 维护工具（dump） |
 
 ### 4.2 Debug-only（仅 debug 构建）
 
@@ -140,8 +140,9 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 
 | 功能 | 移除原因 |
 |------|----------|
-| `history` | 次要功能；事件日志仍在 DB，可用 `db dump events` 查询 |
+| `history` | 次要功能；可用 `db dump` 查询 |
 | `update --delete` | **违反"永不删除用户文件"核心原则**，是设计漂移的产物 |
+| 事件溯源（`events` 表 + `db verify-chain`） | 维护者决策：伪需求（2026-08-09，PARKED §8） |
 
 （`sync` / `clone` 曾为 `todo!()` stub 被移除，后按 §6 设计正式实现。）
 
@@ -149,8 +150,8 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 
 ## 5. 核心原则（不可妥协）
 
-1. **永不删除用户文件** — 任何命令不得提供删除磁盘文件的路径
-2. **事件溯源** — 所有 DB 变更记入 `events` 表
+1. **永不删除用户文件** — 任何命令不得提供删除磁盘文件的路径（svault 只清理本次会话自建的 staging 子树）
+2. **会话日志** — import/sync/recheck 的意图与结果写入 `.svault/sessions/<kind>/<ts-id>/`（plan/manifest/report，原子写入）
 3. **三层哈希** — CRC32C（预筛）→ XXH3-128（快速身份）→ SHA-256（确定身份）
 4. **进程锁** — 写操作必须持有 `.svault/lock`
 5. **core 可测试** — 所有用例可用 `NoopSink` 在无终端环境运行
@@ -160,7 +161,7 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 ## 6. Clone 与 Sync（vault 间复制）
 
 定位：**Beyond Compare 风格，不是 git 风格**。现场比对两侧状态给出差异视图；
-不跟踪血统、不合并事件日志、不需要共同祖先。
+不跟踪血统、不合并历史、不需要共同祖先。
 
 ### 6.1 Clone（单向导出）
 
@@ -169,7 +170,6 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 - 只读源 vault；目标目录不建立任何 vault 结构，只额外写一份 `svault-clone-manifest.json`
 - 过滤只提供有数据支撑的维度：`--filter-date`（按 mtime）。
   相机/分组过滤等 media binding 填充后才有意义，暂未提供
-- 源 DB 记一条 `vault.cloned` 审计事件
 
 ### 6.2 Sync（vault 间同步）
 
@@ -190,9 +190,10 @@ diff_vaults(source_records, dest_records) → DiffPlan
 不做全量文件哈希。归档文件 immutable，信任 DB 记录；
 源文件若在磁盘上缺失，传输阶段自然报错并计入 failed。
 
-**各记各的账**：复制完成后在 dest 追加普通入库记录
-（`SessionType::Sync` + manifest），源 vault 的 DB 不被修改。
-事件日志不跨 vault 合并——这是避开 git 复杂性的关键简化。
+**各记各的账**：复制前在 dest 落 `sessions/sync/<ts-id>/plan.json`（diff
+意图），复制完成后在 dest 追加普通入库记录（`SessionType::Sync` +
+manifest），源 vault 的 DB 不被修改。历史不跨 vault 合并——这是避开
+git 复杂性的关键简化。
 
 **只比对 `status='imported'` 的记录**：missing 记录代表磁盘上不存在，
 不参与比对；dest 的 missing 记录在复制同 hash 文件时按既有 recover 逻辑复活。

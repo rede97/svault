@@ -123,7 +123,7 @@ uv pip install -e "."
 | `test_path_compatibility.py` | 跨平台路径格式（Unix 风格存储） | - |
 | `test_config_transfer.py` | 配置（创建/错误处理）、传输策略、hardlink 升级 | - |
 | `test_property.py` | Hypothesis 属性测试 | `property`, `slow` |
-| `test_verify.py` | verify（损坏检测/算法选择/摘要）、recheck、background-hash、db verify-chain | `verify` |
+| `test_verify.py` | verify（损坏检测/算法选择/摘要）、recheck、background-hash | `verify` |
 | `fuse_tests/` | **FUSE 深度故障注入测试** | `fuse`, `slow` |
 
 ## 使用 Fixtures
