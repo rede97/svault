@@ -162,16 +162,6 @@ pub fn run_clone(
     std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
     summary.manifest_path = Some(manifest_path);
 
-    // ── Audit event in the source vault ─────────────────────────────────────
-    let payload = serde_json::json!({
-        "target": target_canon,
-        "total": summary.total,
-        "copied": summary.copied,
-        "failed": summary.failed,
-    })
-    .to_string();
-    db.append_event("vault.cloned", "vault", 0, &payload, |_conn| Ok(()))?;
-
     sink.emit(&Event::Summary(Summary::Clone(summary.clone())));
     Ok(summary)
 }
@@ -256,17 +246,6 @@ mod tests {
         assert_eq!(summary.bytes, 9);
         assert!(target.join("2024/01/a.jpg").exists());
         assert!(target.join("svault-clone-manifest.json").exists());
-
-        // Audit event recorded
-        let count: i64 = db
-            .conn_ref()
-            .query_row(
-                "SELECT COUNT(*) FROM events WHERE event_type = 'vault.cloned'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
     }
 
     #[test]

@@ -10,8 +10,6 @@ use super::Db;
 pub struct VaultStats {
     /// Total number of files in the database.
     pub total_files: i64,
-    /// Total number of events in the event log.
-    pub total_events: i64,
     /// Total size of all files (in bytes).
     pub total_size_bytes: i64,
     /// Number of files with status 'imported'.
@@ -46,11 +44,6 @@ impl Db {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-
-        // Total events
-        let total_events: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
 
         // Status counts
         let imported_count: i64 = self.conn.query_row(
@@ -87,7 +80,6 @@ impl Db {
 
         Ok(VaultStats {
             total_files,
-            total_events,
             total_size_bytes,
             imported_count,
             duplicate_count,

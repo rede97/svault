@@ -60,26 +60,19 @@ pub fn run_background_hash(
         let error = match sha256_file(&full_path) {
             Ok(digest) => {
                 let hash_bytes = digest.to_bytes();
-                let payload = serde_json::json!({
-                    "path": file.path,
-                    "sha256": digest.to_hex(),
-                })
-                .to_string();
-
-                if let Err(e) =
-                    db.append_event("file.sha256_resolved", "file", file.id, &payload, |conn| {
-                        conn.execute(
-                            "UPDATE files SET sha256 = ?1 WHERE id = ?2",
-                            rusqlite::params![hash_bytes, file.id],
-                        )?;
-                        Ok(())
-                    })
-                {
-                    summary.failed += 1;
-                    Some(e.to_string())
-                } else {
-                    summary.processed += 1;
-                    None
+                let result = db.conn_ref().execute(
+                    "UPDATE files SET sha256 = ?1 WHERE id = ?2",
+                    rusqlite::params![hash_bytes, file.id],
+                );
+                match result {
+                    Ok(_) => {
+                        summary.processed += 1;
+                        None
+                    }
+                    Err(e) => {
+                        summary.failed += 1;
+                        Some(e.to_string())
+                    }
                 }
             }
             Err(e) => {

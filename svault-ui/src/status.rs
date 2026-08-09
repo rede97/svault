@@ -96,11 +96,10 @@ pub fn render_human(report: &StatusReport) -> String {
     output.push_str(&render_to_string(&import_table));
     output.push('\n');
 
-    // Event log section
-    let mut event_table = table("📝 Event Log", &["Metric", "Value"]);
-    event_table.add_row_cells(["Total Events", &format_count(report.stats.total_events)]);
-    event_table.add_row_cells(["Database Size", &format_bytes(report.stats.db_size_bytes)]);
-    output.push_str(&render_to_string(&event_table));
+    // Database section
+    let mut db_table = table("📝 Database", &["Metric", "Value"]);
+    db_table.add_row_cells(["Database Size", &format_bytes(report.stats.db_size_bytes)]);
+    output.push_str(&render_to_string(&db_table));
     output.push('\n');
 
     // Top extensions section
@@ -133,7 +132,6 @@ pub fn render_json(report: &StatusReport) -> anyhow::Result<String> {
             "duplicate_count": report.stats.duplicate_count,
             "has_sha256_count": report.stats.has_sha256_count,
             "pending_sha256_count": report.stats.pending_sha256_count,
-            "total_events": report.stats.total_events,
             "db_size_bytes": report.stats.db_size_bytes,
             "db_size_human": format_bytes(report.stats.db_size_bytes),
         },

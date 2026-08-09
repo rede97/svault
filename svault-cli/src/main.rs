@@ -77,7 +77,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             verify,
         } => commands::sync::run(output, quiet, yes, source, strategy, verify),
         Command::Db { command } => match command {
-            DbCommand::VerifyChain => commands::db::run_verify_chain(),
             DbCommand::Dump {
                 tables,
                 format,

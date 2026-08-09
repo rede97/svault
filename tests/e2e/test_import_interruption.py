@@ -155,19 +155,15 @@ class TestDatabaseConsistency:
         )
         tables = [row[0] for row in cursor.fetchall()]
         assert "files" in tables
-        assert "events" in tables
 
         cursor = conn.execute("SELECT COUNT(*) FROM files")
         file_count = cursor.fetchone()[0]
+        # SQLite 自带完整性检查在中断后必须通过（WAL 事务回滚不损坏 DB）
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         conn.close()
+        assert integrity == "ok", f"SIGKILL 中断后 DB 完整性检查失败: {integrity}"
         # 整批单事务：中断后要么 0 条要么全部 5 条
         assert file_count in (0, 5), f"整批事务应全有或全无，实际 {file_count}/5"
-
-        # 事件链在中断后必须仍可验证（WAL 事务回滚不破坏链）
-        chain = vault.run("db", "verify-chain", check=False)
-        assert chain.returncode == 0, (
-            f"SIGKILL 中断后事件链应完整: {chain.stdout}{chain.stderr}"
-        )
 
         # 重跑可恢复至全量入库（幂等恢复契约）
         vault.import_dir(vault.source_dir)

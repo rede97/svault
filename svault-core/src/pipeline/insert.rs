@@ -272,27 +272,6 @@ pub fn batch_insert(
         summary.added = inserted_count + updated_count;
     }
 
-    // Record batch event with session_type
-    let payload = serde_json::json!({
-        "session_id": opts.session_id,
-        "session_type": opts.session_type.to_string(),
-        "source": opts.source_root.map(path_to_unix_string).unwrap_or_default(),
-        "total_files": summary.total,
-        "added": summary.added,
-        "duplicate": summary.duplicate,
-        "failed": summary.failed,
-        "skipped": summary.skipped,
-        "manifest": manifest.as_ref().map(|m| m.files.len()).unwrap_or(0),
-    });
-
-    db.append_event(
-        "batch.imported",
-        "batch",
-        0,
-        &payload.to_string(),
-        |_conn| Ok(()),
-    )?;
-
     // Write manifest with summary
     if let Some(ref mut m) = manifest
         && !m.files.is_empty()

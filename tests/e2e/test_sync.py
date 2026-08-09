@@ -164,12 +164,12 @@ class TestSyncCommand:
     def test_sync_does_not_modify_source(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
         """The source vault's DB and files must remain untouched."""
         _import_into(vault, "no_exif.jpg")
-        events_before = vault.db_query("SELECT COUNT(*) AS c FROM events")
+        files_before = vault.db_query("SELECT COUNT(*) AS c FROM files")
 
         peer_vault.run("sync", str(vault.vault_dir), "--yes")
 
-        events_after = vault.db_query("SELECT COUNT(*) AS c FROM events")
-        assert events_before == events_after
+        files_after = vault.db_query("SELECT COUNT(*) AS c FROM files")
+        assert files_before == files_after
 
     def test_sync_json_output(self, vault: VaultEnv, peer_vault: VaultEnv) -> None:
         """JSON mode emits a parseable event stream with a sync summary."""

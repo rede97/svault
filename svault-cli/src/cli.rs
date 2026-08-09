@@ -246,9 +246,6 @@ pub enum DebugCommand {
 
 #[derive(Subcommand)]
 pub enum DbCommand {
-    /// Verify the event-log hash chain
-    VerifyChain,
-
     /// Dump database contents
     Dump {
         /// Tables to dump (default: all)

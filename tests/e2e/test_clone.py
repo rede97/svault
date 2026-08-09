@@ -108,15 +108,6 @@ class TestCloneCommand:
         )
         assert result.returncode != 0
 
-    def test_clone_records_audit_event(self, vault: VaultEnv) -> None:
-        """Clone appends a vault.cloned event to the source vault DB."""
-        copy_fixture(vault, "no_exif.jpg")
-        vault.import_dir(vault.source_dir)
-
-        vault.run("clone", "--target", str(vault.output_dir / "export_audit"))
-        rows = vault.db_query("SELECT event_type FROM events WHERE event_type = 'vault.cloned'")
-        assert len(rows) == 1
-
     def test_clone_empty_vault(self, vault: VaultEnv) -> None:
         """Cloning an empty vault succeeds with zero files."""
         target = vault.output_dir / "export_empty"
