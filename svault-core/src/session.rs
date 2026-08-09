@@ -56,6 +56,30 @@ pub struct ImportPlan {
     pub files: Vec<PlanEntry>,
 }
 
+/// One file selected by the sync diff for copying.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncPlanEntry {
+    /// Vault-relative path (identical on source and destination).
+    pub path: String,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xxh3_128: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// Diff plan of a sync session, atomically written to `plan.json` before
+/// any file is transferred. Same hint-not-truth rule as [`ImportPlan`].
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncPlan {
+    pub session_id: String,
+    pub session_type: SessionType,
+    pub source_vault: PathBuf,
+    /// Unix milliseconds when the plan was written.
+    pub created_at: i64,
+    pub files: Vec<SyncPlanEntry>,
+}
+
 /// Pre-copy intent file inside a session directory.
 pub const PLAN_FILE: &str = "plan.json";
 /// Outcome manifest file inside a session directory.

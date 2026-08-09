@@ -152,6 +152,37 @@ pub fn run_sync(
         return Ok(summary);
     }
 
+    // Persist the diff plan before transferring anything (fail-fast), so an
+    // interrupted sync session is self-describing. The session id is reused
+    // for the Stage-E manifest of the destination vault.
+    let session_id = crate::ops::utils::session_id_now();
+    let session_dir = crate::session::session_dir(
+        &dest_canon,
+        crate::verify::manifest::SessionType::Sync,
+        &session_id,
+    );
+    let sync_plan = crate::session::SyncPlan {
+        session_id: session_id.clone(),
+        session_type: crate::verify::manifest::SessionType::Sync,
+        source_vault: source_canon.clone(),
+        created_at: crate::ops::utils::unix_now_ms(),
+        files: plan
+            .to_copy
+            .iter()
+            .map(|r| crate::session::SyncPlanEntry {
+                path: r.path.clone(),
+                size: r.size.max(0) as u64,
+                xxh3_128: r.xxh3_128.as_deref().map(hex_bytes),
+                sha256: r.sha256.as_deref().map(hex_bytes),
+            })
+            .collect(),
+    };
+    crate::session::write_json_atomic(
+        &session_dir.join(crate::session::PLAN_FILE),
+        &sync_plan,
+    )
+    .map_err(|e| anyhow::anyhow!("cannot write sync plan: {e}"))?;
+
     // ── Copy phase ──────────────────────────────────────────────────────────
     let strategies = opts.strategy.to_transfer_strategies();
     let copy_total = plan.to_copy.len() as u64;
@@ -233,7 +264,6 @@ pub fn run_sync(
 
     // ── Insert phase (dest vault records the arrival as a Sync session) ─────
     if !hash_results.is_empty() {
-        let session_id = crate::ops::utils::session_id_now();
         let insert_count = hash_results.len() as u64;
 
         sink.emit(&Event::PhaseStarted {
@@ -288,9 +318,13 @@ pub fn run_sync(
     Ok(summary)
 }
 
+/// Hex-encode hash bytes for the sync plan journal.
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Verify a list of vault-relative paths, emitting VerifyItem events.
-fn verify_paths(
-    vault_root: &Path,
+fn verify_paths(    vault_root: &Path,
     db: &Db,
     rel_paths: &[String],
     sink: &dyn EventSink,
