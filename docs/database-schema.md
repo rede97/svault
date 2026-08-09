@@ -44,6 +44,7 @@ SQL 读写者**——复合媒体绑定（`media/binding.rs`）现阶段只在�
 | `.svault/sessions/import/<ts-id>/manifest.json` | import 结果清单（原子写入） |
 | `.svault/sessions/import/<ts-id>/staging/` | import 暂存 payload（入库 commit 后 rename 到最终路径） |
 | `.svault/sessions/sync/<ts-id>/{plan,manifest}.json` | sync 会话日志（diff 意图 + 结果） |
+| `.svault/sessions/add/<ts-id>/{plan,manifest}.json` | add 会话日志（注册意图 + 结果；add 无 staging） |
 | `.svault/lock` | 进程咨询锁 |
 
 会话目录内容即状态：**有 manifest.json = 已提交**（审计记录，永久保留）；

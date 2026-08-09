@@ -151,9 +151,11 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 ### 3.1 `import`（`add` 共享管线，差异注明）
 
-> **`add` 差异**：不用区域指纹查重——vault 内文件可能被原地编辑，指纹
-> 盲区会把中段修改误判 duplicate。add 在扫描阶段直接算全量 XXH3-128
+> **`add` 差异**：① 不用区域指纹查重——vault 内文件可能被原地编辑，指纹
+> 盲区会把中段修改误判 duplicate；扫描阶段直接算全量 XXH3-128
 > （`check_duplicate_by_hash`），Stage D 经 `precomputed_hash` 复用。
+> ② 与 import 同样有 Preflight + y/N 确认（非终端自动确认）和会话日志
+> （plan.json + manifest.json；无 staging——add 不复制文件，中断无残留）。
 
 
 管线：Stage A 扫描（jwalk 线程→mpsc）→ Stage B 指纹（头/尾 64KB XXH3，100 条攒批 + rayon）

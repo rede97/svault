@@ -79,6 +79,31 @@ pub struct SyncPlan {
     pub files: Vec<SyncPlanEntry>,
 }
 
+/// One file to be registered by an `add` session.
+#[derive(Debug, Clone, Serialize)]
+pub struct AddPlanEntry {
+    /// Vault-relative path (Unix-style).
+    pub path: String,
+    pub size: u64,
+    /// Full-file XXH3-128 as hex (computed at scan time).
+    pub xxh3_128: String,
+}
+
+/// Registration plan of an `add` session, atomically written to `plan.json`
+/// before hashing/insert. `add` copies nothing, so there is no staging
+/// subtree — the plan exists so an interrupted add session is visible and
+/// self-describing like every other session.
+#[derive(Debug, Clone, Serialize)]
+pub struct AddPlan {
+    pub session_id: String,
+    pub session_type: SessionType,
+    /// Vault-internal directories that were scanned.
+    pub target_dirs: Vec<PathBuf>,
+    /// Unix milliseconds when the plan was written.
+    pub created_at: i64,
+    pub files: Vec<AddPlanEntry>,
+}
+
 /// Pre-copy intent file inside a session directory.
 pub const PLAN_FILE: &str = "plan.json";
 /// Outcome manifest file inside a session directory.
@@ -241,11 +266,11 @@ pub struct IncompleteSession {
     pub residue_bytes: u64,
 }
 
-/// Find interrupted import/sync sessions (no `manifest.json` in the session
+/// Find interrupted import/sync/add sessions (no `manifest.json` in the session
 /// directory). Used by `status` and safe to call any time.
 pub fn find_incomplete_sessions(vault_root: &Path) -> Vec<IncompleteSession> {
     let mut out = Vec::new();
-    for kind in [SessionType::Import, SessionType::Sync] {
+    for kind in [SessionType::Import, SessionType::Sync, SessionType::Add] {
         let kind_dir = sessions_root(vault_root).join(kind.to_string());
         let Ok(entries) = std::fs::read_dir(&kind_dir) else {
             continue;

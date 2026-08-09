@@ -7,7 +7,7 @@ use rich_rust::r#box::BoxChars;
 use rich_rust::prelude::*;
 use rich_rust::renderables::Renderable;
 use svault_core::db::{format_bytes, format_count};
-use svault_core::status::StatusReport;
+use svault_core::status::{StatusReport, WorkingTreeFilter};
 
 /// Custom box style: only heavy header separator (continuous), no vertical dividers.
 const CLEAN_STYLE: BoxChars = BoxChars::new(
@@ -53,7 +53,7 @@ fn table(title: &str, columns: &[&str]) -> Table {
 }
 
 /// Render a status report as human-readable tables.
-pub fn render_human(report: &StatusReport) -> String {
+pub fn render_human(report: &StatusReport, filter: &WorkingTreeFilter) -> String {
     let mut output = String::new();
 
     // Header
@@ -123,6 +123,49 @@ pub fn render_human(report: &StatusReport) -> String {
         output.push_str("\n\x1b[3m\x1b[90m💡 Review plan.json inside; the next import finishes pending renames. Delete the directories manually when done.\x1b[0m\n\n");
     }
 
+    // Working tree section (git status style)
+    let wt = &report.working_tree;
+    let show_all = filter.is_default();
+    let any_selected_content = (filter.show_untracked() && !wt.untracked.is_empty())
+        || (filter.show_moved() && !wt.moved.is_empty())
+        || (filter.show_missing() && !wt.missing.is_empty())
+        || (filter.show_modified() && !wt.modified.is_empty());
+    if any_selected_content {
+        output.push_str("🧭 Working Tree\n");
+        let mut section = |title: &str, lines: &[String]| {
+            if lines.is_empty() {
+                return;
+            }
+            output.push_str(&format!("  {title} ({}):\n", lines.len()));
+            for line in lines.iter().take(8) {
+                output.push_str(&format!("    {line}\n"));
+            }
+            if lines.len() > 8 {
+                output.push_str(&format!("    … and {} more\n", lines.len() - 8));
+            }
+        };
+        if filter.show_untracked() {
+            section("Untracked (not yet added)", &wt.untracked);
+        }
+        if filter.show_moved() {
+            let lines: Vec<String> = wt
+                .moved
+                .iter()
+                .map(|(old, new)| format!("{old} -> {new}"))
+                .collect();
+            section("Moved (run `svault update` to fix paths)", &lines);
+        }
+        if filter.show_missing() {
+            section("Missing (in database, gone from disk)", &wt.missing);
+        }
+        if filter.show_modified() {
+            section("Modified (size changed on disk)", &wt.modified);
+        }
+        output.push('\n');
+    } else if show_all {
+        output.push_str("🧭 Working Tree: clean\n\n");
+    }
+
     // Top extensions section
     if !report.top_extensions.is_empty() {
         let mut ext_table = table("📁 Top File Types", &["Type", "Files", "Size"]);
@@ -170,6 +213,7 @@ pub fn render_json(report: &StatusReport) -> anyhow::Result<String> {
                 "residue_bytes": s.residue_bytes,
             })
         }).collect::<Vec<_>>(),
+        "working_tree": report.working_tree,
         "top_extensions": report.top_extensions.iter().map(|e| {
             serde_json::json!({
                 "extension": e.extension,

@@ -7,6 +7,8 @@ add 命令用于将已存在于 vault 内的文件注册到数据库。
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,39 @@ from conftest import (
     create_minimal_mp4,
     create_minimal_raw,
 )
+
+
+class TestAddMultiPathAndSession:
+    """add 的 git 风格多目录参数与会话日志（plan + manifest）"""
+
+    def test_add_multiple_directories_in_one_session(self, vault: VaultEnv) -> None:
+        d1 = vault.vault_dir / "d1"
+        d2 = vault.vault_dir / "d2"
+        d1.mkdir()
+        d2.mkdir()
+        create_minimal_jpeg(d1 / "one.jpg", "ONE")
+        create_minimal_jpeg(d2 / "two.jpg", "TWO")
+
+        result = vault.run("add", str(d1), str(d2))
+        assert result.returncode == 0
+        assert len(vault.db_files()) == 2
+
+        # 恰好一个 add 会话，含 plan + manifest
+        add_root = vault.vault_dir / ".svault" / "sessions" / "add"
+        sessions = [p for p in add_root.glob("*") if p.is_dir()]
+        assert len(sessions) == 1
+        assert (sessions[0] / "plan.json").exists()
+        assert (sessions[0] / "manifest.json").exists()
+
+        plan = json.loads((sessions[0] / "plan.json").read_text())
+        assert plan["session_type"] == "add"
+        assert len(plan["files"]) == 2
+
+    def test_add_rejects_path_outside_vault(self, vault: VaultEnv) -> None:
+        create_minimal_jpeg(vault.source_dir / "x.jpg", "OUTSIDE")
+        result = vault.run("add", str(vault.source_dir), check=False)
+        assert result.returncode != 0
+        assert "inside the vault" in (result.stderr + result.stdout)
 
 
 class TestAddFullHashDedup:

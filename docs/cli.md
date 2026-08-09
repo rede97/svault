@@ -110,12 +110,16 @@ svault 不删除，用户审阅后手动处理。
 算全量哈希（Stage D 复用该值，不重复读）。
 
 ```
-svault add <path>
+svault add <path>...        # 可指定多个目录（git add 风格）；当前目录用 "."
 ```
 
 | 选项 | 说明 |
 |------|------|
-| `<path>` | vault 内的目录路径（必填） |
+| `<path>...` | vault 内的目录路径（必填，可多个；每个都必须在 vault 内） |
+
+扫描后先出 Preflight 汇总并询问 y/N 确认（`--yes` 跳过；管道/重定向等
+非终端环境自动确认）。每次 add 写入会话日志
+`.svault/sessions/add/<ts-id>/`（plan.json 注册意图 + manifest.json 结果）。
 
 若发现文件疑似 vault 内部移动（内容已在库但路径失效），
 会提示改用 `svault update`。
@@ -238,13 +242,29 @@ svault album delete <path>              # 删除空相册（有成员/子相册�
 ### `svault status`
 
 显示归档库的当前状态概览（文件统计、哈希覆盖、近期导入、数据库大小、主要文件类型）。
-若存在**中断的操作会话**（`.svault/sessions/` 下无 manifest 的 import/sync 目录），
+若存在**中断的操作会话**（`.svault/sessions/` 下无 manifest 的 import/sync/add 目录），
 额外列出：操作类型、会话 ID、残留文件数/大小及目录路径——审阅其中的 plan.json
 后手动处置（svault 不删除，见 G1）。
 
+另含 **git 风格的工作区状态**（Working Tree）：
+
+| 类别 | 含义 | 处置 |
+|------|------|------|
+| Untracked | 磁盘上有、DB 无记录（未 add/import） | `svault add <dir>` |
+| Moved | DB 路径的文件消失、同内容出现在新路径 | `svault update` 修正路径 |
+| Missing | DB 有记录、磁盘上不存在 | 找回文件或接受状态（永不删记录） |
+| Modified | 路径在库但磁盘大小已变 | 视情况重新 add |
+
+检测策略：路径在库且大小一致的文件不重算哈希（git stat-cache 式捷径），
+只对未知路径算全量 XXH3-128 以区分 moved 与 untracked。`svault.toml` 与
+`.svault/` 永远不会出现为 untracked。
+
 ```
-svault status [--output json]
+svault status [--output json] [--untracked] [--moved] [--missing] [--modified]
 ```
+
+默认输出全部类别；指定任一标志则只输出该类别（标志作用于人类可读输出，
+JSON 始终输出完整报告）。
 
 ---
 

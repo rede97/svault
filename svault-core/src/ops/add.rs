@@ -29,14 +29,22 @@ pub struct AddSummary {
 
 /// Options for `svault add`.
 pub struct AddOptions {
-    pub path: std::path::PathBuf,
+    /// Directories inside the vault to register (git-add style: one or more).
+    pub paths: Vec<std::path::PathBuf>,
     pub vault_root: std::path::PathBuf,
     /// Compute SHA-256 for definitive identity.
     pub full_id: bool,
+    /// Skip the interactive y/N confirmation after the scan phase.
+    pub yes: bool,
 }
 
 /// Run `add` on a directory inside the vault.
-pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Result<AddSummary> {
+pub fn run_add(
+    opts: AddOptions,
+    db: &Db,
+    sink: &dyn EventSink,
+    interactor: &dyn crate::event::Interactor,
+) -> anyhow::Result<AddSummary> {
     let config = Config::load(&opts.vault_root)?;
     let exts: Vec<&str> = config
         .import
@@ -53,11 +61,35 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
     sink.emit(&Event::PhaseStarted {
         phase: Phase::Scan,
         total: None,
-        context: PhaseContext::both(opts.path.clone(), opts.vault_root.clone()),
+        context: PhaseContext::both(opts.paths[0].clone(), opts.vault_root.clone()),
     });
 
-    let scan_rx =
-        pipeline::scan::scan_stream(&opts.path, &exts, &crate::fs::ScanFilter::default())?;
+    // Every root must live inside the vault (add registers in-place files).
+    let vault_canon =
+        dunce::canonicalize(&opts.vault_root).unwrap_or_else(|_| opts.vault_root.clone());
+    for path in &opts.paths {
+        let canon = dunce::canonicalize(path).unwrap_or_else(|_| path.clone());
+        if !canon.starts_with(&vault_canon) {
+            anyhow::bail!(
+                "add path must be inside the vault: {} (vault root: {})",
+                path.display(),
+                vault_canon.display()
+            );
+        }
+    }
+
+    // Merge per-root scan streams into one channel (roots are drained
+    // sequentially; each root still scans/hashes in parallel internally).
+    let (scan_tx, scan_rx) = std::sync::mpsc::channel();
+    for path in &opts.paths {
+        let rx = pipeline::scan::scan_stream(path, &exts, &crate::fs::ScanFilter::default())?;
+        for item in rx {
+            if scan_tx.send(item).is_err() {
+                break;
+            }
+        }
+    }
+    drop(scan_tx);
     let hash_rx = pipeline::fingerprint::compute_full_hashes_stream(scan_rx);
 
     let mut lookup_results = Vec::new();
@@ -151,7 +183,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
     let failed_scan = total_files.saturating_sub(new_files.len() + dup_files.len() + moved_count);
 
     sink.emit(&Event::Preflight {
-        source: opts.path.clone(),
+        source: opts.paths[0].clone(),
         total: total_files,
         new: new_files.len(),
         duplicate: likely_dup,
@@ -173,6 +205,73 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
         });
     }
 
+    // Nothing to register — all duplicates (and no moves to hint about).
+    if new_files.is_empty() {
+        let summary = AddSummary {
+            total: total_files,
+            duplicate: likely_dup,
+            skipped: 0,
+            failed: failed_scan,
+            moved: 0,
+            ..Default::default()
+        };
+        sink.emit(&Event::Summary(Summary::Add(summary.clone())));
+        return Ok(summary);
+    }
+
+    // Confirm before writing anything (same contract as import).
+    if !opts.yes && !interactor.confirm("Proceed with add?") {
+        let summary = AddSummary {
+            total: total_files,
+            duplicate: likely_dup,
+            moved: moved_count,
+            ..Default::default()
+        };
+        sink.emit(&Event::Summary(Summary::Add(summary.clone())));
+        return Ok(summary);
+    }
+
+    // Session journal: persist the registration plan before Stage D.
+    // add copies nothing (no staging subtree); the plan makes an
+    // interrupted add session visible and self-describing.
+    let session_id = crate::ops::utils::session_id_now();
+    let session_dir = crate::session::session_dir(
+        &opts.vault_root,
+        crate::verify::manifest::SessionType::Add,
+        &session_id,
+    );
+    let plan = crate::session::AddPlan {
+        session_id: session_id.clone(),
+        session_type: crate::verify::manifest::SessionType::Add,
+        target_dirs: opts.paths.clone(),
+        created_at: crate::ops::utils::unix_now_ms(),
+        files: new_files
+            .iter()
+            .map(|e| {
+                let rel = e
+                    .file
+                    .path
+                    .strip_prefix(&opts.vault_root)
+                    .unwrap_or(&e.file.path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                crate::session::AddPlanEntry {
+                    path: rel,
+                    size: e.file.size,
+                    xxh3_128: e
+                        .precomputed_hash
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect(),
+                }
+            })
+            .collect(),
+    };
+    crate::session::write_json_atomic(&session_dir.join(crate::session::PLAN_FILE), &plan)
+        .map_err(|e| anyhow::anyhow!("cannot write add plan: {e}"))?;
+
     // ------------------------------------------------------------------
     // Stage D: Hash
     // ------------------------------------------------------------------
@@ -180,7 +279,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
     sink.emit(&Event::PhaseStarted {
         phase: Phase::Hash,
         total: Some(hash_total),
-        context: PhaseContext::both(opts.path.clone(), opts.vault_root.clone()),
+        context: PhaseContext::both(opts.paths[0].clone(), opts.vault_root.clone()),
     });
 
     let hash_results = pipeline::hash::compute_hashes(new_files, opts.full_id, Some(sink));
@@ -193,12 +292,11 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
     // ------------------------------------------------------------------
     // Stage E: Insert
     // ------------------------------------------------------------------
-    let session_id = crate::ops::utils::session_id_now();
     let insert_opts = pipeline::insert::InsertOptions {
         vault_root: &opts.vault_root,
         session_id: &session_id,
         write_manifest: true,
-        source_root: Some(&opts.path),
+        source_root: opts.paths.first().map(|p| p.as_path()),
         force: false,
         session_type: crate::verify::manifest::SessionType::Add,
     };
@@ -225,4 +323,83 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
     }
 
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{NoopSink, YesInteractor};
+    use std::path::Path;
+
+    struct DeclineInteractor;
+    impl crate::event::Interactor for DeclineInteractor {
+        fn confirm(&self, _message: &str) -> bool {
+            false
+        }
+    }
+
+    /// Vault dir with default config + one unregistered file inside.
+    fn setup() -> (tempfile::TempDir, Db) {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = tmp.path();
+        crate::config::Config::write_default(vault).unwrap();
+        let incoming = vault.join("incoming");
+        std::fs::create_dir_all(&incoming).unwrap();
+        std::fs::write(incoming.join("a.jpg"), b"some-bytes").unwrap();
+        (tmp, Db::open_in_memory().unwrap())
+    }
+
+    fn opts(vault: &Path, yes: bool) -> AddOptions {
+        AddOptions {
+            paths: vec![vault.join("incoming")],
+            vault_root: vault.to_path_buf(),
+            full_id: false,
+            yes,
+        }
+    }
+
+    #[test]
+    fn decline_registers_nothing_and_writes_no_session() {
+        let (tmp, db) = setup();
+        let vault = tmp.path().to_path_buf();
+
+        let summary = run_add(opts(&vault, false), &db, &NoopSink, &DeclineInteractor).unwrap();
+
+        assert_eq!(summary.added, 0);
+        assert!(db.get_all_files().unwrap().is_empty());
+        assert!(
+            !crate::session::sessions_root(&vault).exists(),
+            "declined add must not create a session journal"
+        );
+    }
+
+    #[test]
+    fn accept_writes_plan_and_manifest_session() {
+        let (tmp, db) = setup();
+        let vault = tmp.path().to_path_buf();
+
+        let summary = run_add(opts(&vault, true), &db, &NoopSink, &YesInteractor).unwrap();
+
+        assert_eq!(summary.added, 1);
+        let add_root = crate::session::sessions_root(&vault).join("add");
+        let sessions: Vec<_> = std::fs::read_dir(&add_root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(sessions.len(), 1);
+        let session = &sessions[0];
+
+        let plan: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(session.join(crate::session::PLAN_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan["session_type"], "add");
+        let files = plan["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["path"].as_str().unwrap(), "incoming/a.jpg");
+        assert_eq!(files[0]["xxh3_128"].as_str().unwrap().len(), 32);
+
+        assert!(session.join(crate::session::MANIFEST_FILE).exists());
+    }
 }

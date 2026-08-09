@@ -176,6 +176,7 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 |2026-08-09|**import staging 原子提交**（OPEN-3 闭环）：复制入 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 → commit 后 rename（`pipeline/staging.rs`、`fs::atomic_commit`）；启动对账补 rename/清残留；G1 精确化为"不删除用户文件"；+7 单测 +2 E2E|
 |2026-08-09|**事件溯源移除 + 会话日志落地**：维护者决策删 events 表/verify-chain（伪需求，PARKED §A2）；`.svault/sessions/<kind>/<ts-id>/` 统一布局（plan.json 复制前 fail-fast 落盘 + staging/ + manifest.json 原子写，sync 带 plan，recheck 报告迁入）；session_id 时间戳+唯一后缀（BUG-3/4 修复）；reconcile 改只报告不删（G1 最终形态）；复制 ENOSPC 锁定逐文件失败 exit 0|
 |2026-08-09|**相册与评级**：`svault album`（多级树 `parent_id` 邻接表 + 成员引用 `files.id` + 成员级独立评级 `album_items.rating`）；`files` 行永不物理删除升级为 FK 硬约束；derivatives/assets 表删除（GUI 派生物独立实现；三级链拍平）；媒体绑定计划入 docs/media-binding.md|
+|2026-08-09|**add 会话化 + git 风格 status**：add 支持多目录参数、Preflight+y/N（非终端自动确认）、写 plan+manifest 会话；status 新增工作区状态（untracked/moved/missing/modified，stat-cache 式只对未知路径算哈希）+ 类别过滤标志|
 |2026-08-09|**add 改全量哈希查重**：vault 内文件可能原地编辑，指纹盲区会误判 duplicate；add 跳过指纹预筛直接全量 XXH3（lookup_by_hash），Stage D 经 precomputed_hash 复用不重读|
 |2026-08-09|**指纹算法统一 XXH3-128**：64KB 区域指纹 CRC32C→XXH3（相机快速扫描路径保留）；files.crc32c→fingerprint BLOB + 首个幂等迁移（ALTER ADD COLUMN）；删 crc32fast/crc32c 依赖；CrcEntry→FingerprintEntry 重命名|
 |2026-08-09|**recheck 移除 + compare-level**：recheck 命令删除（PARKED §A4）；`import -c fast/mid/high` 承接源端审计——指纹命中时对源端算 XXH3/SHA-256 与 DB 比对，不符推翻为新文件导入；ManifestManager 死代码清理|

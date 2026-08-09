@@ -60,7 +60,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             exclude,
             compare_level,
         ),
-        Command::Add { path } => commands::add::run(output, quiet, path),
+        Command::Add { paths } => commands::add::run(output, quiet, yes, paths),
         Command::Update { target } => commands::update::run(output, quiet, dry_run, yes, target),
         Command::Verify {
             file,
@@ -77,7 +77,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             background_hash,
             background_hash_limit,
         ),
-        Command::Status => commands::status::run(output),
+        Command::Status {
+            untracked,
+            moved,
+            missing,
+            modified,
+        } => commands::status::run(output, untracked, moved, missing, modified),
         Command::Clone {
             target,
             filter_date,

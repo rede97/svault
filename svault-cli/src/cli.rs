@@ -107,12 +107,12 @@ pub enum Command {
         compare_level: CompareLevelArg,
     },
 
-    /// Register files already inside the vault
+    /// Register files already inside the vault (git-add style: one or more directories)
     Add {
-        /// Directory inside the vault whose files should be registered.
-        /// Must be located under the vault root.
-        #[arg(value_name = "PATH")]
-        path: std::path::PathBuf,
+        /// Directories inside the vault whose files should be registered.
+        /// Each must be located under the vault root. Use "." for the current directory.
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<std::path::PathBuf>,
     },
 
     /// Update database paths for moved or renamed files
@@ -150,8 +150,24 @@ pub enum Command {
         background_hash_limit: Option<usize>,
     },
 
-    /// Show vault statistics
-    Status,
+    /// Show vault statistics and working-tree status
+    Status {
+        /// Show only untracked files (on disk, not in the database)
+        #[arg(long)]
+        untracked: bool,
+
+        /// Show only moved files (DB path gone, content found elsewhere)
+        #[arg(long)]
+        moved: bool,
+
+        /// Show only missing files (in the database, gone from disk)
+        #[arg(long)]
+        missing: bool,
+
+        /// Show only modified files (path in the database, size changed on disk)
+        #[arg(long)]
+        modified: bool,
+    },
 
     /// Export a subset of the vault to a working directory
     ///
