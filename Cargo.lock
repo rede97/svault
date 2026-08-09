@@ -1252,6 +1252,7 @@ dependencies = [
  "dunce",
  "env_logger",
  "rayon",
+ "serde_json",
  "svault-core",
  "svault-ui",
 ]

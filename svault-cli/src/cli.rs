@@ -196,6 +196,13 @@ pub enum Command {
         verify: svault_core::ops::sync::SyncVerifyScope,
     },
 
+    /// Manage albums — named, optionally nested collections of vault files
+    /// (e.g. "trips/norway/tromso") with per-membership ratings
+    Album {
+        #[command(subcommand)]
+        command: AlbumCommand,
+    },
+
     /// Database maintenance
     Db {
         #[command(subcommand)]
@@ -241,6 +248,61 @@ pub enum DebugCommand {
         /// Show duplicate file simulation
         #[arg(long)]
         show_dup: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AlbumCommand {
+    /// Create an album; parent levels are auto-created (like mkdir -p)
+    Create {
+        /// Album path, e.g. "trips/norway/tromso"
+        #[arg(value_name = "PATH")]
+        path: String,
+    },
+    /// List all albums as a tree with member counts
+    List,
+    /// Show an album's members with their per-membership ratings
+    Show {
+        /// Album path
+        #[arg(value_name = "PATH")]
+        path: String,
+    },
+    /// Add vault files to an album (membership only; files are not copied)
+    Add {
+        /// Album path
+        #[arg(value_name = "ALBUM")]
+        album: String,
+        /// Vault-relative file paths (or absolute paths inside the vault)
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<String>,
+    },
+    /// Remove files from an album (never deletes the files themselves)
+    Remove {
+        /// Album path
+        #[arg(value_name = "ALBUM")]
+        album: String,
+        /// Vault-relative file paths
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<String>,
+    },
+    /// Rate album members (1-5 stars, 0 clears). Ratings are per membership:
+    /// the same photo may be rated differently in different albums.
+    Rate {
+        /// Album path
+        #[arg(value_name = "ALBUM")]
+        album: String,
+        /// Rating: 1-5, or 0 to clear
+        #[arg(value_name = "RATING")]
+        rating: u8,
+        /// Vault-relative file paths (must already be members)
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<String>,
+    },
+    /// Delete an album (only when it has no members and no child albums)
+    Delete {
+        /// Album path
+        #[arg(value_name = "PATH")]
+        path: String,
     },
 }
 

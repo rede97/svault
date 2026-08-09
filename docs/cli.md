@@ -223,6 +223,26 @@ svault sync <source_vault> [options]
 
 ---
 
+### `svault album`
+
+管理相册——vault 文件的命名集合，支持多级路径与成员级评级。
+相册只记录成员关系（指向 DB 文件记录），不复制、不移动、不删除任何文件。
+
+```
+svault album create <path>              # 创建（父级自动创建）：album create 挪威旅行/特罗姆瑟
+svault album list                       # 树形列出全部相册及成员数
+svault album show <path>                # 列出成员及评级
+svault album add <album> <path>...      # 添加成员（vault 相对路径或 vault 内绝对路径）
+svault album remove <album> <path>...   # 移除成员（不删文件）
+svault album rate <album> <0-5> <path>...  # 成员评级（1-5 星，0 清除）
+svault album delete <path>              # 删除空相册（有成员/子相册则拒绝）
+```
+
+**评级语义**：评级挂在成员关系上——同一张照片在不同相册中评级相互独立；
+`files` 表不持有评级。评级前须先 `add` 为成员。
+
+---
+
 ### `svault status`
 
 显示归档库的当前状态概览（文件统计、哈希覆盖、近期导入、数据库大小、主要文件类型）。

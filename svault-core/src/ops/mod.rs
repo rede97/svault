@@ -11,8 +11,10 @@
 //! | [`add`]     | Register files already in the vault |
 //! | [`update`]  | Fix DB paths of moved/renamed files |
 //! | [`recheck`] | Re-verify an import against its manifest |
+//! | [`album`]   | Hierarchical albums + per-membership ratings (Pull model) |
 
 pub mod add;
+pub mod album;
 pub mod clone;
 mod exif;
 pub mod import;

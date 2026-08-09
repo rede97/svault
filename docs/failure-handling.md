@@ -94,6 +94,10 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 - DB 以 WAL 模式打开（`db/mod.rs`）。
 - import/add/sync 的入库是**整批单事务**（`pipeline/insert.rs` 经
   `Db::with_transaction`），失败整体回滚。
+- **`files` 行永不物理删除，且 DB 不按 id 重建**（2026-08-09 起为硬规则）：
+  相册成员按 `files.id` 引用，`album_items.file_id` 外键把"不删除"升级为
+  数据库约束（删除被引用行直接报错）；按 id 重建库会使相册成员静默指向
+  其他文件，属禁止操作。
 - **事件溯源（events 表 + 哈希链 + `db verify-chain`）已于 2026-08-09
   移除**——维护者决策：伪需求。工具不为"用户擅自修改 DB"兜底；无外部
   锚点的哈希链防不了蓄意篡改（可重建全链）。会话历史在 DB 之外：

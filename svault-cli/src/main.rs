@@ -83,6 +83,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 limit,
             } => commands::db::run_dump(tables, format, limit),
         },
+        Command::Album { command } => commands::album::run(output, command),
         #[cfg(debug_assertions)]
         Command::Scan { source, show_dup } => commands::scan::run(source, show_dup),
         #[cfg(debug_assertions)]

@@ -5,6 +5,7 @@
 //! and call into `svault-core`. Rendering lives in `svault-ui`.
 
 pub mod add;
+pub mod album;
 pub mod clone;
 pub mod db;
 #[cfg(debug_assertions)]

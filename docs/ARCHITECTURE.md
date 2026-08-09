@@ -149,6 +149,7 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `status` | vault 统计 |
 | `clone` | 单向导出子集到普通目录（§6.1） |
 | `sync` | vault 间同步，hash 加速比对（§6.2） |
+| `album` | 多级相册 + 成员级评级（Pull 模型 CRUD） |
 | `db` | 维护工具（dump） |
 
 ### 4.2 Debug-only（仅 debug 构建）
@@ -235,6 +236,7 @@ rusqlite 保持默认适配器，turso 以 feature flag 实验接入，用同一
 |------|------|
 | 管线五阶段（scan/crc/lookup/hash/insert） | `svault-core/src/pipeline/` |
 | 用例编排（import/add/update/sync/clone/recheck） | `svault-core/src/ops/` |
+| 相册与评级（多级树、成员引用 files.id） | `svault-core/src/ops/album.rs` + `svault-core/src/db/albums.rs` |
 | 会话日志：plan/staging/manifest/对账 | `svault-core/src/session.rs` |
 | 事件与交互边界（R3/R4） | `svault-core/src/event.rs`（`Event` / `EventSink` / `Interactor` / `NoopSink` / `YesInteractor`） |
 | 文件传输 + 崩溃耐久原语 | `svault-core/src/fs.rs`（`transfer_file` / `atomic_commit` / `atomic_write` / `sync_file_and_dir`） |

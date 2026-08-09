@@ -6,6 +6,7 @@
 //! in single transactions (see [`Db::with_transaction`]); per-session history
 //! lives outside the DB in `.svault/sessions/` (plan + manifest JSON).
 
+pub mod albums;
 pub mod dump;
 pub mod files;
 pub mod stats;
@@ -139,6 +140,30 @@ CREATE INDEX IF NOT EXISTS idx_files_sha256  ON files(sha256);
 CREATE INDEX IF NOT EXISTS idx_files_xxh3    ON files(xxh3_128);
 CREATE INDEX IF NOT EXISTS idx_files_size    ON files(size);
 CREATE INDEX IF NOT EXISTS idx_files_group   ON files(group_id);
+
+CREATE TABLE IF NOT EXISTS albums (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id   INTEGER REFERENCES albums(id),
+    name        TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+-- Sibling names must be unique; COALESCE makes the root level (NULL parent)
+-- participate in the uniqueness check.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_sibling
+    ON albums (COALESCE(parent_id, 0), name);
+
+CREATE TABLE IF NOT EXISTS album_items (
+    album_id    INTEGER NOT NULL REFERENCES albums(id),
+    file_id     INTEGER NOT NULL REFERENCES files(id),
+    -- Per-membership rating (1-5, NULL = unrated): the same photo may carry
+    -- different ratings in different albums; it is never a files attribute.
+    rating      INTEGER,
+    added_at    INTEGER NOT NULL,
+    UNIQUE (album_id, file_id)
+);
+-- The album_items.file_id FK (default NO ACTION) turns the hard rule
+-- (files rows are never physically deleted) into a database constraint:
+-- deleting a referenced row fails instead of leaving dangling members.
 ";
 
 #[cfg(test)]

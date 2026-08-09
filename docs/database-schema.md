@@ -13,6 +13,8 @@
 |------|------|
 | `files` | 文件记录（运行时状态索引：路径/大小/哈希/状态） |
 | `media_groups` | 复合媒体组（Live Photo、RAW+JPEG 等；`files.group_id` 直接指向它） |
+| `albums` | 相册（`parent_id` 邻接表树，兄弟级名称唯一） |
+| `album_items` | 相册成员（指向 `files.id`；**评级在成员关系上**） |
 
 ### 场景对照（哪个功能用哪张表）
 
@@ -25,6 +27,7 @@
 | `sync` diff 比对（两侧记录） | `files` | 读（源只读） |
 | `clone` 选文件导出 | `files` | 读 |
 | `status` 统计 | `files` | 读 |
+| `album create/list/show/add/remove/rate/delete` | `albums` / `album_items`（join `files`） | 读写 |
 | 复合媒体绑定（Live Photo / RAW+JPEG） | `media_groups` | **休眠** |
 
 **注意**：`media_groups` 当前**没有任何
@@ -82,6 +85,40 @@ CREATE INDEX idx_files_group  ON files(group_id);
 - `imported` — 文件在库且在盘
 - `missing` — 曾在库，磁盘上找不到（`update` 标记；可被再导入"复活"）
 - `duplicate` — 重复记录（`duplicate_of` 指向主记录）
+
+## albums / album_items（相册与评级）
+
+```sql
+CREATE TABLE albums (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id   INTEGER REFERENCES albums(id),   -- 邻接表树，NULL = 根级
+    name        TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+-- 兄弟级名称唯一；COALESCE 让根级（NULL parent）也参与唯一约束
+CREATE UNIQUE INDEX idx_albums_sibling ON albums (COALESCE(parent_id, 0), name);
+
+CREATE TABLE album_items (
+    album_id    INTEGER NOT NULL REFERENCES albums(id),
+    file_id     INTEGER NOT NULL REFERENCES files(id),
+    rating      INTEGER,            -- 1-5，NULL=未评级；成员级独立评级
+    added_at    INTEGER NOT NULL,
+    UNIQUE (album_id, file_id)
+);
+```
+
+设计决策（2026-08-09，维护者拍板）：
+
+- **成员引用 `files.id`** 而非内容哈希。成立前提（两条硬规则）：
+  `files` 行**永不物理删除**——`album_items.file_id` 的外键（默认
+  NO ACTION）把这条规则从约定升级为数据库约束，删除被引用行会直接
+  报错；且 DB **不按 id 重建**（重建会使 id 静默指向其他文件）。
+- **评级在成员关系上**（`album_items.rating`），不是文件属性：同一张
+  照片在不同相册中可以有不同评级；`files` 表不持有 rating 列。
+- 相册寻址用斜杠路径（`挪威旅行/特罗姆瑟`），`create` 自动建父级；
+  同名可存在于不同父级下。
+- `album delete` 只删空相册（无成员、无子相册）；删除的仅是元数据行，
+  不触碰文件（G1）。
 
 ## media_groups
 
