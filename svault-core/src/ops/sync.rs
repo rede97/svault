@@ -177,11 +177,8 @@ pub fn run_sync(
             })
             .collect(),
     };
-    crate::session::write_json_atomic(
-        &session_dir.join(crate::session::PLAN_FILE),
-        &sync_plan,
-    )
-    .map_err(|e| anyhow::anyhow!("cannot write sync plan: {e}"))?;
+    crate::session::write_json_atomic(&session_dir.join(crate::session::PLAN_FILE), &sync_plan)
+        .map_err(|e| anyhow::anyhow!("cannot write sync plan: {e}"))?;
 
     // ── Copy phase ──────────────────────────────────────────────────────────
     let strategies = opts.strategy.to_transfer_strategies();
@@ -324,7 +321,8 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 /// Verify a list of vault-relative paths, emitting VerifyItem events.
-fn verify_paths(    vault_root: &Path,
+fn verify_paths(
+    vault_root: &Path,
     db: &Db,
     rel_paths: &[String],
     sink: &dyn EventSink,

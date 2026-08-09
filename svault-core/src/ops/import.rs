@@ -1017,9 +1017,7 @@ mod tests {
         let opts = ImportOptions {
             source: source.to_path_buf(),
             vault_root: vault.to_path_buf(),
-            strategy: crate::config::SyncStrategy(vec![
-                crate::config::TransferStrategyArg::Copy,
-            ]),
+            strategy: crate::config::SyncStrategy(vec![crate::config::TransferStrategyArg::Copy]),
             dry_run: false,
             yes: true,
             import_config: ImportConfig::default(),
@@ -1100,7 +1098,12 @@ mod tests {
         .unwrap();
         let files = plan["files"].as_array().unwrap();
         assert_eq!(files.len(), 1);
-        assert!(files[0]["src_path"].as_str().unwrap().ends_with("photo.jpg"));
+        assert!(
+            files[0]["src_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("photo.jpg")
+        );
         assert_eq!(files[0]["dest_path"].as_str().unwrap(), rel_unix);
         assert_eq!(files[0]["size"].as_u64().unwrap(), 10);
     }

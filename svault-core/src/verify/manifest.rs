@@ -259,7 +259,10 @@ impl ManifestManager {
                 .unwrap_or_default()
         };
 
-        let exact: Vec<&PathBuf> = dirs.iter().filter(|d| dir_name(d) == session_prefix).collect();
+        let exact: Vec<&PathBuf> = dirs
+            .iter()
+            .filter(|d| dir_name(d) == session_prefix)
+            .collect();
         let matches: Vec<&PathBuf> = if exact.is_empty() {
             dirs.iter()
                 .filter(|d| dir_name(d).starts_with(session_prefix))

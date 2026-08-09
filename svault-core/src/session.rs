@@ -347,10 +347,7 @@ mod tests {
         assert_eq!(stats.completed, 1);
         assert_eq!(stats.residue_files, 0);
         assert!(!staged.exists(), "staged file must be moved out");
-        assert_eq!(
-            std::fs::read(vault.join("2024/photo.jpg")).unwrap(),
-            b"abc"
-        );
+        assert_eq!(std::fs::read(vault.join("2024/photo.jpg")).unwrap(), b"abc");
         // Empty staging subtree is removed; the session dir itself stays.
         let dir = session_dir(vault, SessionType::Import, "s1");
         assert!(!staging_dir(&dir).exists());
@@ -376,10 +373,14 @@ mod tests {
         // Reported, NOT deleted (user reviews plan.json and decides).
         assert!(staged.exists());
         assert!(!vault.join("2024/partial.jpg").exists());
-        assert!(sink
-            .hints()
-            .iter()
-            .any(|h| matches!(h, Hint::SessionResidue { files: 1, bytes: 2, .. })));
+        assert!(sink.hints().iter().any(|h| matches!(
+            h,
+            Hint::SessionResidue {
+                files: 1,
+                bytes: 2,
+                ..
+            }
+        )));
     }
 
     #[test]
