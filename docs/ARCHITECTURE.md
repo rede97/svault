@@ -64,6 +64,7 @@ pub enum Event {
     SyncPlan { source_vault, identical, to_copy, .. },   // sync 比对结果
     Summary(Summary),  // import/add/verify/recheck/update/clone/sync
     Hint(Hint),        // OnlyMoved / MovedHint / NothingToUpdate / DryRunMissing
+                       // StagingReconciled / SessionResidue / StagedCommitDeferred
 }
 
 pub trait EventSink: Send + Sync {
@@ -109,6 +110,27 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `ops::verify` | DB 全量 | ✗ | ✗ | 只读 |
 | `ops::clone` | DB 全量（可过滤） | ✗ | ✓ | 目标 manifest |
 | `ops::sync` | 对端 vault DB（只读） | diff 引擎 | ✓ | ✓ + sync plan/manifest |
+
+### 3.1 阶段职责与关键决策
+
+- **Stage A/B（扫描 + CRC 预筛）**：CRC 只读源文件头/尾各 64KB（格式相关，
+  见 `media/crc.rs`），是**快速过滤器**——命中 DB 缓存则跳过传输；不参与
+  最终身份判定，不作为身份入库。全部命中时早退（`all_cache_hit`）。
+- **Lookup（查重）**：串行内联 `ops::check_duplicate`（size+CRC+扩展名），
+  在复制前分流重复，避免不必要传输。
+- **Stage C（复制，仅 import）**：先原子写 `plan.json`（复制意图，
+  **fail-fast**），再复制到会话 staging 子树并 fsync。传输策略链：
+  reflink → hardlink → stream copy 无条件兜底（`fs::try_transfer`）。
+- **Stage D（强哈希）**：对**暂存副本**算 XXH3-128（必算）/SHA-256
+  （`--full-id`/`--force`）；二次去重（DB 跨会话 + DashMap 批内）。
+- **Stage E（入库 + 原子提交）**：**整批单事务**——逐条提交比批量慢两个
+  数量级（每次 commit 一次 fsync），且全有或全无、中断无中间态；commit
+  成功后才把暂存文件逐个 rename 到最终路径；manifest 原子写入会话目录。
+- **会话对账（reconcile）**：下次 import 启动时补完成"已入库未 rename"
+  的 rename；其余中断残留**只报告不删**（核心原则 1）。
+
+故障语义与中断矩阵的权威描述在 [failure-handling.md](./failure-handling.md)
+§3.1/§5/G7。
 
 ---
 
@@ -202,3 +224,27 @@ git 复杂性的关键简化。
 
 SQLite 引擎替换（turso）**暂缓**。届时先从稳定后的 `Db` 查询面抽 `Store` trait，
 rusqlite 保持默认适配器，turso 以 feature flag 实验接入，用同一测试矩阵验证。
+
+---
+
+## 7. 源码地图（概念 → 代码）
+
+模块粒度对照表，用于按概念定位实现（模块名稳定；行号会腐烂，不写）：
+
+| 概念 | 位置 |
+|------|------|
+| 管线五阶段（scan/crc/lookup/hash/insert） | `svault-core/src/pipeline/` |
+| 用例编排（import/add/update/sync/clone/recheck） | `svault-core/src/ops/` |
+| 会话日志：plan/staging/manifest/对账 | `svault-core/src/session.rs` |
+| 事件与交互边界（R3/R4） | `svault-core/src/event.rs`（`Event` / `EventSink` / `Interactor` / `NoopSink` / `YesInteractor`） |
+| 文件传输 + 崩溃耐久原语 | `svault-core/src/fs.rs`（`transfer_file` / `atomic_commit` / `atomic_write` / `sync_file_and_dir`） |
+| 数据库（SCHEMA / 事务 / 查询 / dump） | `svault-core/src/db/` |
+| 三层哈希实现 | `svault-core/src/hash/`、`svault-core/src/media/crc.rs` |
+| 媒体格式 / EXIF / RAW ID / 复合媒体绑定 | `svault-core/src/media/` |
+| verify / 后台哈希 / hardlink 升级 / manifest 类型 | `svault-core/src/verify/` |
+| sync diff 引擎（纯函数，无 IO） | `svault-core/src/sync/diff.rs` |
+| vault 发现 / 进程锁 | `svault-core/src/context.rs` / `lock.rs` |
+| 终端渲染 / JSON sink / pipe 协议 / 交互确认 | `svault-ui/src/{terminal,json,pipe,interact}.rs` |
+| 命令入口 / 参数解析 | `svault-cli/src/{main,cli}.rs` + `svault-cli/src/commands/` |
+| E2E 框架（VaultEnv、固件工厂） | `tests/e2e/conftest.py`、`tests/e2e/fixtures/` |
+| FUSE 故障注入 | `tests/e2e/fuse_tests/` |
