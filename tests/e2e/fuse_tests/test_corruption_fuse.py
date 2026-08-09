@@ -43,9 +43,9 @@ def _vault_data_files(vault: VaultEnv) -> list[Path]:
 
 
 def _latest_recheck_report(vault: VaultEnv) -> dict:
-    """读取最新的 recheck 报告（JSON）"""
-    staging = vault.vault_dir / ".svault" / "staging"
-    reports = sorted(staging.glob("recheck_*.json"))
+    """读取最新的 recheck 报告（sessions/recheck/<ts-id>/report.json）"""
+    root = vault.vault_dir / ".svault" / "sessions" / "recheck"
+    reports = sorted(root.glob("*/report.json"))
     assert reports, "未找到 recheck 报告"
     return json.loads(reports[-1].read_text())
 

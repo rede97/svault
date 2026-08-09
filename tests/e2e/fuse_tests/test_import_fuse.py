@@ -76,15 +76,27 @@ def _wait_paused(fs: FaultInjectedFS, path: str, timeout: float = 20.0) -> bool:
     return False
 
 
+def _close_proc_pipes(proc: subprocess.Popen[str]) -> None:
+    """关闭 Popen 管道，避免 filterwarnings=error 下 ResourceWarning 误伤"""
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            pipe.close()
+
+
 def _read_manifests(vault: VaultEnv) -> list[dict]:
-    """读取全部 import manifest（JSON）"""
-    manifests_dir = vault.vault_dir / ".svault" / "manifests"
-    if not manifests_dir.exists():
+    """读取全部 import manifest（sessions/import/<ts-id>/manifest.json）"""
+    root = vault.vault_dir / ".svault" / "sessions" / "import"
+    if not root.exists():
         return []
-    return [
-        json.loads(p.read_text())
-        for p in sorted(manifests_dir.glob("import-*.json"))
-    ]
+    return [json.loads(p.read_text()) for p in sorted(root.glob("*/manifest.json"))]
+
+
+def _staged_files(vault: VaultEnv) -> list[Path]:
+    """所有会话 staging 子树中的暂存文件"""
+    root = vault.vault_dir / ".svault" / "sessions" / "import"
+    if not root.exists():
+        return []
+    return [p for p in root.glob("*/staging/**/*") if p.is_file()]
 
 
 class TestImportPauseScenarios:
@@ -123,6 +135,7 @@ class TestImportPauseScenarios:
 
         proc.terminate()  # SIGTERM
         proc.wait(timeout=15)
+        _close_proc_pipes(proc)
         assert proc.returncode != 0, "SIGTERM 应使进程非零退出"
         fs.resume()  # 释放 FUSE 线程中残留的暂停
 
@@ -176,8 +189,10 @@ class TestImportPauseScenarios:
 
         fs.resume()
         proc.wait(timeout=60)
+        stderr = proc.stderr.read()
+        _close_proc_pipes(proc)
         assert proc.returncode == 0, (
-            f"释放暂停后导入应自行完成: rc={proc.returncode} stderr={proc.stderr.read()}"
+            f"释放暂停后导入应自行完成: rc={proc.returncode} stderr={stderr}"
         )
 
         files = vault.db_files()
@@ -196,15 +211,16 @@ class TestImportPauseScenarios:
         self,
         vault_with_fuse_source: tuple,
     ) -> None:
-        """多文件场景下复制阶段暂停 + SIGTERM：孤儿文件改名重复制（OPEN-3 强锁定）
+        """多文件场景下复制阶段暂停 + SIGTERM：staging 隔离与对账报告（OPEN-3 闭环后新契约）
 
-        判据（failure-handling.md §8.2 P1、§5 恢复矩阵、OPEN-3 现行行为）：
-        1. 暂停发生在 **Stage C 复制阶段**（200KB 文件 @100KB——JPEG CRC 只读
-           头部 64KB，该偏移在 Stage B 读取范围之外，必然在复制时触发）
-        2. 等待其余 9 个文件复制完成后 SIGTERM：DB 为空（整批事务未到达），
-           vault 有 9 个完整孤儿 + 1 个截断半成品
-        3. 重跑：10 个全部入库；10 个孤儿均改名 .1 重复制 → vault 共 20 个
-           数据文件；multi_4.jpg 保持截断而 multi_4.1.jpg 完整
+        判据（failure-handling.md §8.2 P1、§5 恢复矩阵、G7，2026-08-09 起）：
+        1. 暂停发生在 **Stage C 复制阶段**（200KB 文件 @132KB——CRC 读取盲区，
+           必然在复制时触发）
+        2. 等待其余 9 个文件进入会话 staging 后 SIGTERM：DB 为空
+           （整批事务未到达）；**可见目录树零文件**——9 个完整副本 +
+           1 个截断半成品全部在 staging 子树中
+        3. 重跑：对账报告中断残留（不删除）；10 个文件全部重新复制入库，
+           可见树恰好 10 个文件（无改名重复制）；中断会话残留保留待用户处置
         """
         vault, fuse_mount, fs = vault_with_fuse_source
         file_size = 200 * 1024
@@ -232,49 +248,57 @@ class TestImportPauseScenarios:
         assert _wait_paused(fs, "/multi_4.mp4"), "导入未在 multi_4.mp4 复制阶段触发暂停"
         assert proc.poll() is None, "暂停期间导入进程应存活"
 
-        # 等其余 9 个文件复制完成（multi_4 暂停不阻塞 rayon 其他 worker）
+        # 等其余 9 个文件完成 staging 复制（multi_4 暂停不阻塞 rayon 其他 worker）
         deadline = time.time() + 60
         while time.time() < deadline:
             others = [
-                f for f in _vault_data_files(vault) if f.name != "multi_4.mp4"
+                f for f in _staged_files(vault) if f.name != "multi_4.mp4"
             ]
             if len(others) == 9:
                 break
             time.sleep(0.1)
         else:
             proc.kill()
+            _close_proc_pipes(proc)
             fs.resume()
-            pytest.fail("其余 9 个文件未在 60s 内复制完成")
-        copied_before_kill = 9
+            pytest.fail("其余 9 个文件未在 60s 内完成 staging 复制")
 
         proc.terminate()  # SIGTERM
         proc.wait(timeout=15)
+        _close_proc_pipes(proc)
         assert proc.returncode != 0
         fs.resume()
 
         # Stage E 整批单事务未到达 → DB 为空（§5 恢复矩阵）
         assert vault.db_files() == [], "整批事务未提交，DB 应为空"
 
-        # 中断现场：9 个完整孤儿 + multi_4.jpg 截断半成品
-        partial = [
-            p for p in vault.vault_dir.rglob("multi_4.mp4") if ".svault" not in p.parts
+        # staging 模型契约：可见目录树零半成品；9 完整 + 1 截断都在 staging 子树
+        visible = [
+            p for p in _vault_data_files(vault) if p.name.startswith("multi_")
         ]
+        assert visible == [], f"最终路径不得出现任何半成品: {visible}"
+        staged = _staged_files(vault)
+        assert len(staged) == 10, f"staging 应有 9 完整 + 1 截断，实际 {len(staged)}"
+        partial = [p for p in staged if p.name == "multi_4.mp4"]
         assert len(partial) == 1 and partial[0].stat().st_size < file_size, (
-            "multi_4.mp4 应是截断半成品（OPEN-3：半成品不清理）"
+            "multi_4.mp4 应是截断半成品"
         )
 
-        # 幂等重跑：全部入库；10 个孤儿（含半成品）改名 .1 重复制
+        # 重跑：对账报告残留（不删）；全部重新复制入库；可见树恰好 10 个
         result = vault.import_dir(fuse_mount)
+        combined = result.stdout + result.stderr
         assert result.returncode == 0, f"重跑失败: {result.stderr}"
+        assert "leftover" in combined or "session_residue" in combined, (
+            "对账必须报告中断会话残留"
+        )
         assert len(vault.db_files()) == 10, "重跑后 10 个文件应全部入库"
 
         vault_files = _vault_data_files(vault)
-        assert len(vault_files) == 10 + 10, (
-            f"OPEN-3：10 孤儿 + 10 改名重复制 = 20，实际 {len(vault_files)}"
+        assert len(vault_files) == 10, (
+            f"staging 模型：无改名重复制，可见树应恰好 10 个，实际 {len(vault_files)}"
         )
-        full_recopies = [f for f in vault_files if ".1." in f.name]
-        assert len(full_recopies) == copied_before_kill + 1, (
-            "9 个完整孤儿 + 1 个半成品均应改名 .1 重复制"
+        assert _staged_files(vault) != [], (
+            "中断会话的 staging 残留只报告不删，应仍然存在"
         )
 
         verify = vault.run("verify", check=False)

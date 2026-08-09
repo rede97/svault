@@ -104,6 +104,9 @@ class TestRecheckPauseScenarios:
 
         proc.terminate()  # SIGTERM
         proc.wait(timeout=15)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()  # 避免 filterwarnings=error 下 ResourceWarning 误伤
         assert proc.returncode != 0, "SIGTERM 应使进程非零退出"
         fs.resume()
 
@@ -167,6 +170,9 @@ class TestRecheckPauseScenarios:
 
         fs.resume()
         proc.wait(timeout=60)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()  # 避免 filterwarnings=error 下 ResourceWarning 误伤
         assert proc.returncode == 0, (
             f"recheck 恒 exit 0（不一致只写报告）: rc={proc.returncode}"
         )
