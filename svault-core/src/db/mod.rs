@@ -1,10 +1,10 @@
 //! SQLite database for the vault.
 //!
 //! The `files` table is the operational state index (path / size / hashes /
-//! status); `assets` and `media_groups` back media grouping (dormant until
-//! media binding lands). State changes are written in single transactions
-//! (see [`Db::with_transaction`]); per-session history lives outside the DB
-//! in `.svault/sessions/` (plan + manifest JSON), not in the database.
+//! status); `media_groups` backs media grouping (dormant until media binding
+//! lands; files reference it via `files.group_id`). State changes are written
+//! in single transactions (see [`Db::with_transaction`]); per-session history
+//! lives outside the DB in `.svault/sessions/` (plan + manifest JSON).
 
 pub mod dump;
 pub mod files;
@@ -106,15 +106,8 @@ impl Db {
 // ---------------------------------------------------------------------------
 
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS assets (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at  INTEGER NOT NULL,
-    title       TEXT
-);
-
 CREATE TABLE IF NOT EXISTS media_groups (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_id            INTEGER NOT NULL REFERENCES assets(id),
     group_type          TEXT    NOT NULL,
     content_identifier  TEXT,
     captured_at         INTEGER
