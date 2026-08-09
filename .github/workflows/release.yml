@@ -57,11 +57,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }} -p svault-cli
+        run: cross build --release --target ${{ matrix.target }} -p svault
 
       - name: Build (cargo)
         if: "!matrix.use_cross"
-        run: cargo build --release --target ${{ matrix.target }} -p svault-cli
+        run: cargo build --release --target ${{ matrix.target }} -p svault
 
       - name: Package binary (Unix)
         if: runner.os != 'Windows'
@@ -85,3 +85,5 @@ jobs:
         with:
           files: ${{ env.ASSET }}
           generate_release_notes: true
+          # 版本策略：v1.0 以下均为测试版本
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
