@@ -212,6 +212,7 @@ pub fn run_sync(
                 hash_results.push(HashResult {
                     path: dest_abs,
                     src_path: Some(src_abs),
+                    staged_path: None,
                     size: record.size as u64,
                     mtime_ms: record.mtime,
                     crc32c: record.crc32c.map(|v| v as u32).unwrap_or(0),

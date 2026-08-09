@@ -70,6 +70,12 @@ E2E 测试使用 debug 二进制，因此 `test_scan_import_pipeline.py` 不受�
 若立项实现，交互必须走 `Event`/`Interactor`，不得恢复 reporter trait。
 原设计稿可从 git 历史恢复：`git show f34d53b:docs/sync-design.md`。
 
+> **2026-08-09 部分复活**：原 sync-design 的 tmp→rename 原子提交思路已就
+> **import** 立项实现为 staging 模型（`.svault/staging/import/<session>/`
+> → fsync → hash → 整批入库 → rename + 启动对账，见 `pipeline/staging.rs`
+> 与 failure-handling.md G7）。sync/clone 仍直达最终路径；sync_journal
+> 断点续传与 recover 维持暂缓。
+
 ## 7. 已知小遗留（2026-08-04 Linux 验证确认，非 bug）
 
 1. `verify --background-hash` 的 Summary 事件未统一（用 messages 输出）

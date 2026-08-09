@@ -457,6 +457,61 @@ fn stream_copy_windows_with_progress(
 }
 
 // ---------------------------------------------------------------------------
+// Crash-durability primitives (import staging)
+// ---------------------------------------------------------------------------
+
+/// Flush a file's data and its parent directory entry to disk.
+///
+/// Called on a staged import file right after the transfer, so that the
+/// subsequent hash read is guaranteed to match durable storage even if the
+/// machine loses power before the final rename (F2 crash-consistency).
+pub fn sync_file_and_dir(path: &Path) -> FsResult<()> {
+    // Prefer a read+write handle: FlushFileBuffers on Windows requires write
+    // access, while a read-only fd is sufficient for fsync on Unix (and the
+    // file may be read-only, e.g. hardlinked from a read-only source).
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .or_else(|_| fs::File::open(path))
+        .map_err(FsError::Io)?;
+    file.sync_all().map_err(FsError::Io)?;
+    sync_parent_dir(path)
+}
+
+/// Atomically move a staged file to its final destination.
+///
+/// Creates the destination's parent directories, renames (atomic within one
+/// filesystem), then fsyncs the parent directory so the rename itself is
+/// durable across a crash. The caller is responsible for having fsynced the
+/// file data beforehand (see [`sync_file_and_dir`]).
+pub fn atomic_commit(staged: &Path, dest: &Path) -> FsResult<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(FsError::Io)?;
+    }
+    fs::rename(staged, dest).map_err(FsError::Io)?;
+    sync_parent_dir(dest)
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> FsResult<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let dir = fs::File::open(parent).map_err(FsError::Io)?;
+        dir.sync_all().map_err(FsError::Io)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> FsResult<()> {
+    // Directory fsync is not supported on Windows; the file-level
+    // FlushFileBuffers in `sync_file_and_dir` still applies.
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Capability probing
 // ---------------------------------------------------------------------------
 

@@ -170,4 +170,5 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 | 2026-04-16 | **Clone/Sync 实现**：Beyond Compare 风格（ARCHITECTURE.md §6）；纯函数 diff 引擎（11 单测）；turso 降至最低优先级 |
 | 2026-08-05 | 新增 `docs/failure-handling.md`：故障处理决策矩阵（三轮代码核查生成），作为故障注入测试判据单一事实源；含缺陷登记（BUG-1~4）与待拍板项（OPEN-1~7） |
 | 2026-08-05 | 文档清理：删除 CLAUDE.md 陈旧内容/testing-plan/HANDOFF-LINUX/sync-design（recover 设计抢救入 PARKED §6）；FUSE 故障注入落地：INFRA-1/2/4 + P0/P1/P2 共 20 例全绿；修复 BUG-1（哈希错误误分类） |
-| 2026-08-06 | **E2E 套件重设计**（220→167）：删 60 冗余用例、修 dedup 同名类遮蔽死代码、chaos/background-hash 合并、6 弱断言加固、套件宪法入 tests/e2e/README.md；修复 scan 协议转义缺陷（空格文件名管线导入） |
+|2026-08-06|**E2E 套件重设计**（220→167）：删 60 冗余用例、修 dedup 同名类遮蔽死代码、chaos/background-hash 合并、6 弱断言加固、套件宪法入 tests/e2e/README.md；修复 scan 协议转义缺陷（空格文件名管线导入）|
+|2026-08-09|**import staging 原子提交**（OPEN-3 闭环）：复制入 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 → commit 后 rename（`pipeline/staging.rs`、`fs::atomic_commit`）；启动对账补 rename/清残留；G1 精确化为"不删除用户文件"；+7 单测 +2 E2E|

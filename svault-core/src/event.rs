@@ -181,6 +181,17 @@ pub enum Hint {
     NothingToUpdate,
     /// `update --dry-run`: this many records would be marked missing.
     DryRunMissing { count: usize },
+    /// `import` reconciled staging leftovers from an interrupted session:
+    /// `completed` pending renames were finished, `purged` incomplete
+    /// residue files (created by svault inside `.svault/staging/`) removed.
+    StagingReconciled { completed: usize, purged: usize },
+    /// A staged file could not be renamed to its final destination after
+    /// the DB commit; the rename is retried at the start of the next import.
+    StagedCommitDeferred {
+        staged: PathBuf,
+        dest: PathBuf,
+        error: String,
+    },
 }
 
 /// Directory context of a running phase, used by sinks to display

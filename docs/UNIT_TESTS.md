@@ -2,7 +2,7 @@
 
 > 本文档跟踪所有单元测试和集成测试的状态，随时更新。
 >
-> 最后更新：2026-08-05（FUSE 故障注入 P0–P2 落地）
+> 最后更新：2026-08-09（import staging 原子提交 + 对账）
 
 ---
 
@@ -10,10 +10,20 @@
 
 | 类型 | 数量 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| 单元测试 (svault-core) | 154 | 154 | 0 | 0 |
+| 单元测试 (svault-core) | 161 | 161 | 0 | 0 |
 | 单元测试 (svault-ui / svault-cli) | 6 | 6 | 0 | 2 ignored |
-| Python E2E 测试 (Linux) | 167 执行（158 函数） | 167 | 0 | 环境性 skip |
+| Python E2E 测试 (Linux) | 169 执行 | 169 | 0 | 环境性 skip |
 | FUSE 故障注入 (Linux, `fuse_tests/`) | 21 | 17 | 0 | 4（P2 待设施） |
+
+> **2026-08-09 import staging 原子提交（OPEN-3 闭环）：**
+> - import 改走 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 →
+>   commit 后 rename；不变量"最终路径可见 ⟹ 已完整复制+哈希+入库"
+> - 启动对账 `pipeline::staging::reconcile`：补 rename（已入库）/ 清残留（未入库）
+> - +7 单测：staging 对账 ×5（`pipeline/staging.rs`）、import 端到端 ×2
+>   （`run_import_commits_staged_files_and_leaves_no_residue` /
+>   `rerun_import_is_idempotent_with_staging`）
+> - +2 E2E：`TestStagingReconcile`（无残留契约、对账补 rename+清残留）
+> - 判据更新：failure-handling.md G1 精确化 / G7 重写 / §3.1 / §5
 
 > **2026-08-06 E2E 套件重设计（220 → 167）：**
 > - 删除 60 个冗余/零价值用例（五组，评估记录见会话与提交 `test: redesign`）；

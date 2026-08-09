@@ -98,6 +98,7 @@ pub fn run_add(opts: AddOptions, db: &Db, sink: &dyn EventSink) -> anyhow::Resul
                 mtime_ms: result.file.mtime_ms,
             },
             src_path: None,
+            staged_path: None,
             crc32c: crc,
             raw_unique_id,
             precomputed_hash: None,

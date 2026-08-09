@@ -263,6 +263,63 @@ class TestFallbackAndCorruptedFiles:
 
 
 # =============================================================================
+# Staging 原子提交（failure-handling G7，2026-08-09 起）
+# =============================================================================
+
+class TestStagingReconcile:
+    """staging 模型契约：半成品不进入最终路径；启动对账补 rename / 清残留"""
+
+    @staticmethod
+    def staging_root(vault: VaultEnv) -> Path:
+        return vault.vault_dir / ".svault" / "staging" / "import"
+
+    def test_successful_import_leaves_no_staging_residue(self, vault: VaultEnv) -> None:
+        """成功导入后 staging 目录整体消失，文件在最终路径"""
+        create_minimal_jpeg(vault.source_dir / "a.jpg", "STAGED_OK")
+
+        result = vault.import_dir(vault.source_dir)
+        assert result.returncode == 0
+
+        assert not self.staging_root(vault).exists(), "staging 目录必须被清理"
+        visible = [
+            p for p in vault.vault_dir.rglob("*.jpg") if ".svault" not in p.parts
+        ]
+        assert len(visible) == 1
+
+    def test_reconcile_completes_rename_and_purges_residue(
+        self, vault: VaultEnv
+    ) -> None:
+        """对账两类残留：有 DB 记录的补 rename；无记录的半成品清除"""
+        src = vault.source_dir / "a.jpg"
+        create_minimal_jpeg(src, "STAGED_RECOVER")
+        assert vault.import_dir(vault.source_dir).returncode == 0
+
+        final = next(
+            p for p in vault.vault_dir.rglob("a.jpg") if ".svault" not in p.parts
+        )
+        original_bytes = final.read_bytes()
+
+        staging = self.staging_root(vault) / "999"
+        # 情形 1：DB commit 后、rename 前被杀——文件回到 staging，DB 有记录
+        staged_recorded = staging / final.relative_to(vault.vault_dir)
+        staged_recorded.parent.mkdir(parents=True)
+        final.rename(staged_recorded)
+        # 情形 2：复制中途被杀——staging 里有无 DB 记录的半成品
+        partial = staging / "orphan" / "partial.jpg"
+        partial.parent.mkdir(parents=True)
+        partial.write_bytes(b"partial")
+
+        result = vault.import_dir(vault.source_dir)
+        assert result.returncode == 0
+
+        assert final.exists(), "有 DB 记录的暂存文件必须被补 rename"
+        assert final.read_bytes() == original_bytes
+        assert not partial.exists(), "无记录的半成品必须被清除"
+        assert not self.staging_root(vault).exists(), "staging 目录必须被清理"
+
+
+
+# =============================================================================
 # Test Architecture Notes
 # =============================================================================
 

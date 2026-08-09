@@ -23,7 +23,7 @@ use rayon::prelude::*;
 
 use crate::config::{ImportConfig, SyncStrategy};
 use crate::db::Db;
-use crate::event::{Event, EventSink, Interactor, ItemStatus, Phase, PhaseContext, Summary};
+use crate::event::{Event, EventSink, Hint, Interactor, ItemStatus, Phase, PhaseContext, Summary};
 use crate::fs::transfer_file;
 use crate::ops::check_duplicate;
 use crate::ops::exif::read_exif_date_device;
@@ -149,6 +149,7 @@ fn build_crc_entry(path: &Path) -> anyhow::Result<pipeline::types::CrcEntry> {
             mtime_ms,
         },
         src_path: None,
+        staged_path: None,
         crc32c: crc,
         raw_unique_id,
         precomputed_hash: None,
@@ -221,6 +222,53 @@ fn resolve_unique_dest(
     parent.join(format!("{}.{}{}", stem, ts, ext))
 }
 
+/// A file queued for Stage C: source, final destination, staging path, and
+/// the metadata carried through to the later pipeline stages.
+struct PreparedCopy {
+    src: PathBuf,
+    dest: PathBuf,
+    staged: PathBuf,
+    size: u64,
+    mtime_ms: i64,
+    crc32c: u32,
+    raw_unique_id: Option<String>,
+}
+
+/// Sink wrapper used during Stage C: rewrites staging paths to the final
+/// destination in copy events, so the UI shows where each file will end up
+/// rather than the transient `.svault/staging/` location.
+struct StagingSink<'a> {
+    inner: &'a dyn EventSink,
+    session_dir: &'a Path,
+    vault_root: &'a Path,
+}
+
+impl StagingSink<'_> {
+    fn unstage(&self, path: &Path) -> PathBuf {
+        path.strip_prefix(self.session_dir)
+            .map(|rel| self.vault_root.join(rel))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+impl EventSink for StagingSink<'_> {
+    fn emit(&self, event: &Event) {
+        match event {
+            Event::CopyStarted { src, dst, bytes } => self.inner.emit(&Event::CopyStarted {
+                src: src.clone(),
+                dst: self.unstage(dst),
+                bytes: *bytes,
+            }),
+            Event::CopyFinished { src, dst, error } => self.inner.emit(&Event::CopyFinished {
+                src: src.clone(),
+                dst: self.unstage(dst),
+                error: error.clone(),
+            }),
+            other => self.inner.emit(other),
+        }
+    }
+}
+
 impl ImportOptions {
     /// Run the full import pipeline.
     ///
@@ -236,6 +284,10 @@ impl ImportOptions {
         let source_canon =
             dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
         let source_canon = normalize_path(&source_canon);
+
+        // Finish or purge staging leftovers from an interrupted import
+        // before scanning, so freed paths are available to this run.
+        pipeline::staging::reconcile(&self.vault_root, db, sink);
 
         sink.emit(&Event::PhaseStarted {
             phase: Phase::Scan,
@@ -309,6 +361,7 @@ impl ImportOptions {
                     mtime_ms: result.file.mtime_ms,
                 },
                 src_path: None,
+                staged_path: None,
                 crc32c: crc,
                 raw_unique_id: result.raw_unique_id,
                 precomputed_hash: None,
@@ -484,10 +537,17 @@ impl ImportOptions {
         }
 
         // ── Stage C ───────────────────────────────────────────────────────────
+        // One staging session per import run: files are copied into
+        // `.svault/staging/import/<session_id>/` and only renamed to their
+        // final destination after the Stage-E DB transaction commits.
+        let session_id = session_id_now();
+        let staging_dir = pipeline::staging::session_dir(&self.vault_root, &session_id);
+
         let (copied, copy_error_count) = Self::stage_copy(
             new_files,
             &source_canon,
             &self.vault_root,
+            &staging_dir,
             &self.strategy,
             &self.import_config,
             sink,
@@ -509,6 +569,8 @@ impl ImportOptions {
             hash_results,
             &self.vault_root,
             &source_canon,
+            &session_id,
+            &staging_dir,
             self.force,
             db,
             state.total_files,
@@ -522,20 +584,26 @@ impl ImportOptions {
 
     // ── Stage functions (associated, no self) ─────────────────────────────────
 
-    /// Stage C: copy files from source to vault.
+    /// Stage C: copy files from source into the vault staging area.
+    ///
+    /// Each file is transferred to `staging_dir` (mirroring its final
+    /// relative path) and fsynced; it is only renamed to the final
+    /// destination after the Stage-E DB commit, so an interrupted copy never
+    /// pollutes the user-visible vault tree.
     ///
     /// Returns the successfully copied entries (as `CrcEntry` with `src_path`
-    /// set) and the number of copy errors.
+    /// and `staged_path` set) and the number of copy errors.
     fn stage_copy(
         new_files: Vec<pipeline::types::CrcEntry>,
         source_canon: &Path,
         vault_root: &Path,
+        staging_dir: &Path,
         strategy: &SyncStrategy,
         import_config: &ImportConfig,
         sink: &dyn EventSink,
     ) -> (Vec<pipeline::types::CrcEntry>, usize) {
         // Resolve destination paths up-front (serial, EXIF-aware)
-        let mut prepared: Vec<(PathBuf, PathBuf, u64, i64, u32, Option<String>)> = Vec::new();
+        let mut prepared: Vec<PreparedCopy> = Vec::new();
         let mut assigned = std::collections::HashSet::new();
 
         for entry in &new_files {
@@ -550,19 +618,26 @@ impl ImportOptions {
             let unique_dest =
                 resolve_unique_dest(&dest_abs, &import_config.rename_template, &assigned);
             assigned.insert(unique_dest.clone());
+            let staged = pipeline::staging::staged_path_for(staging_dir, vault_root, &unique_dest);
 
-            prepared.push((
-                entry.file.path.clone(),
-                unique_dest,
-                entry.file.size,
-                entry.file.mtime_ms,
-                entry.crc32c,
-                entry.raw_unique_id.clone(),
-            ));
+            prepared.push(PreparedCopy {
+                src: entry.file.path.clone(),
+                dest: unique_dest,
+                staged,
+                size: entry.file.size,
+                mtime_ms: entry.file.mtime_ms,
+                crc32c: entry.crc32c,
+                raw_unique_id: entry.raw_unique_id.clone(),
+            });
         }
 
         let total = prepared.len() as u64;
         let transfer_strategies = strategy.to_transfer_strategies();
+        let staging_sink = StagingSink {
+            inner: sink,
+            session_dir: staging_dir,
+            vault_root,
+        };
 
         sink.emit(&Event::PhaseStarted {
             phase: Phase::Copy,
@@ -572,46 +647,60 @@ impl ImportOptions {
 
         let copied: Vec<pipeline::types::CrcEntry> = prepared
             .into_par_iter()
-            .filter_map(|(src, dest, size, mtime, crc, raw_id)| {
-                // Create parent directory
-                if let Some(parent) = dest.parent()
-                    && let Err(e) = fs::create_dir_all(parent)
-                {
-                    sink.emit(&Event::CopyStarted {
-                        src: src.clone(),
-                        dst: dest.clone(),
-                        bytes: size,
-                    });
-                    sink.emit(&Event::CopyFinished {
-                        src: src.clone(),
-                        dst: dest.clone(),
-                        error: Some(e.to_string()),
-                    });
-                    return None;
-                }
-
+            .filter_map(|item| {
+                let PreparedCopy {
+                    src,
+                    dest,
+                    staged,
+                    size,
+                    mtime_ms,
+                    crc32c,
+                    raw_unique_id,
+                } = item;
                 let src_rel = src.strip_prefix(source_canon).unwrap_or(&src);
-                match transfer_file(
+                let transferred = transfer_file(
                     source_canon,
                     src_rel,
                     vault_root,
-                    &dest,
+                    &staged,
                     &transfer_strategies,
-                    Some(sink),
-                ) {
-                    Ok(_) => Some(pipeline::types::CrcEntry {
-                        file: pipeline::types::FileEntry {
-                            path: dest,
-                            size,
-                            mtime_ms: mtime,
-                        },
-                        src_path: Some(src),
-                        crc32c: crc,
-                        raw_unique_id: raw_id,
-                        precomputed_hash: None,
-                    }),
-                    Err(_) => None,
+                    Some(&staging_sink),
+                );
+                // Fsync the staged copy so the Stage-D hash read is
+                // guaranteed to match durable storage even on power loss.
+                let ok = match transferred {
+                    Ok(()) => match crate::fs::sync_file_and_dir(&staged) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            // transfer_file already reported success; surface
+                            // the fsync failure explicitly.
+                            sink.emit(&Event::CopyFinished {
+                                src: src.clone(),
+                                dst: dest.clone(),
+                                error: Some(e.to_string()),
+                            });
+                            false
+                        }
+                    },
+                    // transfer_file already emitted CopyFinished with the error.
+                    Err(_) => false,
+                };
+
+                if !ok {
+                    return None;
                 }
+                Some(pipeline::types::CrcEntry {
+                    file: pipeline::types::FileEntry {
+                        path: dest,
+                        size,
+                        mtime_ms,
+                    },
+                    src_path: Some(src),
+                    staged_path: Some(staged),
+                    crc32c,
+                    raw_unique_id,
+                    precomputed_hash: None,
+                })
             })
             .collect();
 
@@ -659,11 +748,18 @@ impl ImportOptions {
     }
 
     /// Stage E: batch-insert records into the DB and write the import manifest.
+    ///
+    /// Crash-safe ordering: the DB transaction commits first (recording the
+    /// final paths), then each committed staged file is atomically renamed
+    /// to its final destination. If the process dies between commit and
+    /// rename, the next import's staging reconcile finishes the renames.
     #[allow(clippy::too_many_arguments)]
     fn stage_insert(
         hash_results: Vec<pipeline::types::HashResult>,
         vault_root: &Path,
         source_root: &Path,
+        session_id: &str,
+        staging_dir: &Path,
         force: bool,
         db: &Db,
         total_files: usize,
@@ -672,7 +768,6 @@ impl ImportOptions {
         sink: &dyn EventSink,
     ) -> anyhow::Result<ImportSummary> {
         let insert_count = hash_results.len() as u64;
-        let session_id = session_id_now();
 
         sink.emit(&Event::PhaseStarted {
             phase: Phase::Insert,
@@ -692,7 +787,7 @@ impl ImportOptions {
 
         let insert_opts = pipeline::insert::InsertOptions {
             vault_root,
-            session_id: &session_id,
+            session_id,
             write_manifest: true,
             source_root: Some(source_root),
             force,
@@ -701,6 +796,35 @@ impl ImportOptions {
 
         let result =
             pipeline::insert::batch_insert(hash_results, db, insert_opts, Some(&progress_cb))?;
+
+        // The DB transaction has committed: make the committed files visible
+        // by atomically renaming them out of the staging area. A rename
+        // failure is non-fatal — the file stays staged with a valid DB
+        // record and the next import's reconcile finishes the rename.
+        let mut deferred = 0usize;
+        for (staged, dest) in &result.staged_commits {
+            if let Err(e) = crate::fs::atomic_commit(staged, dest) {
+                deferred += 1;
+                sink.emit(&Event::Hint(Hint::StagedCommitDeferred {
+                    staged: staged.clone(),
+                    dest: dest.clone(),
+                    error: e.to_string(),
+                }));
+            }
+        }
+
+        // Everything left in the session dir is residue of files that never
+        // entered the transaction (copy/hash failures, Stage-D duplicates):
+        // svault-internal leftovers, safe to purge. Skip cleanup entirely
+        // when a rename was deferred — those staged files hold the only copy
+        // of DB-recorded content and must survive for the next reconcile.
+        if deferred == 0 {
+            let _ = fs::remove_dir_all(staging_dir);
+            // Drop the now-empty staging root (remove_dir only succeeds on an
+            // empty directory; `.svault/staging/` itself is shared with
+            // recheck reports and left alone).
+            let _ = fs::remove_dir(pipeline::staging::staging_root(vault_root));
+        }
 
         let done = progress.load(std::sync::atomic::Ordering::Relaxed);
         if done < insert_count {
@@ -849,5 +973,95 @@ mod tests {
     #[test]
     fn test_normalize_path_empty_becomes_unix_root() {
         assert_eq!(normalize_path(Path::new("")), PathBuf::from("/"));
+    }
+
+    // ── staging end-to-end ────────────────────────────────────────────────
+
+    /// Run a full import over `source` into `vault` and return the summary.
+    fn run_test_import(source: &Path, vault: &Path, db: &Db) -> ImportSummary {
+        let opts = ImportOptions {
+            source: source.to_path_buf(),
+            vault_root: vault.to_path_buf(),
+            strategy: crate::config::SyncStrategy(vec![
+                crate::config::TransferStrategyArg::Copy,
+            ]),
+            dry_run: false,
+            yes: true,
+            import_config: ImportConfig::default(),
+            force: false,
+            full_id: false,
+            show_dup: false,
+            files_from: None,
+        };
+        opts.run_import(db, &crate::event::NoopSink, &crate::event::YesInteractor)
+            .unwrap()
+    }
+
+    /// Locate the single imported file below the vault (outside `.svault`).
+    fn find_imported_file(vault: &Path, name: &str) -> PathBuf {
+        walkdir::WalkDir::new(vault)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|e| e.into_path())
+            .find(|p| {
+                p.file_name().map(|n| n == name).unwrap_or(false)
+                    && !p.starts_with(vault.join(".svault"))
+            })
+            .unwrap_or_else(|| panic!("{name} not found in vault"))
+    }
+
+    #[test]
+    fn run_import_commits_staged_files_and_leaves_no_residue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let vault = tmp.path().join("vault");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(source.join("photo.jpg"), b"jpeg-bytes").unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        let summary = run_test_import(&source, &vault, &db);
+
+        assert_eq!(summary.imported, 1);
+        assert_eq!(summary.failed, 0);
+
+        // The file is visible at its final path with intact content…
+        let dest = find_imported_file(&vault, "photo.jpg");
+        assert_eq!(fs::read(&dest).unwrap(), b"jpeg-bytes");
+
+        // …its DB record points at that same path…
+        let rel = dest.strip_prefix(&vault).unwrap().to_string_lossy();
+        let record = db
+            .get_file_by_path(&rel.replace('\\', "/"))
+            .unwrap()
+            .expect("DB record must exist for the committed file");
+        assert_eq!(record.status, "imported");
+
+        // …and the staging area is gone entirely.
+        assert!(
+            !pipeline::staging::staging_root(&vault).exists(),
+            "staging area must be cleaned up after a successful import"
+        );
+    }
+
+    #[test]
+    fn rerun_import_is_idempotent_with_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let vault = tmp.path().join("vault");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(source.join("photo.jpg"), b"jpeg-bytes").unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        let first = run_test_import(&source, &vault, &db);
+        assert_eq!(first.imported, 1);
+
+        // Second run: CRC short-circuit — no copy, no insert, no staging.
+        let second = run_test_import(&source, &vault, &db);
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.duplicate, 1);
+        assert!(second.all_cache_hit);
+        assert!(!pipeline::staging::staging_root(&vault).exists());
     }
 }

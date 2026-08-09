@@ -195,6 +195,14 @@ pub fn batch_insert(
             });
         }
 
+        // Staged files become visible at their final path only after the
+        // DB transaction commits; the caller performs the renames.
+        if let Some(staged) = &r.staged_path {
+            summary
+                .staged_commits
+                .push((staged.clone(), r.path.clone()));
+        }
+
         files_to_insert.push(r);
     }
 
@@ -380,6 +388,7 @@ mod tests {
                   hash_error: Option<String>| HashResult {
             path: PathBuf::from(format!("/vault/2024/{path}")),
             src_path: Some(PathBuf::from(format!("/src/{path}"))),
+            staged_path: None,
             size: 10,
             mtime_ms: 0,
             crc32c: 42,
@@ -444,6 +453,7 @@ mod tests {
         let results = vec![HashResult {
             path: vault_root.join("2024/eio.jpg"),
             src_path: Some(PathBuf::from("/src/eio.jpg")),
+            staged_path: None,
             size: 10,
             mtime_ms: 0,
             crc32c: 42,

@@ -27,13 +27,15 @@
 //!                     src_path = None (not needed yet)
 //!                     
 //! Stage C (copy):     src_path = source path
-//!                     dest_path = vault path (e.g., 2024/01-01/iPhone/photo.jpg)
-//!                     
-//! Stage D (hash):     path = vault path
+//!                     file.path = final vault path (e.g., 2024/01-01/iPhone/photo.jpg)
+//!                     staged_path = staging copy under .svault/staging/import/<session>/
+//!
+//! Stage D (hash):     reads staged_path; path = final vault path
 //!                     src_path = source path (preserved from Stage C)
-//!                     
-//! Stage E (insert):   DB: path (vault path)
+//!
+//! Stage E (insert):   DB: path (final vault path)
 //!                     Manifest: src_path (source path for recheck)
+//!                     After commit: staged_path atomically renamed to path
 //! ```
 //!
 //! ## Path Flow in Add Pipeline
@@ -66,6 +68,13 @@ pub struct CrcEntry {
     /// Original source path (outside vault). Populated during import,
     /// None for add command since source equals destination.
     pub src_path: Option<PathBuf>,
+    /// Staged copy location under `.svault/staging/import/<session>/`.
+    ///
+    /// Set by Stage C (import only): the file is copied there first and
+    /// only renamed to `file.path` after the DB transaction commits, so a
+    /// partially copied file never appears at its final path. Stage D reads
+    /// from this path. `None` for `add` (file is already in the vault).
+    pub staged_path: Option<PathBuf>,
     pub crc32c: u32,
     pub raw_unique_id: Option<String>,
     /// Pre-computed strong hash (if --hash fast mode enabled).
@@ -79,6 +88,7 @@ impl CrcEntry {
         Self {
             file,
             src_path: None,
+            staged_path: None,
             crc32c,
             raw_unique_id: None,
             precomputed_hash: None,
@@ -134,6 +144,9 @@ pub struct HashResult {
     /// Only populated for import command; None for add command.
     /// Used for manifest recording and recheck operations.
     pub src_path: Option<PathBuf>,
+    /// Staged copy location (import only), carried through from `CrcEntry`.
+    /// Stage E renames it to `path` only after the DB transaction commits.
+    pub staged_path: Option<PathBuf>,
     pub size: u64,
     pub mtime_ms: i64,
     pub crc32c: u32,
@@ -223,6 +236,12 @@ pub struct PipelineSummary {
     pub manifest_path: Option<PathBuf>,
     /// All files were cache hits (no new files)
     pub all_cache_hit: bool,
+    /// `(staged, final)` pairs whose DB records were committed by Stage E.
+    ///
+    /// The caller MUST atomically rename each staged file to its final path
+    /// (see [`crate::fs::atomic_commit`]); only then does the file become
+    /// visible in the vault tree. Empty for `add`/`sync` (no staging).
+    pub staged_commits: Vec<(PathBuf, PathBuf)>,
 }
 
 impl PipelineSummary {

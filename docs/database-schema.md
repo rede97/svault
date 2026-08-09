@@ -22,6 +22,7 @@
 |------|------|
 | `.svault/manifests/<type>-<session>.json` | 导入/同步清单（`recheck` 的输入） |
 | `.svault/staging/recheck_<session>.json` | recheck 报告 |
+| `.svault/staging/import/<session>/` | import 暂存区（复制→哈希→入库→rename 的暂存；中断残留由下次 import 对账清理） |
 | `.svault/lock` | 进程咨询锁 |
 
 ---

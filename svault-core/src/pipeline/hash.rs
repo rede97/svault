@@ -30,7 +30,10 @@ pub fn compute_hashes(
     entries
         .into_par_iter()
         .map(|entry| {
+            // Events report the final vault path; the actual read happens on
+            // the staged copy when Stage C produced one (import staging).
             let abs_path = &entry.file.path;
+            let read_path = entry.staged_path.as_deref().unwrap_or(abs_path);
             let size = entry.file.size;
 
             if let Some(s) = sink {
@@ -41,7 +44,7 @@ pub fn compute_hashes(
             }
 
             // Always compute XXH3-128 for deduplication
-            let xxh3_128 = match xxh3_128_file(abs_path) {
+            let xxh3_128 = match xxh3_128_file(read_path) {
                 Ok(h) => h.to_bytes().to_vec(),
                 Err(e) => {
                     let err_msg = format!("xxh3_128 error: {e}");
@@ -55,6 +58,7 @@ pub fn compute_hashes(
                     return HashResult {
                         path: abs_path.clone(),
                         src_path: entry.src_path.clone(),
+                        staged_path: entry.staged_path.clone(),
                         size,
                         mtime_ms: entry.file.mtime_ms,
                         crc32c: entry.crc32c,
@@ -69,7 +73,7 @@ pub fn compute_hashes(
 
             // Optionally compute SHA-256 for definitive identity
             let (hash, err) = if compute_sha256 {
-                match sha256_file(abs_path) {
+                match sha256_file(read_path) {
                     Ok(h) => (FileHash::Full(xxh3_128, h.to_bytes().to_vec()), None),
                     Err(e) => {
                         let err_msg = format!("sha256 error: {e}");
@@ -93,6 +97,7 @@ pub fn compute_hashes(
                 return HashResult {
                     path: abs_path.clone(),
                     src_path: entry.src_path.clone(),
+                    staged_path: entry.staged_path.clone(),
                     size,
                     mtime_ms: entry.file.mtime_ms,
                     crc32c: entry.crc32c,
@@ -107,6 +112,7 @@ pub fn compute_hashes(
             HashResult {
                 path: abs_path.clone(),
                 src_path: entry.src_path,
+                staged_path: entry.staged_path,
                 size,
                 mtime_ms: entry.file.mtime_ms,
                 crc32c: entry.crc32c,

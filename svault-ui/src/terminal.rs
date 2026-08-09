@@ -936,6 +936,34 @@ impl TerminalSink {
             Hint::DryRunMissing { count } => {
                 self.println(format!("Files to mark as missing: {}", count));
             }
+            Hint::StagingReconciled { completed, purged } => {
+                let mut parts = Vec::new();
+                if *completed > 0 {
+                    parts.push(format!(
+                        "finished {} pending file(s)",
+                        style(completed).green()
+                    ));
+                }
+                if *purged > 0 {
+                    parts.push(format!(
+                        "removed {} incomplete file(s)",
+                        style(purged).yellow()
+                    ));
+                }
+                self.println(format!(
+                    "{} interrupted import recovered: {}",
+                    style("Note:").bold().cyan(),
+                    parts.join(", ")
+                ));
+            }
+            Hint::StagedCommitDeferred { dest, error, .. } => {
+                self.println(format!(
+                    "{} could not move {} into place ({}); will retry on next import",
+                    style("Warning:").bold().yellow(),
+                    dest.display(),
+                    error
+                ));
+            }
         }
     }
 }

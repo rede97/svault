@@ -133,6 +133,7 @@ pub fn split_results(results: Vec<CrcResult>) -> (Vec<CrcEntry>, Vec<CrcResult>)
                 entries.push(CrcEntry {
                     file: r.file,
                     src_path: None, // Path is already the source path
+                    staged_path: None,
                     crc32c: crc,
                     raw_unique_id: r.raw_unique_id,
                     precomputed_hash: None,

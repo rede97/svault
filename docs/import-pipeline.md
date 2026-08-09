@@ -284,20 +284,35 @@ Proceed with import? [y/N]
 > **设计变更（2026-04）**：早期设计的 `.pending` 续传文件从未实现，
 > 已于架构重构时移除。中断恢复依赖的是 CRC32C 缓存 + 三层哈希去重——
 > 重新执行同一导入命令即可幂等续传，不需要额外状态文件。
+>
+> **设计变更（2026-08-09）**：引入 staging 原子提交——复制目标是
+> `.svault/staging/import/<session>/`，入库 commit 后才 rename 到最终路径，
+> 半成品不再污染最终路径（见下文 Stage C/E 与"原子性与可恢复性"）。
 
-### Stage C：复制阶段
+### Stage C：复制阶段（staging 原子提交，2026-08-09 起）
 
-文件直接复制到最终路径（由 `path_template` 解析）。
+文件先复制到 `.svault/staging/import/<session_id>/`（镜像最终相对路径），
+而非直接落到最终路径；传输成功后 fsync 暂存副本。
+最终路径由 `path_template` 解析，rename 前不创建。
 传输策略优先级：`reflink` → `hardlink` → `copy`（`copy` 始终兜底）。
 
 ### Stage D：哈希阶段
 
-复制完成后计算强哈希（XXH3-128 必算，`--full-id`/`--force` 时加算 SHA-256），
-并做第二轮去重（防 batch 内重复与并发竞态）。
+对**暂存副本**计算强哈希（XXH3-128 必算，`--full-id`/`--force` 时加算 SHA-256），
+并做第二轮去重（防 batch 内重复与并发竞态）。判重的暂存副本不入库，
+由 Stage E 后清理/下次对账清除，不再残留于最终路径。
 
-### Stage E：数据库写入
+### Stage E：数据库写入 + 原子提交
 
-批量事务入库，写入 manifest（`.svault/manifests/<type>-<session>.json`）：
+批量事务入库（记录的是**最终路径**），写入 manifest
+（`.svault/manifests/<type>-<session>.json`）；事务提交成功后才将暂存文件
+逐个原子 rename 到最终路径（`fs::atomic_commit`：rename + 目录 fsync）。
+
+**不变量：最终路径可见 ⟹ 已完整复制 + 哈希 + 入库。**
+commit 后、rename 前进程被杀时，文件留在 staging 且 DB 有记录；下次
+import 启动时 `pipeline::staging::reconcile` 对账：有 `imported` 记录的
+补 rename，无记录的暂存残留（中断半成品/重复副本）清除。
+详细中断语义见 [failure-handling.md](./failure-handling.md) §3.1/§5/G7。
 
 ```
 Import operation completed
@@ -307,12 +322,20 @@ Import operation completed
   Manifest: .svault/manifests/import-1710518400.json
 ```
 
-### 原子性与可恢复性
+### 原子性与可恢复性（2026-08-09 重写）
 
-- 复制直接到最终路径，DB 用事务写入，未提交自动回滚（WAL 模式）
-- 中断后直接重新执行导入命令：CRC32C 缓存命中使已入库文件秒级跳过，
-  已复制未入库的文件由 Stage D 的去重识别为重复，不会重复入库
-- 已复制但未入库的孤儿文件可通过 `svault add` 补录
+- 复制进入 `.svault/staging/import/<session>/`，DB 整批单事务写入（WAL 模式），
+  未提交自动回滚；**commit 成功后才 rename 到最终路径**（tmp→fsync→hash→
+  入库→rename，staging 原子提交）。
+- 不变量：**最终路径可见 ⟹ 已完整复制 + 哈希 + 入库**；中断的半成品永不
+  出现在用户可见目录树。
+- 中断后重新执行导入命令：
+  - 已入库文件：CRC32C 缓存命中秒级跳过；
+  - "已入库未 rename"：启动对账（`pipeline::staging::reconcile`）补 rename；
+  - "已复制未入库"：staging 残留由对账清除后重新复制（不做断点续传，
+    判据见 failure-handling.md §5 注）。
+- 断点续传（利用 staging 残留）是已暂缓的 sync_journal 范畴，见
+  [PARKED.md](./PARKED.md) §6。
 
 ---
 
