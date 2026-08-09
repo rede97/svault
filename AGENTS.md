@@ -68,6 +68,7 @@ cargo run -p svault -- import <source-dir>
 | [docs/cli.md](./docs/cli.md) | CLI 使用文档 |
 | [docs/database-schema.md](./docs/database-schema.md) | 数据库结构与磁盘布局 |
 | [docs/file-identity.md](./docs/file-identity.md) | 三层哈希与文件身份 |
+| [docs/media-binding.md](./docs/media-binding.md) | 媒体绑定实施计划（Live Photo / RAW+JPEG 配对） |
 | [tests/e2e/README.md](./tests/e2e/README.md) | E2E 套件宪法（一测试一契约等） |
 | [README.md](./README.md) | 用户面向的项目介绍 |
 

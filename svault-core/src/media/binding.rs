@@ -4,6 +4,12 @@
 //! - Live Photo: .heic/.jpg + .mov pairs
 //! - RAW+JPG: .dng/.arw/etc + .jpg pairs
 //! - Burst sequences: numbered files
+//!
+//! Pairing is currently filename-based only (same file stem) and the results
+//! are computed in memory without persistence. The roadmap (EXIF-fingerprint
+//! pairing for RAW+JPEG, Apple ContentIdentifier validation for Live Photo,
+//! import wiring + `media_groups` persistence) lives in
+//! `docs/media-binding.md`.
 
 use super::{MediaInfo, Path, Result};
 use crate::media::formats::{FormatCategory, MediaFormat};
