@@ -14,7 +14,25 @@
 | `files` | 文件记录（运行时状态索引：路径/大小/哈希/状态） |
 | `assets` | 资产（媒体组的容器） |
 | `media_groups` | 复合媒体组（Live Photo、RAW+JPEG 等） |
-| `derivatives` | 派生文件（缩略图、转码等，预留） |
+
+### 场景对照（哪个功能用哪张表）
+
+| 场景 | 表 | 读/写 |
+|------|----|------|
+| `import` / `add` 查重（Stage B CRC 短路、Stage D 哈希二次去重） | `files` | 读 |
+| `import` / `add` / `sync` 入库（整批单事务） | `files` | 写 |
+| `verify` 完整性校验（定位磁盘文件 + 比对哈希） | `files` | 读（`--background-hash` 写 `sha256`） |
+| `update` 路径修正 / missing 标记 | `files` | 读写 |
+| `sync` diff 比对（两侧记录） | `files` | 读（源只读） |
+| `clone` 选文件导出 | `files` | 读 |
+| `status` 统计 | `files` | 读 |
+| 复合媒体绑定（Live Photo / RAW+JPEG） | `assets` / `media_groups` | **休眠** |
+
+**注意**：`assets` / `media_groups` 两张表当前**没有任何
+SQL 读写者**——复合媒体绑定（`media/binding.rs`）是进行中的工作，现阶段
+只在文件系统层面识别配对，尚未落库。`files.group_id` / `role` /
+`exif_fp` 三列同样休眠，随绑定落库才启用。逐文件**历史**不在任何表中：
+见下方"会话日志"。
 
 磁盘上的辅助文件（不在 DB 内）：
 
@@ -66,7 +84,7 @@ CREATE INDEX idx_files_group  ON files(group_id);
 - `missing` — 曾在库，磁盘上找不到（`update` 标记；可被再导入"复活"）
 - `duplicate` — 重复记录（`duplicate_of` 指向主记录）
 
-## assets / media_groups / derivatives
+## assets / media_groups
 
 ```sql
 CREATE TABLE assets (
@@ -82,19 +100,16 @@ CREATE TABLE media_groups (
     content_identifier  TEXT,
     captured_at         INTEGER
 );
-
-CREATE TABLE derivatives (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_id        INTEGER NOT NULL REFERENCES assets(id),
-    source_file_id  INTEGER NOT NULL REFERENCES files(id),
-    deriv_type      TEXT    NOT NULL,
-    params          TEXT,
-    path            TEXT,
-    created_at      INTEGER NOT NULL
-);
 ```
 
 复合媒体绑定（Live Photo、RAW+JPEG）是进行中的工作，见 `svault-core/src/media/binding.rs`。
+`assets` 是"一张照片"的逻辑实体（如 Live Photo = HEIC + MOV），
+`media_groups` 把物理文件按角色（primary/motion/auxiliary）挂到资产下。
+
+> **`derivatives` 表已删除（2026-08-09，维护者决策）**：缩略图/转码等派生物
+> 只有 GUI 管理场景才需要，届时应独立实现为文件系统存储（如
+> `.svault/derivatives/` 二进制目录 + 独立索引），不占用主库表。
+> 旧 vault 中可能残留空的 derivatives 表，无数据、无读写者，无害。
 
 ---
 

@@ -1,10 +1,10 @@
 //! SQLite database for the vault.
 //!
 //! The `files` table is the operational state index (path / size / hashes /
-//! status); `assets`, `media_groups`, and `derivatives` back media grouping.
-//! State changes are written in single transactions (see
-//! [`Db::with_transaction`]); per-session history lives outside the DB in
-//! `.svault/sessions/` (plan + manifest JSON), not in the database.
+//! status); `assets` and `media_groups` back media grouping (dormant until
+//! media binding lands). State changes are written in single transactions
+//! (see [`Db::with_transaction`]); per-session history lives outside the DB
+//! in `.svault/sessions/` (plan + manifest JSON), not in the database.
 
 pub mod dump;
 pub mod files;
@@ -146,16 +146,6 @@ CREATE INDEX IF NOT EXISTS idx_files_sha256  ON files(sha256);
 CREATE INDEX IF NOT EXISTS idx_files_xxh3    ON files(xxh3_128);
 CREATE INDEX IF NOT EXISTS idx_files_size    ON files(size);
 CREATE INDEX IF NOT EXISTS idx_files_group   ON files(group_id);
-
-CREATE TABLE IF NOT EXISTS derivatives (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_id        INTEGER NOT NULL REFERENCES assets(id),
-    source_file_id  INTEGER NOT NULL REFERENCES files(id),
-    deriv_type      TEXT    NOT NULL,
-    params          TEXT,
-    path            TEXT,
-    created_at      INTEGER NOT NULL
-);
 ";
 
 #[cfg(test)]
