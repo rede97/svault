@@ -16,7 +16,6 @@ pub mod hash;
 pub mod insert;
 pub mod lookup;
 pub mod scan;
-pub mod staging;
 pub mod types;
 
 pub use types::{

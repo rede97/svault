@@ -936,24 +936,21 @@ impl TerminalSink {
             Hint::DryRunMissing { count } => {
                 self.println(format!("Files to mark as missing: {}", count));
             }
-            Hint::StagingReconciled { completed, purged } => {
-                let mut parts = Vec::new();
-                if *completed > 0 {
-                    parts.push(format!(
-                        "finished {} pending file(s)",
-                        style(completed).green()
-                    ));
-                }
-                if *purged > 0 {
-                    parts.push(format!(
-                        "removed {} incomplete file(s)",
-                        style(purged).yellow()
-                    ));
-                }
+            Hint::StagingReconciled { completed } => {
                 self.println(format!(
-                    "{} interrupted import recovered: {}",
+                    "{} interrupted import recovered: finished {} pending file(s)",
                     style("Note:").bold().cyan(),
-                    parts.join(", ")
+                    style(completed).green()
+                ));
+            }
+            Hint::SessionResidue { dir, files, bytes } => {
+                self.println(format!(
+                    "{} interrupted import session {} holds {} leftover file(s) ({}). \
+                     Review plan.json inside and delete the directory manually when done.",
+                    style("Note:").bold().yellow(),
+                    dir.display(),
+                    style(files).yellow(),
+                    format_bytes(*bytes),
                 ));
             }
             Hint::StagedCommitDeferred { dest, error, .. } => {

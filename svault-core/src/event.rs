@@ -181,10 +181,18 @@ pub enum Hint {
     NothingToUpdate,
     /// `update --dry-run`: this many records would be marked missing.
     DryRunMissing { count: usize },
-    /// `import` reconciled staging leftovers from an interrupted session:
-    /// `completed` pending renames were finished, `purged` incomplete
-    /// residue files (created by svault inside `.svault/staging/`) removed.
-    StagingReconciled { completed: usize, purged: usize },
+    /// `import` finished pending renames from an interrupted session
+    /// (staged files with a committed DB record moved to their final path).
+    StagingReconciled { completed: usize },
+    /// An interrupted import session left residue (staged partial copies).
+    ///
+    /// svault NEVER deletes it: the user reviews `plan.json` inside the
+    /// session directory and removes the directory manually.
+    SessionResidue {
+        dir: PathBuf,
+        files: usize,
+        bytes: u64,
+    },
     /// A staged file could not be renamed to its final destination after
     /// the DB commit; the rename is retried at the start of the next import.
     StagedCommitDeferred {

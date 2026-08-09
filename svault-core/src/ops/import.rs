@@ -236,16 +236,16 @@ struct PreparedCopy {
 
 /// Sink wrapper used during Stage C: rewrites staging paths to the final
 /// destination in copy events, so the UI shows where each file will end up
-/// rather than the transient `.svault/staging/` location.
+/// rather than the transient session staging location.
 struct StagingSink<'a> {
     inner: &'a dyn EventSink,
-    session_dir: &'a Path,
+    staging_dir: &'a Path,
     vault_root: &'a Path,
 }
 
 impl StagingSink<'_> {
     fn unstage(&self, path: &Path) -> PathBuf {
-        path.strip_prefix(self.session_dir)
+        path.strip_prefix(self.staging_dir)
             .map(|rel| self.vault_root.join(rel))
             .unwrap_or_else(|_| path.to_path_buf())
     }
@@ -285,9 +285,9 @@ impl ImportOptions {
             dunce::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone());
         let source_canon = normalize_path(&source_canon);
 
-        // Finish or purge staging leftovers from an interrupted import
+        // Finish or report session leftovers from an interrupted import
         // before scanning, so freed paths are available to this run.
-        pipeline::staging::reconcile(&self.vault_root, db, sink);
+        crate::session::reconcile(&self.vault_root, db, sink);
 
         sink.emit(&Event::PhaseStarted {
             phase: Phase::Scan,
@@ -537,21 +537,26 @@ impl ImportOptions {
         }
 
         // ── Stage C ───────────────────────────────────────────────────────────
-        // One staging session per import run: files are copied into
-        // `.svault/staging/import/<session_id>/` and only renamed to their
-        // final destination after the Stage-E DB transaction commits.
+        // One session journal per import run: files are copied into
+        // `.svault/sessions/import/<ts-id>/staging/` and only renamed to
+        // their final destination after the Stage-E DB transaction commits.
         let session_id = session_id_now();
-        let staging_dir = pipeline::staging::session_dir(&self.vault_root, &session_id);
+        let session_dir = crate::session::session_dir(
+            &self.vault_root,
+            crate::verify::manifest::SessionType::Import,
+            &session_id,
+        );
 
         let (copied, copy_error_count) = Self::stage_copy(
             new_files,
             &source_canon,
             &self.vault_root,
-            &staging_dir,
+            &session_id,
+            &session_dir,
             &self.strategy,
             &self.import_config,
             sink,
-        );
+        )?;
 
         // ── Stage D ───────────────────────────────────────────────────────────
         let hash_results = Self::stage_hash(
@@ -570,7 +575,7 @@ impl ImportOptions {
             &self.vault_root,
             &source_canon,
             &session_id,
-            &staging_dir,
+            &session_dir,
             self.force,
             db,
             state.total_files,
@@ -584,24 +589,28 @@ impl ImportOptions {
 
     // ── Stage functions (associated, no self) ─────────────────────────────────
 
-    /// Stage C: copy files from source into the vault staging area.
+    /// Stage C: copy files from source into the session staging area.
     ///
-    /// Each file is transferred to `staging_dir` (mirroring its final
+    /// Writes `plan.json` (pre-copy intent) atomically first — a plan write
+    /// failure aborts the import before any byte is transferred. Each file
+    /// is then transferred to `<session>/staging/` (mirroring its final
     /// relative path) and fsynced; it is only renamed to the final
     /// destination after the Stage-E DB commit, so an interrupted copy never
     /// pollutes the user-visible vault tree.
     ///
     /// Returns the successfully copied entries (as `CrcEntry` with `src_path`
     /// and `staged_path` set) and the number of copy errors.
+    #[allow(clippy::too_many_arguments)]
     fn stage_copy(
         new_files: Vec<pipeline::types::CrcEntry>,
         source_canon: &Path,
         vault_root: &Path,
-        staging_dir: &Path,
+        session_id: &str,
+        session_dir: &Path,
         strategy: &SyncStrategy,
         import_config: &ImportConfig,
         sink: &dyn EventSink,
-    ) -> (Vec<pipeline::types::CrcEntry>, usize) {
+    ) -> anyhow::Result<(Vec<pipeline::types::CrcEntry>, usize)> {
         // Resolve destination paths up-front (serial, EXIF-aware)
         let mut prepared: Vec<PreparedCopy> = Vec::new();
         let mut assigned = std::collections::HashSet::new();
@@ -618,7 +627,7 @@ impl ImportOptions {
             let unique_dest =
                 resolve_unique_dest(&dest_abs, &import_config.rename_template, &assigned);
             assigned.insert(unique_dest.clone());
-            let staged = pipeline::staging::staged_path_for(staging_dir, vault_root, &unique_dest);
+            let staged = crate::session::staged_path_for(session_dir, vault_root, &unique_dest);
 
             prepared.push(PreparedCopy {
                 src: entry.file.path.clone(),
@@ -631,11 +640,39 @@ impl ImportOptions {
             });
         }
 
+        // Persist the pre-copy intent BEFORE transferring anything. The plan
+        // makes an interrupted session self-describing (what came from where,
+        // bound for which destination). Fail-fast: a plan that cannot be
+        // written signals disk trouble that would only get worse mid-copy.
+        let plan = crate::session::ImportPlan {
+            session_id: session_id.to_string(),
+            session_type: crate::verify::manifest::SessionType::Import,
+            source_root: source_canon.to_path_buf(),
+            created_at: crate::ops::utils::unix_now_ms(),
+            files: prepared
+                .iter()
+                .map(|p| crate::session::PlanEntry {
+                    src_path: p.src.clone(),
+                    dest_path: p
+                        .dest
+                        .strip_prefix(vault_root)
+                        .unwrap_or(&p.dest)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    size: p.size,
+                    crc32c: p.crc32c,
+                })
+                .collect(),
+        };
+        crate::session::write_json_atomic(&session_dir.join(crate::session::PLAN_FILE), &plan)
+            .map_err(|e| anyhow::anyhow!("cannot write import plan: {e}"))?;
+
         let total = prepared.len() as u64;
         let transfer_strategies = strategy.to_transfer_strategies();
+        let staging_dir = crate::session::staging_dir(session_dir);
         let staging_sink = StagingSink {
             inner: sink,
-            session_dir: staging_dir,
+            staging_dir: &staging_dir,
             vault_root,
         };
 
@@ -707,7 +744,7 @@ impl ImportOptions {
         sink.emit(&Event::PhaseFinished { phase: Phase::Copy });
 
         let error_count = total as usize - copied.len();
-        (copied, error_count)
+        Ok((copied, error_count))
     }
 
     /// Stage D: compute strong hashes (XXH3-128, optionally SHA-256).
@@ -759,7 +796,7 @@ impl ImportOptions {
         vault_root: &Path,
         source_root: &Path,
         session_id: &str,
-        staging_dir: &Path,
+        session_dir: &Path,
         force: bool,
         db: &Db,
         total_files: usize,
@@ -813,17 +850,15 @@ impl ImportOptions {
             }
         }
 
-        // Everything left in the session dir is residue of files that never
-        // entered the transaction (copy/hash failures, Stage-D duplicates):
-        // svault-internal leftovers, safe to purge. Skip cleanup entirely
-        // when a rename was deferred — those staged files hold the only copy
-        // of DB-recorded content and must survive for the next reconcile.
+        // Everything left in this session's staging subtree is residue of
+        // files that never entered the transaction (copy/hash failures,
+        // Stage-D duplicates): created by THIS still-running session, safe
+        // to remove. Skip cleanup entirely when a rename was deferred —
+        // those staged files hold the only copy of DB-recorded content and
+        // must survive for the next reconcile. plan.json / manifest.json
+        // always stay as the session's audit record.
         if deferred == 0 {
-            let _ = fs::remove_dir_all(staging_dir);
-            // Drop the now-empty staging root (remove_dir only succeeds on an
-            // empty directory; `.svault/staging/` itself is shared with
-            // recheck reports and left alone).
-            let _ = fs::remove_dir(pipeline::staging::staging_root(vault_root));
+            let _ = fs::remove_dir_all(crate::session::staging_dir(session_dir));
         }
 
         let done = progress.load(std::sync::atomic::Ordering::Relaxed);
@@ -1010,6 +1045,14 @@ mod tests {
             .unwrap_or_else(|| panic!("{name} not found in vault"))
     }
 
+    /// All import session journal directories in the vault.
+    fn import_session_dirs(vault: &Path) -> Vec<PathBuf> {
+        let root = crate::session::sessions_root(vault).join("import");
+        std::fs::read_dir(&root)
+            .map(|rd| rd.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default()
+    }
+
     #[test]
     fn run_import_commits_staged_files_and_leaves_no_residue() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1031,17 +1074,35 @@ mod tests {
 
         // …its DB record points at that same path…
         let rel = dest.strip_prefix(&vault).unwrap().to_string_lossy();
+        let rel_unix = rel.replace('\\', "/");
         let record = db
-            .get_file_by_path(&rel.replace('\\', "/"))
+            .get_file_by_path(&rel_unix)
             .unwrap()
             .expect("DB record must exist for the committed file");
         assert_eq!(record.status, "imported");
 
-        // …and the staging area is gone entirely.
+        // …and the session journal holds plan + manifest with the staging
+        // payload subtree fully cleaned up.
+        let sessions = import_session_dirs(&vault);
+        assert_eq!(sessions.len(), 1, "exactly one session journal");
+        let session = &sessions[0];
+        assert!(session.join(crate::session::PLAN_FILE).exists());
+        assert!(session.join(crate::session::MANIFEST_FILE).exists());
         assert!(
-            !pipeline::staging::staging_root(&vault).exists(),
-            "staging area must be cleaned up after a successful import"
+            !crate::session::staging_dir(session).exists(),
+            "staging payload must be cleaned up after a successful import"
         );
+
+        // The plan records the intent: source, final destination, size.
+        let plan: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(session.join(crate::session::PLAN_FILE)).unwrap(),
+        )
+        .unwrap();
+        let files = plan["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0]["src_path"].as_str().unwrap().ends_with("photo.jpg"));
+        assert_eq!(files[0]["dest_path"].as_str().unwrap(), rel_unix);
+        assert_eq!(files[0]["size"].as_u64().unwrap(), 10);
     }
 
     #[test]
@@ -1057,11 +1118,11 @@ mod tests {
         let first = run_test_import(&source, &vault, &db);
         assert_eq!(first.imported, 1);
 
-        // Second run: CRC short-circuit — no copy, no insert, no staging.
+        // Second run: CRC short-circuit — no copy, no insert, no new session.
         let second = run_test_import(&source, &vault, &db);
         assert_eq!(second.imported, 0);
         assert_eq!(second.duplicate, 1);
         assert!(second.all_cache_hit);
-        assert!(!pipeline::staging::staging_root(&vault).exists());
+        assert_eq!(import_session_dirs(&vault).len(), 1);
     }
 }
