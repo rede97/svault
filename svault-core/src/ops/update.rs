@@ -208,6 +208,11 @@ pub fn run_update(
     sink.emit(&Event::PhaseFinished { phase: Phase::Hash });
 
     // 4. Dry-run or confirm
+    let to_clean: Vec<_> = missing_files
+        .iter()
+        .filter(|f| !matches.iter().any(|(m, _)| m.file_id == f.id))
+        .collect();
+
     let mut updated = 0;
     let apply_total = if matched > 0 { matched } else { 0 }
         + if unmatched > 0 && !opts.dry_run {
@@ -221,6 +226,48 @@ pub fn run_update(
         total: Some(apply_total as u64),
         context: PhaseContext::default(),
     });
+
+    // Session journal: the apply plan is persisted after the confirmation
+    // gate and before the first DB write (dry-run writes nothing).
+    let mut apply_errors: Vec<(String, String)> = Vec::new();
+    let mut session_dir: Option<std::path::PathBuf> = None;
+    let mut session_id = String::new();
+    let write_plan = |confirmed: bool,
+                      session_dir: &mut Option<std::path::PathBuf>,
+                      session_id: &mut String|
+     -> anyhow::Result<()> {
+        if opts.dry_run || !confirmed || (matched == 0 && unmatched == 0) {
+            return Ok(());
+        }
+        *session_id = crate::ops::utils::session_id_now();
+        let dir = crate::session::session_dir(
+            &opts.vault_root,
+            crate::verify::manifest::SessionType::Update,
+            session_id,
+        );
+        let plan = crate::session::UpdatePlan {
+            session_id: session_id.clone(),
+            session_type: crate::verify::manifest::SessionType::Update,
+            root: opts.root.clone(),
+            created_at: crate::ops::utils::unix_now_ms(),
+            moves: matches
+                .iter()
+                .map(|(m, conf)| crate::session::UpdatePlanMove {
+                    old_path: m.old_path.clone(),
+                    new_path: m.new_path.clone(),
+                    confidence: match conf {
+                        MatchConfidence::Definitive => "definitive".to_string(),
+                        MatchConfidence::Fast => "fast".to_string(),
+                    },
+                })
+                .collect(),
+            mark_missing: to_clean.iter().map(|f| f.path.clone()).collect(),
+        };
+        crate::session::write_json_atomic(&dir.join(crate::session::PLAN_FILE), &plan)
+            .map_err(|e| anyhow::anyhow!("cannot write update plan: {e}"))?;
+        *session_dir = Some(dir);
+        Ok(())
+    };
 
     if !opts.dry_run && matched > 0 {
         if !opts.yes && !interactor.confirm("Apply path updates?") {
@@ -236,12 +283,16 @@ pub fn run_update(
             });
         }
 
+        write_plan(true, &mut session_dir, &mut session_id)?;
+
         // Apply updates
         for (idx, m) in matches.iter().map(|(m, _)| m).enumerate() {
             if let Err(e) = db.update_file_path(m.file_id, &m.new_path) {
+                let message = format!("Failed to update: {}", e);
+                apply_errors.push((m.old_path.clone(), message.clone()));
                 sink.emit(&Event::ApplyError {
                     path: m.old_path.clone(),
-                    message: format!("Failed to update: {}", e),
+                    message,
                 });
             } else {
                 updated += 1;
@@ -259,17 +310,21 @@ pub fn run_update(
         if opts.dry_run {
             sink.emit(&Event::Hint(Hint::DryRunMissing { count: unmatched }));
         } else {
-            let to_clean: Vec<_> = missing_files
-                .iter()
-                .filter(|f| !matches.iter().any(|(m, _)| m.file_id == f.id))
-                .collect();
+            // Pure missing-marking was never gated by a confirmation; write
+            // the plan here when the matched>0 branch did not.
+            write_plan(matched == 0, &mut session_dir, &mut session_id)?;
 
+            let mut marked_missing = 0usize;
             for (idx, f) in to_clean.iter().enumerate() {
                 if let Err(e) = db.update_file_status(f.id, "missing") {
+                    let message = format!("Failed to mark as missing: {}", e);
+                    apply_errors.push((f.path.clone(), message.clone()));
                     sink.emit(&Event::ApplyError {
                         path: f.path.clone(),
-                        message: format!("Failed to mark as missing: {}", e),
+                        message,
                     });
+                } else {
+                    marked_missing += 1;
                 }
                 sink.emit(&Event::Progress {
                     phase: Phase::Apply,
@@ -277,7 +332,87 @@ pub fn run_update(
                     total: apply_total as u64,
                 });
             }
+            let _ = marked_missing;
         }
+    }
+
+    // Session manifest: per-item outcomes (only when a plan was written).
+    if let Some(dir) = &session_dir {
+        let now = crate::ops::utils::unix_now_ms();
+        let mut records = Vec::new();
+        for (m, _) in &matches {
+            let err = apply_errors
+                .iter()
+                .find(|(p, _)| p == &m.old_path)
+                .map(|(_, e)| e.clone());
+            let row = missing_files.iter().find(|f| f.id == m.file_id);
+            records.push(crate::verify::manifest::ImportRecord {
+                src_path: Path::new(&m.old_path).to_path_buf(),
+                dest_path: Some(Path::new(&m.new_path).to_path_buf()),
+                size: row.map(|r| r.size as u64).unwrap_or(0),
+                mtime_ms: row.map(|r| r.mtime).unwrap_or(0),
+                fingerprint: row
+                    .and_then(|r| r.fingerprint.as_ref())
+                    .map(|b| hex_encode(b))
+                    .unwrap_or_default(),
+                xxh3_128: row.and_then(|r| r.xxh3_128.as_ref()).map(|b| hex_encode(b)),
+                sha256: row.and_then(|r| r.sha256.as_ref()).map(|b| hex_encode(b)),
+                imported_at: now,
+                status: if err.is_some() {
+                    crate::verify::manifest::ItemStatus::Failed
+                } else {
+                    crate::verify::manifest::ItemStatus::Moved
+                },
+                error: err,
+            });
+        }
+        for f in &to_clean {
+            let err = apply_errors
+                .iter()
+                .find(|(p, _)| p == &f.path)
+                .map(|(_, e)| e.clone());
+            records.push(crate::verify::manifest::ImportRecord {
+                src_path: Path::new(&f.path).to_path_buf(),
+                dest_path: None,
+                size: f.size as u64,
+                mtime_ms: f.mtime,
+                fingerprint: f
+                    .fingerprint
+                    .as_ref()
+                    .map(|b| hex_encode(b))
+                    .unwrap_or_default(),
+                xxh3_128: f.xxh3_128.as_ref().map(|b| hex_encode(b)),
+                sha256: f.sha256.as_ref().map(|b| hex_encode(b)),
+                imported_at: now,
+                status: if err.is_some() {
+                    crate::verify::manifest::ItemStatus::Failed
+                } else {
+                    crate::verify::manifest::ItemStatus::Missing
+                },
+                error: err,
+            });
+        }
+        if !records.is_empty() {
+            let failed = apply_errors.len();
+            let manifest = crate::verify::manifest::ImportManifest {
+                session_id,
+                session_type: crate::verify::manifest::SessionType::Update,
+                source_root: opts.root.clone(),
+                imported_at: now,
+                hash_algorithm: "xxh3_128".to_string(),
+                summary: Some(crate::verify::manifest::ManifestSummary {
+                    total: records.len(),
+                    added: records.len() - failed,
+                    duplicate: 0,
+                    failed,
+                    skipped: 0,
+                }),
+                files: records,
+            };
+            let manager = crate::verify::manifest::ManifestManager::new(&opts.vault_root);
+            manager.save(&manifest)?;
+        }
+        let _ = dir;
     }
 
     sink.emit(&Event::PhaseFinished {

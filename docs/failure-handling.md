@@ -197,8 +197,11 @@ import 与 verify 对"部分失败"的退出码语义不同（0 vs 1），登记
 
 - moved 匹配依据：XXH3-128 + size 初筛，SHA-256 确认（`ops/update.rs:139-171`）。
 - 找不到的文件标记 `status='missing'`，**永不删除**（`ops/update.rs:261-269`）。
-- 确认默认 No；用户拒绝时**连 missing 标记都跳过**（`ops/update.rs:215-228`）。
-- 非终端输出（JSON / 管道）回退 YesInteractor 自动确认（`commands/update.rs:27-39`）。
+- 确认默认 No；用户拒绝时**连 missing 标记都跳过**（`ops/update.rs`）。
+- 非终端/无 `--yes` 时确认判 No（管道 EOF 默认拒绝）；`--yes` 跳过。
+- **会话日志（2026-08-09）**：确认通过后先落 `sessions/update/<ts-id>/plan.json`
+  （移动修正 + missing 标记清单），应用后写 manifest（Moved/Missing/Failed
+  逐条记录）；dry-run 与被拒绝时不写任何会话。
 - 路径修正与 missing 标记均为直接 SQL UPDATE（`db/files.rs`）——原 BUG-2
   （绕过 append_event 写协议）已随事件溯源移除而消解（2026-08-09）。
 - missing 记录可被同哈希再导入"复活"（`Recover` 路径，`ops/mod.rs:90-95`、

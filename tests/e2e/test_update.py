@@ -204,3 +204,45 @@ class TestReconcileCommand:
         rows = vault.db_files()
         assert "moved_photo.jpg" in rows[0]["path"]
         assert rows[0]["status"] == "imported"
+
+
+class TestUpdateSessionJournal:
+    """update 的会话日志（plan + manifest）"""
+
+    def test_update_writes_plan_and_manifest(self, vault: VaultEnv) -> None:
+        import json
+
+        create_minimal_jpeg(vault.source_dir / "photo.jpg", "JOURNAL")
+        vault.import_dir(vault.source_dir)
+
+        old = vault.get_vault_files("*.jpg")[0]
+        old.rename(vault.vault_dir / "renamed.jpg")
+
+        result = vault.run("update", "--yes", f"--target={vault.vault_dir}")
+        assert result.returncode == 0
+
+        root = vault.vault_dir / ".svault" / "sessions" / "update"
+        sessions = [p for p in root.glob("*") if p.is_dir()]
+        assert len(sessions) == 1
+
+        plan = json.loads((sessions[0] / "plan.json").read_text())
+        assert plan["session_type"] == "update"
+        assert plan["moves"][0]["new_path"] == "renamed.jpg"
+
+        manifest = json.loads((sessions[0] / "manifest.json").read_text())
+        assert manifest["files"][0]["status"] == "moved"
+        assert manifest["summary"]["failed"] == 0
+
+    def test_update_decline_writes_no_session(self, vault: VaultEnv) -> None:
+        create_minimal_jpeg(vault.source_dir / "photo.jpg", "DECLINE")
+        vault.import_dir(vault.source_dir)
+
+        old = vault.get_vault_files("*.jpg")[0]
+        old.rename(vault.vault_dir / "renamed.jpg")
+
+        # 无 --yes + 非终端 → 确认被拒绝 → 不写会话
+        result = vault.run("update", f"--target={vault.vault_dir}")
+        assert result.returncode == 0
+
+        root = vault.vault_dir / ".svault" / "sessions" / "update"
+        assert not root.exists() or not list(root.glob("*"))

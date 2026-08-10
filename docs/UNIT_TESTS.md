@@ -12,7 +12,7 @@
 |------|------|------|------|------|
 | 单元测试 (svault-core) | 165 | 165 | 0 | 0 |
 | 单元测试 (svault-ui / svault-cli) | 6 | 6 | 0 | 2 ignored |
-| Python E2E 测试 (Linux) | 190 执行 | 190 | 0 | 环境性 skip |
+| Python E2E 测试 (Linux) | 192 执行 | 192 | 0 | 环境性 skip |
 | FUSE 故障注入 (Linux, `fuse_tests/`) | 23 | 19 | 0 | 4（P2 待设施） |
 
 > **2026-08-09（二）事件溯源移除 + 会话日志：**

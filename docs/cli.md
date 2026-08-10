@@ -130,6 +130,8 @@ svault add <path>...        # 可指定多个目录（git add 风格）；当前
 
 扫描归档目录，找回被用户在 Svault 外部移动或重命名的文件，更新数据库路径。
 找不到的文件标记为 `missing`（Svault 永不删除文件）。
+应用前写会话日志 `.svault/sessions/update/<ts-id>/`（plan.json 修正清单 +
+manifest.json 逐条结果）；dry-run 或拒绝确认时不写。
 
 ```
 svault update [--target <path>] [--dry-run] [--yes]
