@@ -176,6 +176,7 @@ bash run.sh --test-dir /mnt/ext4 --cleanup   # 指定文件系统
 |2026-08-09|**import staging 原子提交**（OPEN-3 闭环）：复制入 `.svault/staging/import/<session>/` → fsync → hash → 整批入库 → commit 后 rename（`pipeline/staging.rs`、`fs::atomic_commit`）；启动对账补 rename/清残留；G1 精确化为"不删除用户文件"；+7 单测 +2 E2E|
 |2026-08-09|**事件溯源移除 + 会话日志落地**：维护者决策删 events 表/verify-chain（伪需求，PARKED §A2）；`.svault/sessions/<kind>/<ts-id>/` 统一布局（plan.json 复制前 fail-fast 落盘 + staging/ + manifest.json 原子写，sync 带 plan，recheck 报告迁入）；session_id 时间戳+唯一后缀（BUG-3/4 修复）；reconcile 改只报告不删（G1 最终形态）；复制 ENOSPC 锁定逐文件失败 exit 0|
 |2026-08-09|**相册与评级**：`svault album`（多级树 `parent_id` 邻接表 + 成员引用 `files.id` + 成员级独立评级 `album_items.rating`）；`files` 行永不物理删除升级为 FK 硬约束；derivatives/assets 表删除（GUI 派生物独立实现；三级链拍平）；媒体绑定计划入 docs/media-binding.md|
+|2026-08-09|**info 命令 + 统一表格输出**：`svault info <path>|--hash <前缀>`（DB 记录 + EXIF 全字段 + ffprobe 视频元数据，ffprobe 缺失优雅降级）；album list/show 改表格渲染（共享 svault-ui table 模块）|
 |2026-08-09|**update 会话日志**：确认后落 plan.json（移动+missing 清单）、应用后写 manifest（Moved/Missing/Failed）；中断会话纳入 status 报告|
 |2026-08-09|**add 会话化 + git 风格 status**：add 支持多目录参数、Preflight+y/N（非终端自动确认）、写 plan+manifest 会话；status 新增工作区状态（untracked/moved/missing/modified，stat-cache 式只对未知路径算哈希）+ 类别过滤标志|
 |2026-08-09|**add 改全量哈希查重**：vault 内文件可能原地编辑，指纹盲区会误判 duplicate；add 跳过指纹预筛直接全量 XXH3（lookup_by_hash），Stage D 经 precomputed_hash 复用不重读|

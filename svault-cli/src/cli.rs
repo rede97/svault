@@ -150,6 +150,17 @@ pub enum Command {
         background_hash_limit: Option<usize>,
     },
 
+    /// Inspect one file: DB record, EXIF, video metadata (via ffprobe)
+    Info {
+        /// File to inspect (vault-relative path, or absolute path inside the vault)
+        #[arg(value_name = "PATH", conflicts_with = "hash")]
+        path: Option<std::path::PathBuf>,
+
+        /// Locate the file by content hash (xxh3/sha256, full hex or unique prefix)
+        #[arg(long, value_name = "HASH")]
+        hash: Option<String>,
+    },
+
     /// Show vault statistics and working-tree status
     Status {
         /// Show only untracked files (on disk, not in the database)

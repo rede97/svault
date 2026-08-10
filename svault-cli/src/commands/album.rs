@@ -28,7 +28,12 @@ pub fn run(output: OutputFormat, command: AlbumCommand) -> anyhow::Result<()> {
             } else if tree.is_empty() {
                 println!("No albums yet. Create one with: svault album create <path>");
             } else {
-                print_tree(&tree, 0);
+                let mut rows = Vec::new();
+                flatten_tree(&tree, 0, &mut rows);
+                print!(
+                    "{}",
+                    svault_ui::table::render_table("📚 Albums", &["Album", "Members"], &rows)
+                );
             }
         }
         AlbumCommand::Show { path } => {
@@ -37,18 +42,26 @@ pub fn run(output: OutputFormat, command: AlbumCommand) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 for detail in &result.matched {
-                    println!(
-                        "Album: {} ({} member(s))",
-                        detail.path,
-                        detail.members.len()
+                    let rows: Vec<Vec<String>> = detail
+                        .members
+                        .iter()
+                        .map(|m| {
+                            vec![
+                                m.path.clone(),
+                                m.rating
+                                    .map(|r| format!("{}★", r))
+                                    .unwrap_or_else(|| "-".to_string()),
+                            ]
+                        })
+                        .collect();
+                    print!(
+                        "{}",
+                        svault_ui::table::render_table(
+                            &format!("🖼  {} ({} members)", detail.path, detail.members.len()),
+                            &["Path", "Rating"],
+                            &rows,
+                        )
                     );
-                    for m in &detail.members {
-                        let rating = m
-                            .rating
-                            .map(|r| format!("{}★", r))
-                            .unwrap_or_else(|| "-".to_string());
-                        println!("  {:>3}  {}", rating, m.path);
-                    }
                 }
             }
         }
@@ -81,15 +94,13 @@ pub fn run(output: OutputFormat, command: AlbumCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_tree(nodes: &[AlbumNode], depth: usize) {
+fn flatten_tree(nodes: &[AlbumNode], depth: usize, rows: &mut Vec<Vec<String>>) {
     for node in nodes {
-        println!(
-            "{}{} ({})",
-            "  ".repeat(depth),
-            node.name,
-            node.member_count
-        );
-        print_tree(&node.children, depth + 1);
+        rows.push(vec![
+            format!("{}{}", "  ".repeat(depth), node.name),
+            node.member_count.to_string(),
+        ]);
+        flatten_tree(&node.children, depth + 1, rows);
     }
 }
 

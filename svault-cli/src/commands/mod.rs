@@ -11,6 +11,7 @@ pub mod db;
 #[cfg(debug_assertions)]
 pub mod debug_reporter;
 pub mod import;
+pub mod info;
 pub mod init;
 #[cfg(debug_assertions)]
 pub mod scan;

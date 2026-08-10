@@ -10,16 +10,20 @@
 //! | [`pipe`]     | [`PipeSink`] — machine-readable scan protocol   |
 //! | [`interact`] | [`SuspendingInteractor`] — y/N prompts          |
 //! | [`status`]   | status report tables / JSON rendering           |
+//! | [`table`]    | shared table renderer                            |
+//! | [`info`]     | file info rendering (EXIF / ffprobe)           |
 //!
 //! All sinks implement [`svault_core::event::EventSink`] and are passed to
 //! core operations by the CLI.
 
+pub mod info;
 pub mod interact;
 pub mod json;
 pub mod messages;
 pub mod path;
 pub mod pipe;
 pub mod status;
+pub mod table;
 pub mod terminal;
 
 pub use interact::SuspendingInteractor;

@@ -77,6 +77,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             background_hash,
             background_hash_limit,
         ),
+        Command::Info { path, hash } => commands::info::run(output, path, hash),
         Command::Status {
             untracked,
             moved,

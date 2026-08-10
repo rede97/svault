@@ -144,7 +144,8 @@ let report: StatusReport = svault_core::status::generate_report(root, db, opts)?
 | `add` | 注册 vault 内已有文件 |
 | `update` | 修正被移动/重命名文件的数据库路径 |
 | `verify` | 完整性校验（含 `--file` / `--recent` / `--background-hash` / `--upgrade-links`） |
-| `status` | vault 统计 |
+| `status` | vault 统计 + 工作区状态 |
+| `info` | 单文件检查（DB 记录 + EXIF + ffprobe） |
 | `clone` | 单向导出子集到普通目录（§6.1） |
 | `sync` | vault 间同步，hash 加速比对（§6.2） |
 | `album` | 多级相册 + 成员级评级（Pull 模型 CRUD） |
@@ -235,6 +236,8 @@ rusqlite 保持默认适配器，turso 以 feature flag 实验接入，用同一
 | 管线五阶段（scan/crc/lookup/hash/insert） | `svault-core/src/pipeline/` |
 | 用例编排（import/add/update/sync/clone/album） | `svault-core/src/ops/` |
 | 相册与评级（多级树、成员引用 files.id） | `svault-core/src/ops/album.rs` + `svault-core/src/db/albums.rs` |
+| 单文件信息（路径/哈希定位、EXIF、ffprobe） | `svault-core/src/ops/info.rs` |
+| 共享表格渲染 | `svault-ui/src/table.rs` |
 | 会话日志：plan/staging/manifest/对账 | `svault-core/src/session.rs` |
 | 事件与交互边界（R3/R4） | `svault-core/src/event.rs`（`Event` / `EventSink` / `Interactor` / `NoopSink` / `YesInteractor`） |
 | 文件传输 + 崩溃耐久原语 | `svault-core/src/fs.rs`（`transfer_file` / `atomic_commit` / `atomic_write` / `sync_file_and_dir`） |

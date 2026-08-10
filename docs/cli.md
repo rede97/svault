@@ -313,6 +313,44 @@ Album: 挪威旅行/特罗姆瑟 (1 member(s))
 
 ---
 
+## `svault info`
+
+**定位**：检查单个文件——DB 记录、EXIF（图像）、ffprobe 元数据（视频）。
+
+**使用场景**：
+- 查看照片拍摄参数：`svault info 2026/08-09/Unknown/a.jpg`
+- 凭哈希定位文件：`svault info --hash 3393a146`（xxh3/sha256 全量或唯一前缀）
+
+**参数**：
+
+| 选项 | 说明 |
+|------|------|
+| `<path>` | vault 相对路径或 vault 内绝对路径 |
+| `--hash <hex>` | 按内容哈希定位（与 xxh3_128 / sha256 两列匹配；前缀至少 4 位且必须唯一） |
+
+**示例与预期结果**：
+
+```bash
+$ svault info moved/a.jpg
+📄 File
+  Field                                 Value
+ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Path       /vault/moved/a.jpg
+  On disk                                 yes
+  DB path                         moved/a.jpg
+  ...
+📷 EXIF (42 fields)
+  Tag                        Value
+  DateTimeOriginal           2024:05:01 12:30:00
+  ...
+```
+
+视频文件追加 🎬 Video 表（duration/码率/流信息，来自 ffprobe 进程调用；
+未安装 ffprobe 时降级为提示，不影响其他信息）。`--output json` 输出完整
+结构化报告（含全部 EXIF 字段与 ffprobe 原始 format/streams）。
+
+---
+
 ## `svault status`
 
 **定位**：vault 总览 = 统计信息 + 中断会话 + git 风格工作区状态。

@@ -11,12 +11,14 @@
 //! | [`add`]     | Register files already in the vault |
 //! | [`update`]  | Fix DB paths of moved/renamed files |
 //! | [`album`]   | Hierarchical albums + per-membership ratings (Pull model) |
+//! | [`info`]    | Single-file inspection: DB record + EXIF + ffprobe (Pull model) |
 
 pub mod add;
 pub mod album;
 pub mod clone;
 mod exif;
 pub mod import;
+pub mod info;
 mod path;
 pub mod sync;
 pub mod types;
